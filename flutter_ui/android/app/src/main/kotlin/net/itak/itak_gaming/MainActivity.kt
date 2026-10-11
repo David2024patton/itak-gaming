@@ -31,6 +31,27 @@ class MainActivity : FlutterActivity() {
                             result.error("BAD_ARGS", "key and value required", null)
                         }
                     }
+                    // Int flavor: EmulatorActivity reads filter/display
+                    // modes with getInt; a String stored under those keys
+                    // would crash that read.
+                    "getPrefInt" -> {
+                        val key = call.argument<String>("key")
+                        val prefs = getSharedPreferences("itak_prefs", Context.MODE_PRIVATE)
+                        result.success(
+                            if (key != null && prefs.contains(key)) prefs.getInt(key, 0) else null
+                        )
+                    }
+                    "setPrefInt" -> {
+                        val key = call.argument<String>("key")
+                        val value = call.argument<Int>("value")
+                        if (key != null && value != null) {
+                            getSharedPreferences("itak_prefs", Context.MODE_PRIVATE)
+                                .edit().putInt(key, value).apply()
+                            result.success(true)
+                        } else {
+                            result.error("BAD_ARGS", "key and value required", null)
+                        }
+                    }
                     "launch" -> {
                         val core = call.argument<String>("core") ?: "libsnes9x.so"
                         val rom = call.argument<String>("rom")

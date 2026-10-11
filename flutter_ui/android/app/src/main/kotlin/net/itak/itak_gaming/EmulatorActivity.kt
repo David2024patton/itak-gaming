@@ -266,9 +266,10 @@ class EmulatorActivity : Activity(), TextureListener {
             "Display: $displayName",
             "Exit Game"
         )
+        // Note: setMessage + setItems together renders an empty list on
+        // this TV's dialog theme, so the player rides in the title.
         AlertDialog.Builder(this)
-            .setTitle(File(romPath).nameWithoutExtension)
-            .setMessage("Player: ${currentPlayer()}")
+            .setTitle("${File(romPath).nameWithoutExtension}  ·  ${currentPlayer()}")
             .setItems(items) { _, which ->
                 when (which) {
                     0 -> Unit // resume via dismiss
@@ -378,7 +379,10 @@ class EmulatorActivity : Activity(), TextureListener {
             KeyEvent.KEYCODE_BUTTON_R1 -> Mobile.ButtonR
             KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_MENU -> Mobile.ButtonStart
             KeyEvent.KEYCODE_BUTTON_SELECT -> Mobile.ButtonSelect
-            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> Mobile.ButtonA
+            // TV remote play: the big center button is the main action
+            // button (B, jump in Mario), the mic/assistant button is A.
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> Mobile.ButtonB
+            KeyEvent.KEYCODE_ASSIST, KeyEvent.KEYCODE_VOICE_ASSIST -> Mobile.ButtonA
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> Mobile.ButtonStart
             else -> null
         }
