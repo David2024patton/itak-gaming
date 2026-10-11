@@ -1,0 +1,44 @@
+# ROMs and emulator core binaries are NOT distributed with this project.
+# Users supply their own legally obtained ROMs and libretro cores.
+testdata/
+*.sfc
+*.smc
+*.nes
+*.md
+*.gen
+*.gba
+*.gb
+*.gbc
+*.n64
+*.z64
+*.iso
+*.cue
+*.so
+*.dll
+*.dylib
+roms/
+
+# Screenshots of commercial games
+*.png
+!flutter_ui/**/mipmap*/**/*.png
+!flutter_ui/**/AppIcon.appiconset/*.png
+!flutter_ui/**/LaunchImage.imageset/*.png
+
+# Go
+go_backend/coretest
+*.test
+
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+flutter_ui/build/
+flutter_ui/.dart_tool/
+*.iml
+.idea/
+flutter_ui/android/local.properties
+
+# OS / editor
+.DS_Store
+.vscode/
+*~
