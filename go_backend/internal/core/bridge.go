@@ -86,7 +86,10 @@ static size_t audio_batch_cb(const short* data, size_t frames) {
         audio_ring[audio_write_pos] = data[i];
         audio_write_pos = (audio_write_pos + 1) % AUDIO_RING_SIZE;
         if (audio_write_pos == audio_read_pos) {
-            audio_read_pos = (audio_read_pos + 1) % AUDIO_RING_SIZE;
+            // Drop the oldest stereo frame (2 samples) so the read
+            // position stays frame-aligned; dropping a single sample
+            // would swap left/right channels for everything after.
+            audio_read_pos = (audio_read_pos + 2) % AUDIO_RING_SIZE;
         }
     }
     audio_samples_total += frames;
