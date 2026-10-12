@@ -1,1 +1,1 @@
-Settings now has a Logs screen: everything the app does is written down for debugging. You can read it, save a copy, or clear it.
+Settings list now scrolls so every option fits on the TV screen, including the new Logs screen.

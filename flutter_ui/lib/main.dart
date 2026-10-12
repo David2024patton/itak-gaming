@@ -2463,6 +2463,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _checkingUpdate = false;
   int _logSize = 0;
   final FocusNode _focusNode = FocusNode();
+  final ScrollController _settingsScroll = ScrollController();
 
   static const int _rowCount =
       8; // Picture, Display, Swap, Auto art, Auto-save, App updates, Logs, Back
@@ -2539,7 +2540,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _focusNode.dispose();
+    _settingsScroll.dispose();
     super.dispose();
+  }
+
+  // Eight rows no longer fit on one TV screen: keep the focused
+  // row in view as the remote walks the list.
+  void _ensureRowVisible() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_settingsScroll.hasClients) return;
+      final target = (_row * 99.0 - 150)
+          .clamp(0.0, _settingsScroll.position.maxScrollExtent);
+      _settingsScroll.animateTo(
+        target,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   void _adjust(int delta) {
@@ -2570,8 +2587,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowUp) {
       setState(() => _row = (_row - 1 + _rowCount) % _rowCount);
+      _ensureRowVisible();
     } else if (key == LogicalKeyboardKey.arrowDown) {
       setState(() => _row = (_row + 1) % _rowCount);
+      _ensureRowVisible();
     } else if (key == LogicalKeyboardKey.arrowLeft) {
       _adjust(-1);
     } else if (key == LogicalKeyboardKey.arrowRight) {
@@ -2668,12 +2687,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Center(
             child: SizedBox(
               width: 860,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _settingRow(
-                    index: 0,
-                    label: 'Picture',
+              child: SingleChildScrollView(
+                controller: _settingsScroll,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _settingRow(
+                      index: 0,
+                      label: 'Picture',
                     value: kFilterNames[_filter],
                     hint: 'Sharp keeps pixels crisp, Smooth softens, Pixel Perfect is raw',
                   ),
@@ -2823,13 +2844,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Changes apply the next time a game starts. You can also change Picture and Display mid-game from the pause menu.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 15, color: Colors.white54),
-                  ),
-                ],
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Changes apply the next time a game starts. You can also change Picture and Display mid-game from the pause menu.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 15, color: Colors.white54),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
