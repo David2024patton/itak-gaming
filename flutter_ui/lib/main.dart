@@ -30,6 +30,17 @@ class ITaKGamingApp extends StatelessWidget {
 /// shared with the emulator screen. String and int flavors: the Kotlin
 /// side reads filter/display modes as ints, so those go through the
 /// int methods or the read crashes.
+const MethodChannel _logChannel = MethodChannel('net.itak/emu');
+
+/// Writes one line into the app debug log (Settings -> Logs).
+/// Native writes it to logcat, and the capture thread files it
+/// with every emulator and system line.
+Future<void> appLog(String msg) async {
+  try {
+    await _logChannel.invokeMethod('log', {'message': msg});
+  } catch (_) {}
+}
+
 class Prefs {
   static const _channel = MethodChannel('net.itak/emu');
 
@@ -424,9 +435,14 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     _updateBusy = true;
     try {
       final check = await AppUpdate.check();
-      if (check == null || !mounted) return;
+      if (check == null) {
+        appLog('update check: server unreachable');
+        return;
+      }
+      if (!mounted) return;
       if (ModalRoute.of(context)?.isCurrent != true) return;
       if (check.available != null) {
+        appLog('update check: ${check.available!.versionName} available');
         await showAppUpdateDialog(context, check, manual: false);
       }
     } finally {
@@ -2006,9 +2022,11 @@ class _OnlineScreenState extends State<OnlineScreen> {
             'The server did not send a lobby id. Try again.');
         return;
       }
+      appLog('lobby created: $lobbyId for ${game.fileName} by $player');
       await _launchOnline(game,
           role: 'host', lobbyId: lobbyId, token: token);
     } catch (e) {
+      appLog('create lobby failed: $e');
       _showMessage('Could not create the lobby', '$e');
     }
   }
@@ -2049,9 +2067,12 @@ class _OnlineScreenState extends State<OnlineScreen> {
                 'the same game file to play together.');
         return;
       }
+      appLog(
+          'lobby joined: ${lobby['id']} for ${match.fileName} by $player');
       await _launchOnline(match,
           role: 'guest', lobbyId: lobby['id'].toString(), token: token);
     } catch (e) {
+      appLog('join lobby failed: $e');
       _showMessage('Could not join', '$e');
     }
   }
@@ -2440,9 +2461,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoSave = true;
   String _versionName = '';
   bool _checkingUpdate = false;
+  int _logSize = 0;
   final FocusNode _focusNode = FocusNode();
 
-  static const int _rowCount = 7; // Picture, Display, Swap, Auto art, Auto-save, App updates, Back
+  static const int _rowCount =
+      8; // Picture, Display, Swap, Auto art, Auto-save, App updates, Logs, Back
 
   @override
   void initState() {
@@ -2460,6 +2483,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final a = await Prefs.get('art_autofetch');
     final asv = await Prefs.get('autosave');
     final ai = await AppUpdate.installed();
+    try {
+      final info = await _logChannel
+          .invokeMethod<Map<dynamic, dynamic>>('logInfo');
+      _logSize = (info?['size'] as num?)?.toInt() ?? 0;
+    } catch (_) {}
     if (!mounted) return;
     setState(() {
       _filter = (f ?? 0).clamp(0, kFilterNames.length - 1);
@@ -2469,6 +2497,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoSave = asv != '0';
       _versionName = ai?['versionName']?.toString() ?? '';
     });
+  }
+
+  void _openLogs() {
+    appLog('opened the Logs screen');
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LogScreen()),
+    );
   }
 
   Future<void> _openUpdates() async {
@@ -2543,8 +2579,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 6) {
+      if (_row == 7) {
         Navigator.pop(context);
+      } else if (_row == 6) {
+        _openLogs();
       } else if (_row == 5) {
         _openUpdates();
       } else {
@@ -2711,6 +2749,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   GestureDetector(
+                    onTap: () {
+                      setState(() => _row = 6);
+                      _openLogs();
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      margin: const EdgeInsets.symmetric(vertical: 7),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 22, vertical: 16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1B1B28),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: _row == 6 ? Colors.white : Colors.white12,
+                          width: _row == 6 ? 3 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.terminal),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Logs',
+                                    style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold)),
+                                Text(
+                                    'Everything the app does, written down for debugging',
+                                    style: TextStyle(
+                                        fontSize: 15, color: Colors.white54)),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            _logSize <= 0
+                                ? 'View'
+                                : '${(_logSize / 1024).toStringAsFixed(0)} KB',
+                            style: const TextStyle(
+                                fontSize: 19, color: Color(0xFF00E676)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
                     onTap: () => Navigator.pop(context),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 120),
@@ -2722,8 +2808,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 6 ? Colors.white : Colors.white12,
-                          width: _row == 6 ? 3 : 1,
+                              _row == 7 ? Colors.white : Colors.white12,
+                          width: _row == 7 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
@@ -2747,6 +2833,253 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Debug log viewer (Settings -> Logs). The native side streams the
+// app's whole logcat into a file; this screen reads the tail of it.
+// Remote keys: UP/DOWN scroll, OK refreshes, LEFT saves a copy to
+// /sdcard/iTaK, RIGHT clears (with a confirm), BACK leaves.
+// ---------------------------------------------------------------------------
+
+class LogScreen extends StatefulWidget {
+  const LogScreen({super.key});
+
+  @override
+  State<LogScreen> createState() => _LogScreenState();
+}
+
+class _LogScreenState extends State<LogScreen> {
+  static const _channel = MethodChannel('net.itak/emu');
+  final ScrollController _scroll = ScrollController();
+  String _text = '';
+  int _size = 0;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    setState(() => _loading = true);
+    try {
+      final data =
+          await _channel.invokeMethod<Map<dynamic, dynamic>>('readLog');
+      if (!mounted) return;
+      setState(() {
+        _text = (data?['text'] ?? '').toString();
+        _size = (data?['size'] as num?)?.toInt() ?? 0;
+        _loading = false;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) {
+          _scroll.jumpTo(_scroll.position.maxScrollExtent);
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _text = 'Could not read the log: $e';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _export() async {
+    try {
+      final path = await _channel.invokeMethod<String>('exportLog');
+      if (!mounted) return;
+      _showInfo('Log saved',
+          'A copy is at ${path ?? 'unknown'} on this box. Grab it with a file manager or USB.');
+    } catch (e) {
+      if (!mounted) return;
+      _showInfo('Save failed', '$e');
+    }
+  }
+
+  Future<void> _clear() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: const Text('Clear the log?'),
+        content: const Text(
+            'The saved copy file is not touched. New lines keep being written.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear',
+                style: TextStyle(color: Color(0xFF00E676))),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await _channel.invokeMethod('clearLog');
+      appLog('log cleared from the Logs screen');
+      _refresh();
+    } catch (_) {}
+  }
+
+  void _showInfo(String title, String body) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: Text(title),
+        content: Text(body, style: const TextStyle(fontSize: 17)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child:
+                const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (ModalRoute.of(context)?.isCurrent != true) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (!_scroll.hasClients) return KeyEventResult.ignored;
+    final pos = _scroll.position;
+    if (key == LogicalKeyboardKey.arrowDown) {
+      _scroll.jumpTo(
+          (pos.pixels + 320).clamp(0.0, pos.maxScrollExtent));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      _scroll.jumpTo(
+          (pos.pixels - 320).clamp(0.0, pos.maxScrollExtent));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _export();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _clear();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.space) {
+      _refresh();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Logs'),
+        backgroundColor: Colors.transparent,
+      ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF2A1152), Color(0xFF140B2E), Color(0xFF0A1A33)],
+          ),
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+              child: Row(
+                children: [
+                  Text(
+                    _loading
+                        ? 'Loading...'
+                        : '${(_size / 1024).toStringAsFixed(1)} KB logged · newest at the bottom',
+                    style:
+                        const TextStyle(fontSize: 16, color: Colors.white70),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: _refresh,
+                    child: const Text('Refresh',
+                        style: TextStyle(color: Color(0xFF00E676))),
+                  ),
+                  TextButton(
+                    onPressed: _export,
+                    child: const Text('Save a copy',
+                        style: TextStyle(color: Color(0xFF00E676))),
+                  ),
+                  TextButton(
+                    onPressed: _clear,
+                    child: const Text('Clear',
+                        style: TextStyle(color: Colors.white70)),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Focus(
+                autofocus: true,
+                onKeyEvent: _onKey,
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.45),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: SingleChildScrollView(
+                    controller: _scroll,
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: Text(
+                        _text.isEmpty ? '(the log is empty)' : _text,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                          height: 1.35,
+                          color: Color(0xFFD8F3DC),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'UP / DOWN scroll · OK refresh · LEFT save a copy · RIGHT clear · BACK done',
+                style: TextStyle(fontSize: 14, color: Colors.white54),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -2887,6 +3220,7 @@ class _GameGridScreenState extends State<GameGridScreen> {
 
   Future<void> _launch(File f) async {
     await PlayStats.record(f.path);
+    appLog('launch game: ${f.path} on ${widget.system.core}');
     await _channel.invokeMethod('launch', {
       'core': widget.system.core,
       'rom': f.path,

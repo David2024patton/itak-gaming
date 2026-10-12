@@ -1,1 +1,1 @@
-Fixed the online waiting room layout so all the text fits on screen.
+Settings now has a Logs screen: everything the app does is written down for debugging. You can read it, save a copy, or clear it.

@@ -15,14 +15,21 @@ import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.BufferedWriter
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
+
+    companion object {
+        private val logLock = Object()
+        private var logStarted = false
+    }
 
     private var channel: MethodChannel? = null
     private var lastControllerPromptMs = 0L
@@ -72,6 +79,95 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         val im = getSystemService(Context.INPUT_SERVICE) as InputManager
         im.registerInputDeviceListener(deviceListener, Handler(Looper.getMainLooper()))
+        startLogCapture()
+    }
+
+    // ----- Debug log capture (Settings -> Logs) -----
+    // Streams this app's own logcat (every Log.* line from the UI,
+    // the emulator activity, the Go engine, and crashes) into a
+    // rotating file the Logs screen can read, export, and clear.
+
+    private fun logFile(): File {
+        val dir = File(filesDir, "logs")
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, "itak.log")
+    }
+
+    private fun startLogCapture() {
+        synchronized(logLock) {
+            if (logStarted) return
+            logStarted = true
+        }
+        thread(name = "log-capture") {
+            try {
+                val file = logFile()
+                val pidFile = File(file.parentFile, "capture.pid")
+                // Kill a logcat left behind by a previous run so
+                // lines are never written twice.
+                try {
+                    val oldPid = pidFile.readText().trim().toInt()
+                    if (oldPid > 0) android.os.Process.killProcess(oldPid)
+                } catch (e: Exception) { /* none recorded */ }
+                val ver = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName
+                } catch (e: Exception) { "?" }
+                var writer = BufferedWriter(FileWriter(file, true))
+                writer.write("==== iTaK Gaming v$ver start ${java.util.Date()} ====\n")
+                writer.flush()
+                val cmd = "echo \$\$ > ${pidFile.absolutePath}; " +
+                    "exec logcat -v threadtime --pid=${android.os.Process.myPid()}"
+                val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+                val reader = proc.inputStream.bufferedReader()
+                var sinceFlush = 0
+                var sinceCheck = 0
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    writer.write(line)
+                    writer.write("\n")
+                    sinceFlush++
+                    sinceCheck++
+                    if (sinceFlush >= 25) {
+                        writer.flush()
+                        sinceFlush = 0
+                    }
+                    if (sinceCheck >= 400) {
+                        sinceCheck = 0
+                        if (file.length() > 2_000_000L) {
+                            writer.flush()
+                            writer.close()
+                            val old = File(file.parentFile, "itak.old.log")
+                            if (old.exists()) old.delete()
+                            file.renameTo(old)
+                            writer = BufferedWriter(FileWriter(file, true))
+                            writer.write("==== log rotated ${java.util.Date()} ====\n")
+                            writer.flush()
+                        }
+                    }
+                }
+                writer.flush()
+                writer.close()
+            } catch (e: Exception) {
+                android.util.Log.w("iTaKLog", "capture failed", e)
+            }
+        }
+    }
+
+    private fun readLogTail(): Map<String, Any> {
+        val file = logFile()
+        if (!file.exists()) return mapOf("text" to "", "size" to 0L)
+        val size = file.length()
+        val want = minOf(size, 200_000L)
+        val buf = ByteArray(want.toInt())
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            raf.seek(size - want)
+            raf.readFully(buf)
+        }
+        var text = String(buf, Charsets.UTF_8)
+        if (want < size) {
+            val nl = text.indexOf('\n')
+            if (nl >= 0) text = text.substring(nl + 1)
+        }
+        return mapOf("text" to text, "size" to size)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -206,6 +302,54 @@ class MainActivity : FlutterActivity() {
                                 "versionName" to (info.versionName ?: "")
                             )
                         )
+                    }
+                    // Debug logs (Settings -> Logs). Dart app
+                    // events are written into logcat so the
+                    // capture thread files them with everything
+                    // else.
+                    "log" -> {
+                        val msg = call.argument<String>("message") ?: ""
+                        android.util.Log.i("iTaKApp", msg)
+                        result.success(true)
+                    }
+                    "readLog" -> {
+                        thread { result.success(readLogTail()) }
+                    }
+                    "logInfo" -> {
+                        val f = logFile()
+                        result.success(
+                            mapOf("size" to if (f.exists()) f.length() else 0L)
+                        )
+                    }
+                    "clearLog" -> {
+                        thread {
+                            try {
+                                java.io.FileOutputStream(logFile(), false)
+                                    .close()
+                                result.success(true)
+                            } catch (e: Exception) {
+                                result.error("IO", e.message, null)
+                            }
+                        }
+                    }
+                    "exportLog" -> {
+                        thread {
+                            try {
+                                val stamp = java.text.SimpleDateFormat(
+                                    "yyyyMMdd-HHmmss", java.util.Locale.US
+                                ).format(java.util.Date())
+                                val dir = File(
+                                    android.os.Environment
+                                        .getExternalStorageDirectory(), "iTaK"
+                                )
+                                if (!dir.exists()) dir.mkdirs()
+                                val out = File(dir, "itak-log-$stamp.txt")
+                                logFile().copyTo(out, overwrite = true)
+                                result.success(out.absolutePath)
+                            } catch (e: Exception) {
+                                result.error("IO", e.message, null)
+                            }
+                        }
                     }
                     // Self-update: download the APK on a worker
                     // thread, verify its SHA-256, then hand it to
