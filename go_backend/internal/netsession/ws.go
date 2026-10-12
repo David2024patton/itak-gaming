@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -22,8 +23,8 @@ import (
 
 // Minimal RFC 6455 WebSocket client: just enough for the lobby
 // server's signaling socket. Text and binary frames, client masking,
-// ping/pong, close. No extensions, no TLS (the LAN server is plain
-// ws; production wss can ride a proxy).
+// ping/pong, close. No extensions. Both ws (LAN) and wss (public
+// server behind Traefik) are supported.
 
 type WSConn struct {
 	conn   net.Conn
@@ -37,15 +38,25 @@ func DialWS(rawURL string, timeout time.Duration) (*WSConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme != "ws" {
-		return nil, fmt.Errorf("unsupported scheme %q (ws only)", u.Scheme)
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return nil, fmt.Errorf("unsupported scheme %q (ws/wss only)", u.Scheme)
 	}
 	host := u.Host
 	if !strings.Contains(host, ":") {
-		host += ":80"
+		if u.Scheme == "wss" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
 	}
 	d := net.Dialer{Timeout: timeout}
-	conn, err := d.Dial("tcp", host)
+	var conn net.Conn
+	if u.Scheme == "wss" {
+		tlsConf := &tls.Config{ServerName: u.Hostname()}
+		conn, err = tls.DialWithDialer(&d, "tcp", host, tlsConf)
+	} else {
+		conn, err = d.Dial("tcp", host)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -1742,7 +1742,7 @@ const List<String> kDisplayNames = ['Smooth 60', 'Steady 30'];
 // two and relays for them. Game sessions run over the same link.
 // ---------------------------------------------------------------------------
 
-const String kServerBase = 'http://192.168.0.235:8790';
+const String kServerBase = 'https://arcade.itak.live';
 
 /// One game installed on this box, found by scanning the ROM
 /// folders. Used by the Online screen to host or join a session:
@@ -2955,9 +2955,19 @@ class _GameStat {
 class _PlayerStat {
   final String name;
   final List<_GameStat> games;
-  const _PlayerStat(this.name, this.games);
-  int get totalSeconds => games.fold(0, (a, g) => a + g.seconds);
-  int get totalPlays => games.fold(0, (a, g) => a + g.plays);
+
+  /// Set for global-board rows, where the server sends totals only
+  /// (no per-game breakdown).
+  final int? gamesCountOverride;
+  final int? secondsOverride;
+  final int? playsOverride;
+  const _PlayerStat(this.name, this.games,
+      {this.gamesCountOverride, this.secondsOverride, this.playsOverride});
+  int get totalSeconds =>
+      secondsOverride ?? games.fold(0, (a, g) => a + g.seconds);
+  int get totalPlays =>
+      playsOverride ?? games.fold(0, (a, g) => a + g.plays);
+  int get gamesCount => gamesCountOverride ?? games.length;
   _GameStat? get favorite => games.isEmpty
       ? null
       : games.reduce((a, b) => a.seconds >= b.seconds ? a : b);
@@ -3005,6 +3015,18 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   int _mode = 0;
   final FocusNode _focusNode = FocusNode();
 
+  // Board scope: 0 = this box (Local), 1 = everyone (Global). The
+  // switch sits centered above the filter chips, per David's layout.
+  // UP moves key focus to the switch, DOWN back to the chips;
+  // LEFT/RIGHT works on whichever row has focus.
+  int _scope = 0;
+  bool _scopeFocus = false;
+  List<_PlayerStat> _gPlayers = [];
+  List<_GameStat> _gGames = [];
+  List<({String player, _GameStat game})> _gRecent = [];
+  bool _gLoaded = false;
+  bool _gFailed = false;
+
   @override
   void initState() {
     super.initState();
@@ -3020,12 +3042,100 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     super.dispose();
   }
 
-  void _onKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return;
-    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      setState(() => _mode = (_mode - 1 + _modes.length) % _modes.length);
-    } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      setState(() => _mode = (_mode + 1) % _modes.length);
+  void _setScope(int scope) {
+    if (scope == _scope) return;
+    setState(() => _scope = scope);
+    if (scope == 1 && !_gLoaded) _fetchGlobal();
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      setState(() => _scopeFocus = true);
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      setState(() => _scopeFocus = false);
+    } else if (key == LogicalKeyboardKey.arrowLeft) {
+      if (_scopeFocus) {
+        _setScope(0);
+      } else {
+        setState(() => _mode = (_mode - 1 + _modes.length) % _modes.length);
+      }
+    } else if (key == LogicalKeyboardKey.arrowRight) {
+      if (_scopeFocus) {
+        _setScope(1);
+      } else {
+        setState(() => _mode = (_mode + 1) % _modes.length);
+      }
+    } else {
+      return KeyEventResult.ignored;
+    }
+    // Handled: keep focus traversal from stealing the arrows (the
+    // AppBar back button would take focus on UP and strand input).
+    return KeyEventResult.handled;
+  }
+
+  Future<dynamic> _getJson(String path) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 6);
+    try {
+      final req = await client.getUrl(Uri.parse('$kServerBase$path'));
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final text = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode >= 400) throw Exception('HTTP ${resp.statusCode}');
+      return jsonDecode(text);
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<void> _fetchGlobal() async {
+    try {
+      final players = await _getJson('/leaderboard/players') as List;
+      final games = await _getJson('/leaderboard/games') as List;
+      final recent = await _getJson('/leaderboard/recent') as List;
+      if (!mounted) return;
+      setState(() {
+        _gPlayers = players.map((e) {
+          final m = e as Map<String, dynamic>;
+          return _PlayerStat(
+            m['player']?.toString() ?? 'Player',
+            const [],
+            gamesCountOverride: (m['games'] as num? ?? 0).toInt(),
+            secondsOverride: (m['seconds'] as num? ?? 0).toInt(),
+            playsOverride: (m['plays'] as num? ?? 0).toInt(),
+          );
+        }).toList();
+        _gGames = games.map((e) {
+          final m = e as Map<String, dynamic>;
+          return _GameStat(
+            m['game']?.toString() ?? '',
+            (m['plays'] as num? ?? 0).toInt(),
+            (m['seconds'] as num? ?? 0).toInt(),
+            0,
+          );
+        }).toList();
+        _gRecent = recent.map((e) {
+          final m = e as Map<String, dynamic>;
+          return (
+            player: m['player']?.toString() ?? 'Player',
+            game: _GameStat(
+              m['game']?.toString() ?? '',
+              (m['plays'] as num? ?? 0).toInt(),
+              (m['seconds'] as num? ?? 0).toInt(),
+              (m['lastPlayed'] as num? ?? 0).toInt(),
+            ),
+          );
+        }).toList();
+        _gLoaded = true;
+        _gFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _gLoaded = true;
+        _gFailed = true;
+      });
     }
   }
 
@@ -3124,7 +3234,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                         fontSize: 23, fontWeight: FontWeight.bold)),
                 Text(
                   'Time played: ${_fmtDuration(p.totalSeconds)} · '
-                  'Games: ${p.games.length} · Launches: ${p.totalPlays}',
+                  'Games: ${p.gamesCount} · Launches: ${p.totalPlays}',
                   style:
                       const TextStyle(fontSize: 16, color: Colors.white70),
                 ),
@@ -3159,24 +3269,25 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         ),
         child: _loading
             ? const Center(child: CircularProgressIndicator())
-            : _players.isEmpty
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Text(
-                        'No play time logged yet.\nStats start counting as soon as someone plays.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 21, color: Colors.grey),
-                      ),
-                    ),
-                  )
-                : KeyboardListener(
-                    focusNode: _focusNode,
-                    onKeyEvent: _onKey,
-                    child: Column(
+            : Focus(
+                focusNode: _focusNode,
+                onKeyEvent: _onKey,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 12),
+                    // Local / Global switch, centered above the
+                    // filter chips (David's layout). UP gives it key
+                    // focus, DOWN goes back to the chips.
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const SizedBox(height: 14),
-                        Wrap(
+                        _scopePill('Local', 0),
+                        const SizedBox(width: 10),
+                        _scopePill('Global', 1),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
                           spacing: 10,
                           alignment: WrapAlignment.center,
                           children: [
@@ -3212,23 +3323,146 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                               ),
                           ],
                         ),
-                        Expanded(
-                          child: Center(
-                            child: SizedBox(
-                              width: 900,
-                              child: ListView(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 18),
-                                children: _modeContent(),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                    Expanded(child: _contentArea()),
+                  ],
+                ),
+              ),
       ),
     );
+  }
+
+  Widget _scopePill(String label, int scope) {
+    final active = _scope == scope;
+    return GestureDetector(
+      onTap: () => _setScope(scope),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 9),
+        decoration: BoxDecoration(
+          color: active ? const Color(0xFF00E676) : const Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: _scopeFocus
+                ? Colors.white
+                : (active ? Colors.white54 : Colors.white24),
+            width: _scopeFocus ? 2.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: active ? Colors.black : Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _emptyText() {
+    if (_scope == 1) {
+      if (!_gLoaded) return 'Loading the global board...';
+      if (_gFailed) {
+        return 'Cannot reach the leaderboard server.\n'
+            'Local scores are under the Local switch.';
+      }
+      return 'No global play time yet.\n'
+          'Finished games send their totals here.';
+    }
+    return 'No play time logged yet.\n'
+        'Stats start counting as soon as someone plays.';
+  }
+
+  Widget _contentArea() {
+    final rows = _visibleContent();
+    if (rows.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            _emptyText(),
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 21, color: Colors.grey),
+          ),
+        ),
+      );
+    }
+    return Center(
+      child: SizedBox(
+        width: 900,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          children: rows,
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _visibleContent() {
+    if (_scope == 0) return _modeContent();
+    switch (_mode) {
+      case 1: // Top Games, by time
+        final games = [..._gGames]
+          ..sort((a, b) => b.seconds.compareTo(a.seconds));
+        final top = games.take(10).toList();
+        return [
+          for (var i = 0; i < top.length; i++)
+            _gameRow(i + 1, top[i],
+                '${_fmtDuration(top[i].seconds)} · ${top[i].plays} plays'),
+        ];
+      case 2: // Most Played, by launches
+        final games = [..._gGames]
+          ..sort((a, b) => b.plays.compareTo(a.plays));
+        final top = games.take(10).toList();
+        return [
+          for (var i = 0; i < top.length; i++)
+            _gameRow(i + 1, top[i],
+                '${top[i].plays} plays · ${_fmtDuration(top[i].seconds)}'),
+        ];
+      case 3: // Last Played across everyone
+        return [
+          for (final e in _gRecent)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1B1B28),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Row(
+                children: [
+                  PlayerAvatar(name: e.player, size: 38),
+                  const SizedBox(width: 13),
+                  Text(
+                    e.player,
+                    style: const TextStyle(
+                        fontSize: 19, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      e.game.name,
+                      style: const TextStyle(fontSize: 18),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    _fmtWhen(e.game.last),
+                    style:
+                        const TextStyle(fontSize: 16, color: Colors.white60),
+                  ),
+                ],
+              ),
+            ),
+        ];
+      default: // Players
+        return [
+          for (var i = 0; i < _gPlayers.length; i++)
+            _playerCard(i + 1, _gPlayers[i]),
+        ];
+    }
   }
 
   List<Widget> _modeContent() {

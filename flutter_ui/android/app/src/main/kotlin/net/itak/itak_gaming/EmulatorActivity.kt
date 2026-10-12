@@ -32,6 +32,10 @@ class EmulatorActivity : Activity(), TextureListener {
         const val EXTRA_NP_TOKEN = "np_token"
         const val EXTRA_NP_SERVER = "np_server"
         private const val TAG = "iTaKEmu"
+
+        // Global leaderboard server. Must match kServerBase in
+        // flutter_ui/lib/main.dart.
+        private const val SERVER_BASE = "https://arcade.itak.live"
     }
 
     private lateinit var glView: EmuGLView
@@ -533,8 +537,67 @@ class EmulatorActivity : Activity(), TextureListener {
             g.put("last", System.currentTimeMillis())
             statsFile(statsPlayer).writeText(obj.toString())
             Log.i(TAG, "stats: +${secs}s for $statsPlayer")
+            uploadStats(obj, statsPlayer)
         } catch (e: Exception) {
             Log.w(TAG, "stats end failed", e)
+        }
+    }
+
+    /** This box's stable id for the global board (random, kept in prefs). */
+    private fun deviceId(): String {
+        val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
+        var id = prefs.getString("device_id", null)
+        if (id.isNullOrEmpty()) {
+            id = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString("device_id", id).apply()
+        }
+        return id
+    }
+
+    /**
+     * Sends the player's cumulative per-game totals to the global
+     * leaderboard server. The server keeps the greater totals per
+     * (device, player, game), so re-sending the whole file is safe.
+     * Fire and forget: local stats stay the source of truth and a
+     * dead server must never disturb the game.
+     */
+    private fun uploadStats(obj: org.json.JSONObject, player: String) {
+        thread(name = "stats-upload") {
+            try {
+                val device = deviceId()
+                val games = obj.getJSONObject("games")
+                val keys = games.keys()
+                var sent = 0
+                while (keys.hasNext()) {
+                    val rom = keys.next()
+                    val g = games.getJSONObject(rom)
+                    val gameName = java.io.File(rom).name
+                        .substringBeforeLast('.', java.io.File(rom).name)
+                    val body = org.json.JSONObject()
+                        .put("deviceId", device)
+                        .put("player", player)
+                        .put("game", gameName)
+                        .put("plays", g.optInt("plays", 0))
+                        .put("seconds", g.optInt("seconds", 0))
+                        .put("lastPlayed", g.optLong("last", 0))
+                    val conn = java.net.URL("$SERVER_BASE/stats/report")
+                        .openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.connectTimeout = 5000
+                    conn.readTimeout = 5000
+                    conn.doOutput = true
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.outputStream.use {
+                        it.write(body.toString().toByteArray(Charsets.UTF_8))
+                    }
+                    val code = conn.responseCode
+                    conn.disconnect()
+                    if (code in 200..299) sent++
+                }
+                Log.i(TAG, "stats uploaded: $sent games for $player")
+            } catch (e: Exception) {
+                Log.w(TAG, "stats upload failed", e)
+            }
         }
     }
 
