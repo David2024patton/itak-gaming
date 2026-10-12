@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Disable Transformation Music",
+  "code": "A2PA-CA6R+A3JT-CA9Y+A36T-CA30+A5PA-CA30+A5PT-CA3E+RFPT-T6YC"
+ },
+ {
+  "desc": "Can Access 'Sound Test' Menu From Title Screen",
+  "code": "AVFA-AR74"
+ },
+ {
+  "desc": "Enable debugger",
+  "code": "RFTT-A6XW"
+ },
+ {
+  "desc": "Invincible against dynamic objects (bullets, enemies, for example), except Knuckles.",
+  "code": "REBA-C6V6"
+ },
+ {
+  "desc": "Invincible against static objects (spikes, for example)",
+  "code": "RZBA-E6YA"
+ },
+ {
+  "desc": "Invincible against Knuckles",
+  "code": "ABTA-NA7Y"
+ },
+ {
+  "desc": "Touch an enemy, and you will destroy it (except Knuckles)",
+  "code": "PJAA-CA8C"
+ },
+ {
+  "desc": "Touch Knuckles, and you will damage him.",
+  "code": "ABTT-NA3G"
+ },
+ {
+  "desc": "Knuckles travels with Tails!",
+  "code": "ABZT-AA5Y+PKZT-B950"
+ },
+ {
+  "desc": "Become Super/Hyper Sonic with 0 rings",
+  "code": "AANT-CAHL"
+ },
+ {
+  "desc": "Become Super/Hyper Knuckles with 0 rings",
+  "code": "AB6A-CADA"
+ },
+ {
+  "desc": "Become Super Tails with 0 rings",
+  "code": "ABJT-CACJ"
+ },
+ {
+  "desc": "Become Super Sonic without collecting Emeralds first",
+  "code": "AANT-CAG6"
+ },
+ {
+  "desc": "Become Super Knuckles without collecting Emeralds first",
+  "code": "AB6A-CACW"
+ },
+ {
+  "desc": "Become Super Tails Without Collecting Emeralds First",
+  "code": "ABJT-CACA"
+ },
+ {
+  "desc": "Become Hyper Sonic without collecting Emeralds first",
+  "code": "AANT-CAGY+AAPA-CAB8"
+ },
+ {
+  "desc": "Become Hyper Knuckles without collecting Emeralds first",
+  "code": "AB6A-CACL+AB6A-CAHR"
+ },
+ {
+  "desc": "Don't Use Up Rings to Maintain Transformation Of Any Super/Hyper Character",
+  "code": "AAPT-CAB8"
+ },
+ {
+  "desc": "Play As Shadow",
+  "code": "Y26A-AAAG"
+ },
+ {
+  "desc": "Play As Prism",
+  "code": "A26A-AAA4"
+ },
+ {
+  "desc": "Play As Wild",
+  "code": "A26A-AA8C"
+ },
+ {
+  "desc": "Push any jump button to make Knuckles float",
+  "code": "AB6A-DAJC"
+ },
+ {
+  "desc": "Spindash Music Modifier (Sonic only)",
+  "code": "ATRA-CAAA+BTRA-CAAA+CTRA-CAAA+DTRA-CAAA+ETRA-CAAA+FTRA-CAAA+BARA-CAAA+CARA-CAAA+DARA-CAAA+EARA-CAAA+FARA-CAAA+GARA-CAAA+AERA-CAAA+BERA-CAAA+CERA-CAAA+DERA-CAAA+EERA-CAAA+FERA-CAAA+GERA-CAAA+AJRA-CAAA+BJRA-CAAA+CJRA-CAAA+DJRA-CAAA+EJRA-CAAA+GJRA-CAAA+ANRA-CAAA+BNRA-CAAA+CNRA-CAAA+DNRA-CAAA+ENRA-CAAA+AYRA-CAAA+BYRA-CAAA+CYRA-CAAA+DYRA-CAAA+EYRA-CAAA+FYRA-CAAA+A2RA-CAAA+B2RA-CAAA+C2RA-CAAA+D2RA-CAAA+E2RA-CAAA+F2RA-CAAA+A6RA-CAAA+B6RA-CAAA+C6RA-CAAA+D6RA-CAAA+E6RA-CAAA+F6RA-CAAA"
+ },
+ {
+  "desc": "Knuckles fly upwards",
+  "code": "AP2A-DAEE"
+ },
+ {
+  "desc": "Knuckles Is Untouchable To Enemies",
+  "code": "AEBA-DAJW"
+ },
+ {
+  "desc": "Knuckles is invincible",
+  "code": "AEBA-DAGE"
+ },
+ {
+  "desc": "knuckles spin fast when jumping",
+  "code": "AZ9A-DARG"
+ },
+ {
+  "desc": "knuckles runs hyper",
+  "code": "AZ9A-DADT"
+ },
+ {
+  "desc": "knuckles run different 1",
+  "code": "AB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 2",
+  "code": "BB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 3",
+  "code": "CB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 4",
+  "code": "DB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 5",
+  "code": "EB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 6",
+  "code": "FB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 7",
+  "code": "GB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 8",
+  "code": "HB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 9",
+  "code": "JB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 10",
+  "code": "KB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 11",
+  "code": "LB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 12",
+  "code": "MB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 13",
+  "code": "NB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 14",
+  "code": "PB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 15",
+  "code": "RB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 16",
+  "code": "SB9A-DA3J"
+ },
+ {
+  "desc": "knuckles run different 17",
+  "code": "TB9A-DA3J"
+ },
+ {
+  "desc": "knuckles can be easly control when jumping",
+  "code": "AK5A-DA6C"
+ },
+ {
+  "desc": "One hit to defeat Doomsday last boss part 1",
+  "code": "FFB22E:0000"
+ },
+ {
+  "desc": "One hit to defeat Doomsday last boss part 2",
+  "code": "FFB1E4:0000"
+ },
+ {
+  "desc": "One hit for Death Egg last boss part 1",
+  "code": "FFB3EA:0000+FFB3A0:0000+FFB434:0000+FFB4C8:0000+FFB47E:0000+FFB512:0000"
+ },
+ {
+  "desc": "Death Egg last boss gives you the finger",
+  "code": "FFB3EA:0000+FFB434:0000+FFB4C8:0000+FFB512:0000"
+ },
+ {
+  "desc": "One hit for Death Egg last boss part 2",
+  "code": "FFB19A:0000"
+ },
+ {
+  "desc": "Finger 1 autokill",
+  "code": "FFB3EA:0000"
+ },
+ {
+  "desc": "Finger 2 autokill",
+  "code": "FFB3A0:0000"
+ },
+ {
+  "desc": "Finger 3 autokill",
+  "code": "FFB434:0000"
+ },
+ {
+  "desc": "Finger 4 autokill",
+  "code": "FFB4C8:0000"
+ },
+ {
+  "desc": "Finger 5 autokill",
+  "code": "FFB47E:0000"
+ },
+ {
+  "desc": "Finger 6 autokill",
+  "code": "FFB512:0000"
+ },
+ {
+  "desc": "Hidden Palace cutscene Knuckles action modifier",
+  "code": "FFBDE4:0000"
+ },
+ {
+  "desc": "Player 1 Action Modifier",
+  "code": "FFB020:0000"
+ },
+ {
+  "desc": "Infinite Time In Debugger.",
+  "code": "RHSA-A6XE"
+ },
+ {
+  "desc": "Jump In Midair - Sonic",
+  "code": "CTNA-CA8A+HTNA-DER0+AANA-DZ82+ANNA-DP86+ATNA-CR9C+C2NA-CA9J"
+ },
+ {
+  "desc": "Jump In Midair - Knuckles",
+  "code": "CV5T-CA9R+HV6A-DEJE+AB6A-DZ2G+AP6A-DP2L+AV6A-CR2T+C36A-CA20+RZ6A-C6XN"
+ },
+ {
+  "desc": "Jump In Midair - Tails",
+  "code": "BVJA-CA88+ABJA-DZ9R+RFJA-C61Y+PPJA-DP92+AVJA-CR98+C3JT-CA2E+RZJT-C6W6"
+ },
+ {
+  "desc": "Get Rings From Anywhere",
+  "code": "F5ZA-AA60"
+ },
+ {
+  "desc": "Red spheres give you rings",
+  "code": "ACMT-AA5L"
+ },
+ {
+  "desc": "Play as Nova",
+  "code": "Y26A-ACAG"
+ },
+ {
+  "desc": "all characters invincible",
+  "code": "AEBA-CA7W"
+ },
+ {
+  "desc": "Play as Rose",
+  "code": "DT6A-A3AG"
+ },
+ {
+  "desc": "Play as Ashura",
+  "code": "WT6A-A3AG"
+ },
+ {
+  "desc": "Play as Tamora",
+  "code": "BT6A-A2AG"
+ },
+ {
+  "desc": "Knuckles is invincible at the Hidden Palace Zone",
+  "code": "ABTT-NAL0"
+ },
+ {
+  "desc": "Play as Riku",
+  "code": "0T6A-AKAG"
+ },
+ {
+  "desc": "Play as emerald",
+  "code": "0T6A-ACAG"
+ },
+ {
+  "desc": "Hit Music Modifier (Sonic only)",
+  "code": "AGXT-CA34"
+ },
+ {
+  "desc": "Sonic flashing and your rings decrease",
+  "code": "AAPT-CAVY"
+ },
+ {
+  "desc": "no rings come out when hit",
+  "code": "AEBA-CA0L"
+ },
+ {
+  "desc": "sonic run backwards on the left side",
+  "code": "AJXA-CARL"
+ },
+ {
+  "desc": "sonic run upside down backwards",
+  "code": "AJXA-CARY"
+ },
+ {
+  "desc": "sonic doesn't flip or roll",
+  "code": "AJXA-CAAY"
+ },
+ {
+  "desc": "sonic crazy animation",
+  "code": "AJXA-CAAC"
+ },
+ {
+  "desc": "sonic standing and ducking animation is different",
+  "code": "AJXA-CAAG"
+ },
+ {
+  "desc": "Knuckles can fly.",
+  "code": "JB2A-CCEJ"
+ },
+ {
+  "desc": "Knuckles can fly.",
+  "code": "AB2A-CJEJ"
+ },
+ {
+  "desc": "Knuckles can fly.",
+  "code": "AB2A-CTEJ"
+ },
+ {
+  "desc": "Less Gravity. Makes everyone Do High Moon Jumps With Slow Descent",
+  "code": "C4ZT-CACE"
+ },
+ {
+  "desc": "Much Less Gravity, Makes Everyone Do Super High Moon Jumps With Slow Descent",
+  "code": "BLZT-CACE"
+ },
+ {
+  "desc": "Sonic can glide a short distance (press jump button twice).",
+  "code": "9ENT-C6TY+AENT-CAA0+JJNT-DT22"
+ },
+ {
+  "desc": "Sonic Can Glide A Longer Distance (Press jump button twice).",
+  "code": "9ENT-C6TY+AENT-CAA0+JJNT-DT22+BLZT-CACE"
+ },
+ {
+  "desc": "Sonic can do his electric bounce",
+  "code": "AENT-CAM4"
+ },
+ {
+  "desc": "Sonic (Or Sonic with Tails) Accelerates Much Faster",
+  "code": "KJFT-CACC"
+ },
+ {
+  "desc": "Knuckles Accelerates Much Faster",
+  "code": "KKWA-CAHW"
+ },
+ {
+  "desc": "Tails accelerates much faster.",
+  "code": "KJ5T-CAAW"
+ },
+ {
+  "desc": "1 Hit Kills Bosses",
+  "code": "FEAT-CEWW"
+ },
+ {
+  "desc": "1 hit kills bosses (alternate code).",
+  "code": "KCHT-NA5N"
+ },
+ {
+  "desc": "P2 Tails Can't Spin",
+  "code": "FFB087:0000"
+ },
+ {
+  "desc": "P2 Tails Always Rolls",
+  "code": "FFB087:0001"
+ },
+ {
+  "desc": "Instant Death Tails As P2 Underwater",
+  "code": "FFB076:0000"
+ },
+ {
+  "desc": "Cheating Level Select",
+  "code": "FFF600:0028"
+ },
+ {
+  "desc": "Infinite Shield Slice/Hyper Sonic Dash",
+  "code": "FFB02F:0000"
+ },
+ {
+  "desc": "Disable Various Stuff ",
+  "code": "AC5A-CAHN"
+ }
+]

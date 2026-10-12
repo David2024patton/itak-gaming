@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Able to Work/Holding Something",
+  "code": "7E00D201"
+ },
+ {
+  "desc": "Holding X Item",
+  "code": "7E091D00"
+ },
+ {
+  "desc": "200 Maximum Stamina",
+  "code": "7E0917C8"
+ },
+ {
+  "desc": "Infinite 200 Stamina",
+  "code": "7E0918C8"
+ },
+ {
+  "desc": "Equipment 1 Held",
+  "code": "7E092100"
+ },
+ {
+  "desc": "Equipment 2 Held",
+  "code": "7E092300"
+ },
+ {
+  "desc": "Space Near House Is X",
+  "code": "7E0FBC3A"
+ },
+ {
+  "desc": "Have All Seed Types",
+  "code": "7F1F00FF"
+ },
+ {
+  "desc": "Have All Equipment",
+  "code": "7F1F01FF+7F1F02FF+7F1F03FF"
+ },
+ {
+  "desc": "Have Maximum Money",
+  "code": "7F1F043F+7F1F0542+7F1F060F"
+ },
+ {
+  "desc": "Have Maximum Money Gotten",
+  "code": "7F1F073F+7F1F0842+7F1F090F"
+ },
+ {
+  "desc": "Have 999 Pieces of Wood",
+  "code": "7F1F0CE7+7F1F0D03"
+ },
+ {
+  "desc": "Have 999 Pieces of Feed",
+  "code": "7F1F10E7+7F1F1103"
+ },
+ {
+  "desc": "Maria Love Is Maximum",
+  "code": "7F1F1FE7+7F1F2003"
+ },
+ {
+  "desc": "Ann Love Is Maximum",
+  "code": "7F1F21E7+7F1F2203"
+ },
+ {
+  "desc": "Nina Love Is Maximum",
+  "code": "7F1F23E7+7F1F2403"
+ },
+ {
+  "desc": "Ellen Love Is Maximum",
+  "code": "7F1F25E7+7F1F2603"
+ },
+ {
+  "desc": "Eva Love Is Maximum",
+  "code": "7F1F27E7+7F1F2803"
+ },
+ {
+  "desc": "999 Total Corn Shipped",
+  "code": "7F1F4AE7+7F1F4B03"
+ },
+ {
+  "desc": "999 Total Tomatoes Shipped",
+  "code": "7F1F4CE7+7F1F4D03"
+ },
+ {
+  "desc": "999 Total Turnips Shipped",
+  "code": "7F1F4EE7+7F1F4F03"
+ },
+ {
+  "desc": "999 Total Potatoes Shipped",
+  "code": "7F1F50E7+7F1F5103"
+ },
+ {
+  "desc": "Total Number of Chickens Owned",
+  "code": "7F1F0B00"
+ },
+ {
+  "desc": "Total Number of Cows Owned",
+  "code": "7F1F0A00"
+ },
+ {
+  "desc": "House Size",
+  "code": "7F1F6400"
+ },
+ {
+  "desc": "Flowers in Garden",
+  "code": "7F1F3600"
+ },
+ {
+  "desc": "Infinite Day Time",
+  "code": "7F1F1C06"
+ },
+ {
+  "desc": "Never Get Tired",
+  "code": "7E091864"
+ },
+ {
+  "desc": "",
+  "code": "7E091864"
+ },
+ {
+  "desc": "Can Access All Items Temporarily",
+  "code": "C980-3460"
+ },
+ {
+  "desc": "Pick Up An Item To Get More Items",
+  "code": "C980-3460+A46D-4F61+6D6D-4FA1+D96D-44D1"
+ },
+ {
+  "desc": "Don't Lose Stamina",
+  "code": "C22E-4DD0"
+ },
+ {
+  "desc": "Go To Bed To Get 200 Stamina",
+  "code": "CB68-34A6+A668-37D6+3C68-3706"
+ },
+ {
+  "desc": "Go To Bed To Get 200 Maximum Stamina",
+  "code": "CB68-34A6+A668-37D6+3C68-3706+F568-37A6"
+ },
+ {
+  "desc": "Give A Girl 1 Gift For Maximum Happiness",
+  "code": "DD8E-1DBF"
+ },
+ {
+  "desc": "Get Maximum Gold Every Night",
+  "code": "6D83-170A"
+ },
+ {
+  "desc": "With 1 or more Wood, Take Some To Get 999 Pieces",
+  "code": "6D87-CFDA"
+ },
+ {
+  "desc": "With 0 Wood, Take Some To Get 999 Pieces",
+  "code": "F987-CDDA"
+ },
+ {
+  "desc": "With 1 or more Feed, Take Some To Get 999 Pieces",
+  "code": "6D81-CDAA"
+ },
+ {
+  "desc": "With 0 Feed, Take Some To Get 999 Pieces",
+  "code": "F989-C7AA"
+ },
+ {
+  "desc": "Fencing Doesn't Break When It Storms",
+  "code": "6DC5-3DAB"
+ },
+ {
+  "desc": "Go to sleep to put a bell plant next to the stable",
+  "code": "FD69-47DB"
+ },
+ {
+  "desc": "Go to sleep to enable the egg festival prize",
+  "code": "DB6B-3F6B+DD6B-3FAB+FD6B-34DB"
+ },
+ {
+  "desc": "Replace Feed From Dispenser With ??",
+  "code": "7E1B8D00"
+ },
+ {
+  "desc": "Replace 4 Weeds Closest To Forest Entrance With ??",
+  "code": "7E1B8D00"
+ },
+ {
+  "desc": "Replace 'A Flower' In Flower Shop With ??",
+  "code": "7E1B8D00"
+ },
+ {
+  "desc": "Always Get 999 Ranch Master Rate At Ending",
+  "code": "DDEC-4462"
+ },
+ {
+  "desc": "Town Always Performs Flower Festival",
+  "code": "DD2D-37AA+242F-3D0A"
+ },
+ {
+  "desc": "Town Always Performs Egg Festival",
+  "code": "DD2D-37AA+F32F-3D0A"
+ },
+ {
+  "desc": "Town Always Performs Harvest Festival",
+  "code": "DD2D-37AA+E32F-3D0A"
+ },
+ {
+  "desc": "New Game With No Gold",
+  "code": "DDCD-3763"
+ },
+ {
+  "desc": "New Game With 500 Gold",
+  "code": "74CD-3763"
+ },
+ {
+  "desc": "New Game With 750 Gold",
+  "code": "08CD-3763"
+ },
+ {
+  "desc": "New Game With 2,550 Gold",
+  "code": "EECD-3763"
+ },
+ {
+  "desc": "New Game With 5,000 Gold",
+  "code": "E0CD-3763+DFCD-37A3"
+ },
+ {
+  "desc": "New Game With 25,000 Gold",
+  "code": "A0CD-3763+DBCD-37A3"
+ },
+ {
+  "desc": "New Game With 50,000 Gold",
+  "code": "66CD-3763+F7CD-37A3"
+ },
+ {
+  "desc": "New Game With 250,000 Gold",
+  "code": "C6CD-3763+1FCD-37A3"
+ },
+ {
+  "desc": "New Game With 500,000 Gold",
+  "code": "9DCD-3763+A7CD-37A3"
+ },
+ {
+  "desc": "New Game With 655,350 Gold",
+  "code": "EECD-3763+EECD-37A3"
+ },
+ {
+  "desc": "Walk Through Walls And Other Objects",
+  "code": "FD8F-0FAA"
+ },
+ {
+  "desc": "Infinite Gold",
+  "code": "FF8E-0F0A"
+ },
+ {
+  "desc": "Buy Something And You Gold Goes To 654850",
+  "code": "FF8A-070A"
+ },
+ {
+  "desc": "Have 999 Wood",
+  "code": "7F1F0CE7+7F1F0D03"
+ },
+ {
+  "desc": "Start A New Game With 0 Gold",
+  "code": "DDCD-A763"
+ },
+ {
+  "desc": "Start A New Game With 500 Gold",
+  "code": "74CD-A763"
+ },
+ {
+  "desc": "Start A New Game With 750 Gold",
+  "code": "08CD-A763"
+ },
+ {
+  "desc": "Start A New Game With 2550 Gold",
+  "code": "EECD-A763"
+ },
+ {
+  "desc": "Start A New Game With 5000 Gold",
+  "code": "E0CD-A763+DFCD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 25000 Gold",
+  "code": "A0CD-A763+DBCD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 50000 Gold",
+  "code": "66CD-A763+F7CD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 250000 Gold",
+  "code": "C6CD-A763+1FCD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 500000 Gold",
+  "code": "9DCD-A763+A7CD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 655350 Gold",
+  "code": "EECD-A763+EECD-A7A3"
+ },
+ {
+  "desc": "Infinite Gold",
+  "code": "FF8E-1F0A"
+ },
+ {
+  "desc": "Buy Something And You Gold Goes To 654850",
+  "code": "FF8A-170A"
+ },
+ {
+  "desc": "Walk Through Walls",
+  "code": "FD8F-1FAA"
+ },
+ {
+  "desc": "Have 999 Wood",
+  "code": "7F1F0CE7+7F1F0D03"
+ },
+ {
+  "desc": "Have 999 Feed",
+  "code": "7F1F10E7+7F1F1103"
+ },
+ {
+  "desc": "Next Day Is Sunny",
+  "code": "7E098C00"
+ },
+ {
+  "desc": "Next Day Is Rainy",
+  "code": "7E098C01"
+ },
+ {
+  "desc": "Next Day Is The Flower Festival",
+  "code": "7E098C06"
+ },
+ {
+  "desc": "Your First Cow Is Able To Produce Large Milk",
+  "code": "7EC1CAE8+7EC1CB03"
+ },
+ {
+  "desc": "Have 999 Feed",
+  "code": "7F1F10E7+7F1F1103"
+ },
+ {
+  "desc": "Your First Cow Is Able To Produce Large Milk",
+  "code": "7EC1CAE8+7EC1CB03"
+ },
+ {
+  "desc": "New Game With 5,000 Gold",
+  "code": "E0CD-3763+DFCD-37A3"
+ },
+ {
+  "desc": "New Game With 25,000 Gold",
+  "code": "A0CD-3763+DBCD-37A3"
+ },
+ {
+  "desc": "New Game With 50,000 Gold",
+  "code": "66CD-3763+F7CD-37A3"
+ },
+ {
+  "desc": "New Game With 250,000 Gold",
+  "code": "C6CD-3763+1FCD-37A3"
+ },
+ {
+  "desc": "New Game With 500,000 Gold",
+  "code": "9DCD-3763+A7CD-37A3"
+ },
+ {
+  "desc": "New Game With 655,350 Gold",
+  "code": "EECD-3763+EECD-37A3"
+ },
+ {
+  "desc": "Start A New Game With 5000 Gold",
+  "code": "E0CD-A763+DFCD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 25000 Gold",
+  "code": "A0CD-A763+DBCD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 50000 Gold",
+  "code": "66CD-A763+F7CD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 250000 Gold",
+  "code": "C6CD-A763+1FCD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 500000 Gold",
+  "code": "9DCD-A763+A7CD-A7A3"
+ },
+ {
+  "desc": "Start A New Game With 655350 Gold",
+  "code": "EECD-A763+EECD-A7A3"
+ },
+ {
+  "desc": "Have 999 Wood",
+  "code": "7F1F0CE7+7F1F0D03"
+ },
+ {
+  "desc": "Have 999 Feed",
+  "code": "7F1F10E7+7F1F1103"
+ },
+ {
+  "desc": "Your First Cow Is Able To Produce Large Milk",
+  "code": "7EC1CAE8+7EC1CB03"
+ }
+]

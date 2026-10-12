@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Get Hit To Transform Into Fully-Fledged Fire Mario",
+  "code": "CB26-6755+D426-6785+CBCE-AD85+DDCE-ADE5"
+ },
+ {
+  "desc": "Get Hit To Transform Into Big/Small/Big Fire Mario",
+  "code": "CB26-6755+D426-6785"
+ },
+ {
+  "desc": "Delete a Slot, then Play and Save it, to get the Maximum Level",
+  "code": "D288-070F+D08A-0DAF+AD8A-0F0F"
+ },
+ {
+  "desc": "Throw Birdo's eggs back without having to catch them",
+  "code": "DD6A-D1AB"
+ },
+ {
+  "desc": "Delete a Slot, then Play and Save it, to get the Maximum Level",
+  "code": "D58A-0DAF+8D8A-0F0F"
+ },
+ {
+  "desc": "POW Boxes Keep 'POW'ing",
+  "code": "1486-A50B"
+ },
+ {
+  "desc": "Shells bounce off of obstacles",
+  "code": "038D-696C+A48D-69AC"
+ },
+ {
+  "desc": "Super Turbo Running",
+  "code": "3C60-D16B+3C69-D50B"
+ },
+ {
+  "desc": "When You Kill An Enemy, It Goes Straight Up",
+  "code": "DDC9-D56C"
+ },
+ {
+  "desc": "Keep Picking Up The Grass! [Works In Sub-Space With coins]",
+  "code": "C963-650B"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Turtle Shell",
+  "code": "79BC-A901"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Turtle Shell",
+  "code": "79BC-A9D1"
+ },
+ {
+  "desc": "Pick Up Most Scenery",
+  "code": "4B61-D1AC+DD61-D56C"
+ },
+ {
+  "desc": "All Characters Can Float! [They float until you release the jump button!]",
+  "code": "DD61-A1A6"
+ },
+ {
+  "desc": "Super Speed Enemies",
+  "code": "4DB8-A009+3DB8-A069"
+ },
+ {
+  "desc": "Quick Pick Up",
+  "code": "C264-0566"
+ },
+ {
+  "desc": "Stay In Sub-Space Longer Than 1 Minute",
+  "code": "FE82-A00B"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a POW Block",
+  "code": "7C60-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Heart",
+  "code": "DD60-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Coin",
+  "code": "7160-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Mushroom",
+  "code": "7E60-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a 1-up Mushroom",
+  "code": "0D60-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Key",
+  "code": "7260-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Sub-Space Door",
+  "code": "7A60-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Bomb",
+  "code": "7560-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Star",
+  "code": "0960-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Turtle Shell",
+  "code": "7960-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Red Log",
+  "code": "7860-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Spark",
+  "code": "7D60-A1DB"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable becomes a Mushroom Block",
+  "code": "7B60-A1DB"
+ },
+ {
+  "desc": "Can Walk Anywheres On World Maps",
+  "code": "CB69-68DE+FD63-660E"
+ },
+ {
+  "desc": "Can Pass Over Most Stages",
+  "code": "2D68-6BA3"
+ },
+ {
+  "desc": "Debug Infinite Time",
+  "code": "6DAE-6B0A"
+ },
+ {
+  "desc": "Debug Form Select",
+  "code": "DDA8-DB6E"
+ },
+ {
+  "desc": "Power-up Select",
+  "code": "EDA5-026F"
+ },
+ {
+  "desc": "Nintendo Debug #2",
+  "code": "DDA6-D207"
+ },
+ {
+  "desc": "Infinite Flying Time For Yoshi",
+  "code": "C2EC-0E00"
+ },
+ {
+  "desc": "Stomp 8 Enemies And Get 1-Ups",
+  "code": "C23B-A207"
+ },
+ {
+  "desc": "Save A at Maximum Level",
+  "code": "7E008008"
+ },
+ {
+  "desc": "Save A Has Hard Mode Levels",
+  "code": "DFDB-FADF"
+ },
+ {
+  "desc": "Save B at Maximum Level",
+  "code": "7E008408"
+ },
+ {
+  "desc": "Save B Has Hard Mode Levels",
+  "code": "DFDB-F2DF"
+ },
+ {
+  "desc": "Save C Has Hard Mode Levels",
+  "code": "DFDB-F3DF"
+ },
+ {
+  "desc": "Save D Has Hard Mode Levels",
+  "code": "DFDB-FEDF"
+ },
+ {
+  "desc": "Always Have 99 Lives",
+  "code": "7E075A63"
+ },
+ {
+  "desc": "Powerup Always",
+  "code": "7E075600"
+ },
+ {
+  "desc": "Size Always",
+  "code": "7E075401"
+ },
+ {
+  "desc": "Always Have 99 Coins",
+  "code": "7E07DE09+7E07DF09"
+ },
+ {
+  "desc": "Always Have at Least 200 Time",
+  "code": "7E07E902"
+ },
+ {
+  "desc": "Score is always 9999990",
+  "code": "7E07CE09+7E07CF09+7E07D009+7E07D109+7E07D209+7E07D309"
+ },
+ {
+  "desc": "Save A at Maximum Level",
+  "code": "7E00810D"
+ },
+ {
+  "desc": "Save A at Maximum World",
+  "code": "7E009104"
+ },
+ {
+  "desc": "Save B at Maximum Level",
+  "code": "7E00850D"
+ },
+ {
+  "desc": "Save B at Maximum World",
+  "code": "7E009204"
+ },
+ {
+  "desc": "Save C at Maximum Level",
+  "code": "7E00890D"
+ },
+ {
+  "desc": "Save C at Maximum World",
+  "code": "7E009304"
+ },
+ {
+  "desc": "Save D at Maximum Level",
+  "code": "7E008D0D"
+ },
+ {
+  "desc": "Save D at Maximum World",
+  "code": "7E009404"
+ },
+ {
+  "desc": "Infinite Maximum Life",
+  "code": "7E04C33F"
+ },
+ {
+  "desc": "Have Maximum Life Containers",
+  "code": "7E04C402"
+ },
+ {
+  "desc": "Infinite 99 Lives",
+  "code": "7E04EE63"
+ },
+ {
+  "desc": "Infinite Coins",
+  "code": "7E062B00"
+ },
+ {
+  "desc": "# of Levels Mario Played",
+  "code": "7E062D00"
+ },
+ {
+  "desc": "# of Levels Princess Played",
+  "code": "7E062E00"
+ },
+ {
+  "desc": "# of Levels Toad Played",
+  "code": "7E062F00"
+ },
+ {
+  "desc": "# of Levels Luigi Played",
+  "code": "7E063000"
+ },
+ {
+  "desc": "Save A at Maximum Level",
+  "code": "7E008308"
+ },
+ {
+  "desc": "Save B at Maximum Level",
+  "code": "7E008708"
+ },
+ {
+  "desc": "Save C at Maximum Level",
+  "code": "7E008B08"
+ },
+ {
+  "desc": "Save D at Maximum Level",
+  "code": "7E008F08"
+ },
+ {
+  "desc": "Always have 98 Lives",
+  "code": "7E073662"
+ },
+ {
+  "desc": "Always have 99 Coins",
+  "code": "7E1DA263"
+ },
+ {
+  "desc": "Always have Maximum Charge Meter",
+  "code": "7E04137F"
+ },
+ {
+  "desc": "Racoon and Tanooki have P-Wing",
+  "code": "7E056EFF"
+ },
+ {
+  "desc": "Activate P-Block While Code is On",
+  "code": "7E056705"
+ },
+ {
+  "desc": "Wear Shoe",
+  "code": "7E057701"
+ },
+ {
+  "desc": "Stop Wearing Shoe",
+  "code": "7E057700"
+ },
+ {
+  "desc": "Go Behind Scenery",
+  "code": "7E058801"
+ },
+ {
+  "desc": "Return to Front Of Scenery",
+  "code": "7E058800"
+ },
+ {
+  "desc": "Always Have at Least 200 Time",
+  "code": "7E05EE02"
+ },
+ {
+  "desc": "Score is always 9999990",
+  "code": "7E07150F+7E071642+7E07173F"
+ },
+ {
+  "desc": "Player Type In Level",
+  "code": "7E00BB0C"
+ },
+ {
+  "desc": "Item 1",
+  "code": "7E1D8000"
+ },
+ {
+  "desc": "Item 2",
+  "code": "7E1D8100"
+ },
+ {
+  "desc": "Item 3",
+  "code": "7E1D8200"
+ },
+ {
+  "desc": "Item 4",
+  "code": "7E1D8300"
+ },
+ {
+  "desc": "Item 5",
+  "code": "7E1D8400"
+ },
+ {
+  "desc": "Item 6",
+  "code": "7E1D8500"
+ },
+ {
+  "desc": "Item 7",
+  "code": "7E1D8600"
+ },
+ {
+  "desc": "Item 8",
+  "code": "7E1D8700"
+ },
+ {
+  "desc": "Item 9",
+  "code": "7E1D8800"
+ },
+ {
+  "desc": "Item 10",
+  "code": "7E1D8900"
+ },
+ {
+  "desc": "Item 11",
+  "code": "7E1D8A00"
+ },
+ {
+  "desc": "Item 12",
+  "code": "7E1D8B00"
+ },
+ {
+  "desc": "Item 13",
+  "code": "7E1D8C00"
+ },
+ {
+  "desc": "Item 14",
+  "code": "7E1D8D00"
+ },
+ {
+  "desc": "Item 15",
+  "code": "7E1D8E00"
+ },
+ {
+  "desc": "Item 16",
+  "code": "7E1D8F00"
+ },
+ {
+  "desc": "Item 17",
+  "code": "7E1D9000"
+ },
+ {
+  "desc": "Item 18",
+  "code": "7E1D9100"
+ }
+]

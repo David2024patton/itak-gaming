@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "POW Boxes Keep 'POW'ing",
+  "code": "UVNOITKG"
+ },
+ {
+  "desc": "More Sub-Space Time",
+  "code": "ZPZOTN"
+ },
+ {
+  "desc": "Stay In Sub-Space Longer Than 1 Minute",
+  "code": "YPZOTN"
+ },
+ {
+  "desc": "Sometimes You Come Out Of A Door Holding An Enemy",
+  "code": "EPZOTS"
+ },
+ {
+  "desc": "Pick Up Most Scenery",
+  "code": "LEGPIO"
+ },
+ {
+  "desc": "Pow Blocks Don't Go Away",
+  "code": "STAPPY"
+ },
+ {
+  "desc": "Keep Picking Up The Grass (Works In Sub-Space With Coins Too)",
+  "code": "NSPPLE"
+ },
+ {
+  "desc": "All Characters Can Float Jump",
+  "code": "ANNEEGEY"
+ },
+ {
+  "desc": "Easier Time In Wart's Palace, And Mega Moon Jumps For Luigi (Super Jump To Get Up On Top Of Walls)",
+  "code": "AAEEZGPA"
+ },
+ {
+  "desc": "Mario Has Moon-Float Jump",
+  "code": "GUSEZLAE"
+ },
+ {
+  "desc": "Mario Has Mega Moon-Float Jump",
+  "code": "NNSEZLAE"
+ },
+ {
+  "desc": "Mario Has Moon Gravity Jumps",
+  "code": "PESELLYA"
+ },
+ {
+  "desc": "Luigi Has Moon-Float Jump",
+  "code": "GLEEAGAE"
+ },
+ {
+  "desc": "Luigi Has Mega Moon-Float Jump",
+  "code": "NYEEAGAE"
+ },
+ {
+  "desc": "Toad Has Moon-Float Jump",
+  "code": "GUNAPLAE"
+ },
+ {
+  "desc": "Toad Has Mega Moon-Float Jump",
+  "code": "NNNAPLAE"
+ },
+ {
+  "desc": "Princess Has Suspended Flight Jump",
+  "code": "KAXAOIAA"
+ },
+ {
+  "desc": "Princess Has A Longer Flight Jump",
+  "code": "KAXAOIAA"
+ },
+ {
+  "desc": "Flying Carpets Last Forever",
+  "code": "SLNZZLVI"
+ },
+ {
+  "desc": "Every 2nd Large Vegetable That You Pull Up Will Be A Stop Watch (Instead of Every 5th)",
+  "code": "ZESOTAIA"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A POW Block",
+  "code": "ZLVOLAZU"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Stop Watch",
+  "code": "TGVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Heart",
+  "code": "AAVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Coin",
+  "code": "TLVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Mushroom",
+  "code": "YLVOLAZU"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A 1-Up Mushroom",
+  "code": "AGVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Key",
+  "code": "ILVOLAZU"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Sub-Space Door",
+  "code": "GLVOLAZU"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Bomb",
+  "code": "YLVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Star",
+  "code": "IGVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Turtle Shell",
+  "code": "ILVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Red Log",
+  "code": "LLVOLAZU"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Spark",
+  "code": "ALVOLAZL"
+ },
+ {
+  "desc": "Pulling Up Small Vegetables Gives You A Mushroom Block",
+  "code": "PLVOLAZU"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A POW Block",
+  "code": "ZLVOZALU"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Heart",
+  "code": "AAVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Coin",
+  "code": "TLVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Mushroom",
+  "code": "YLVOZALU"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A 1-Up Mushroom",
+  "code": "AGVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Sub-Space Door",
+  "code": "GLVOZALU"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Bomb",
+  "code": "YLVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Star",
+  "code": "IGVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Turtle Shell",
+  "code": "ILVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Red Log",
+  "code": "LLVOZALU"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Spark",
+  "code": "ALVOZALL"
+ },
+ {
+  "desc": "Pulling Up Large Vegetables Gives You A Mushroom Block",
+  "code": "PLVOZALU"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a POW Block",
+  "code": "ZUVPZATK"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Heart",
+  "code": "AEVPZATG"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Coin",
+  "code": "TUVPZATG"
+ },
+ {
+  "desc": "Stop Watch from 5th Large Vegetable Becomes a Mushroom",
+  "code": "YUVPZATK"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a 1-up Mushroom",
+  "code": "AKVPZATG"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Key",
+  "code": "IUVPZATK"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Sub-Space Door",
+  "code": "GUVPZATK"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Bomb",
+  "code": "YUVPZATG"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Star",
+  "code": "IKVPZATG"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Turtle Shell",
+  "code": "IUVPZATG"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes A Red Log",
+  "code": "LUVPZATK"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Spark",
+  "code": "AUVPZATG"
+ },
+ {
+  "desc": "Stop Watch From 5th Large Vegetable Becomes a Mushroom Block",
+  "code": "PUVPZATK"
+ },
+ {
+  "desc": "Pogo Stick For Princess",
+  "code": "KAXAPGGA"
+ },
+ {
+  "desc": "Super Pogo For Princess",
+  "code": "XAXAPGGA"
+ },
+ {
+  "desc": "Veggies, Bombs, 1-Ups Stick To Your Feet (You Can Throw Stopwatches &amp; 1-Ups Across The Ground)",
+  "code": "TEYOTA"
+ },
+ {
+  "desc": "Nice Colors",
+  "code": "KIGESO"
+ },
+ {
+  "desc": "Drill Mario (Sometimes You Go Thru The Floor)",
+  "code": "OPAOPE"
+ },
+ {
+  "desc": "Enemies Glow",
+  "code": "EPGEPK"
+ },
+ {
+  "desc": "Altered Music",
+  "code": "AAIAAS"
+ },
+ {
+  "desc": "Become Golden With Anybody And You Can Float",
+  "code": "KGSTVKUU"
+ },
+ {
+  "desc": "Max Hearts [4]",
+  "code": "04C3:00"
+ },
+ {
+  "desc": "Receive Small Heart For Every Enemy Defeated",
+  "code": "04AD:09"
+ },
+ {
+  "desc": "Infinite Time In Sub-Space",
+  "code": "04B7:FA"
+ },
+ {
+  "desc": "Always Charged For Super Jump",
+  "code": "04CA:3C"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "SZNESXVK"
+ },
+ {
+  "desc": "Infinite life meter (except if you hit a spike)",
+  "code": "GZELVXSE"
+ },
+ {
+  "desc": "Quick pick up",
+  "code": "SXUASXOU"
+ },
+ {
+  "desc": "Special &quot;squat&quot; high jumps",
+  "code": "AEUEKKGL"
+ },
+ {
+  "desc": "Princess has mega-float",
+  "code": "PPXAOIAA"
+ },
+ {
+  "desc": "Princess has mega-float and lunar descent",
+  "code": "PAXAOIAA"
+ },
+ {
+  "desc": "Super moonjumps for Mario",
+  "code": "PESEGLGA"
+ },
+ {
+  "desc": "Super moonjumps for Toad",
+  "code": "PENALLGA"
+ },
+ {
+  "desc": "Super moonjumps for Princess",
+  "code": "PAXAPGGA"
+ },
+ {
+  "desc": "Speed up enemies",
+  "code": "AEXALGZA"
+ },
+ {
+  "desc": "Strong Tryclyde",
+  "code": "YAXXIYZE"
+ },
+ {
+  "desc": "Strong Fryguy",
+  "code": "YAVXVGGE"
+ },
+ {
+  "desc": "Strong Clawgrip",
+  "code": "YAEXTPGE"
+ },
+ {
+  "desc": "Strong Wart",
+  "code": "YESUAPTE"
+ },
+ {
+  "desc": "Strong Birdetta",
+  "code": "IAVENYZE"
+ },
+ {
+  "desc": "Strong Hawkmouth",
+  "code": "YEVXVYLE"
+ },
+ {
+  "desc": "Weak Birdetta",
+  "code": "AAVENYZA"
+ },
+ {
+  "desc": "Birdetta spits eggs instead of fireballs (appears in late  levels of the game)",
+  "code": "TPEPLAAX"
+ },
+ {
+  "desc": "Strong Wart",
+  "code": "YESLPPTE"
+ },
+ {
+  "desc": "Strong Birdetta",
+  "code": "IAVEUYZE"
+ },
+ {
+  "desc": "Strong Hawkmouth",
+  "code": "YEVZNYLE"
+ },
+ {
+  "desc": "Weak Birdetta",
+  "code": "AAVEUYZA"
+ },
+ {
+  "desc": "Birdetta spits eggs instead of fireballs (appears in late levels of the game)",
+  "code": "TONENYAX"
+ },
+ {
+  "desc": "Start on World 2",
+  "code": "PEEPUZAG+IUEPSZAA+TEEPVZPA"
+ },
+ {
+  "desc": "Start on World 3",
+  "code": "ZEEPUZAG+IUEPSZAA+TEEPVZPA"
+ },
+ {
+  "desc": "Start on World 4",
+  "code": "LEEPUZAG+IUEPSZAA+TEEPVZPA"
+ },
+ {
+  "desc": "Start on World 5",
+  "code": "GEEPUZAG+IUEPSZAA+TEEPVZPA"
+ },
+ {
+  "desc": "Start on World 6",
+  "code": "IEEPUZAG+IUEPSZAA+TEEPVZPA"
+ },
+ {
+  "desc": "Start on World 7",
+  "code": "TEEPUZAG+IUEPSZAA+TEEPVZPA"
+ }
+]

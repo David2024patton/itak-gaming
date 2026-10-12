@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "MASTER CODE--MUST BE ENTERED",
+  "code": "ATBT-AA32"
+ },
+ {
+  "desc": "Start with 1 life",
+  "code": "AE3T-AACL"
+ },
+ {
+  "desc": "Start with 5 lives",
+  "code": "AY3T-AACL"
+ },
+ {
+  "desc": "Once invincible, stay invincible for the rest of stage or until you die",
+  "code": "AE0T-CABE"
+ },
+ {
+  "desc": "Each ring counts as 2",
+  "code": "SCRA-BJX0"
+ },
+ {
+  "desc": "Each ring counts as 3",
+  "code": "SCRA-BNX0"
+ },
+ {
+  "desc": "Each ring counts as 4",
+  "code": "SCRA-BTX0"
+ },
+ {
+  "desc": "Each ring counts as 5",
+  "code": "SCRA-BYX0"
+ },
+ {
+  "desc": "Each ring counts as 6",
+  "code": "SCRA-B2X0"
+ },
+ {
+  "desc": "Each ring counts as 7",
+  "code": "SCRA-B6X0"
+ },
+ {
+  "desc": "Each ring counts as 8",
+  "code": "SCRA-BAX0"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "GJ6A-CA7A"
+ },
+ {
+  "desc": "Level select menu",
+  "code": "AJ3A-AA4G"
+ },
+ {
+  "desc": "Start with 5 chaos emeralds",
+  "code": "AY3T-BA4R"
+ },
+ {
+  "desc": "Super jump",
+  "code": "DDLT-AAGL"
+ },
+ {
+  "desc": "Skywalking",
+  "code": "BDLT-AAGL"
+ },
+ {
+  "desc": "Low jump",
+  "code": "KDLT-AAGL"
+ },
+ {
+  "desc": "Jump In Midair",
+  "code": "BT4A-CA66+AA4A-DZ7N+RE4A-C6ZW+AN4A-DP70+AT4A-CR76"
+ },
+ {
+  "desc": "Get Rings From Anywhere",
+  "code": "FGPT-BT0A"
+ },
+ {
+  "desc": "Sonic and other things are black",
+  "code": "ATTT-AAEE"
+ },
+ {
+  "desc": "Start With All Chaos Emeralds",
+  "code": "A23T-BA4R"
+ },
+ {
+  "desc": "Never Lose Rings",
+  "code": "AWRT-AA5W"
+ },
+ {
+  "desc": "Start With 2 Continues",
+  "code": "663T-B64R"
+ },
+ {
+  "desc": "Kill The First Enemy And Get 9,999,999 Points!",
+  "code": "663T-BA4R"
+ },
+ {
+  "desc": "Get Rings From Computers Only",
+  "code": "SCRA-BZX0"
+ },
+ {
+  "desc": "Enable Debugger!",
+  "code": "AE2T-AAAL"
+ },
+ {
+  "desc": "Start On Level 2 (Labyrinth Zone)",
+  "code": "AA2A-ACC8"
+ },
+ {
+  "desc": "Start On Level 2, Act 2 (Labyrinth Zone, Act 2)",
+  "code": "AE2A-ACC8"
+ },
+ {
+  "desc": "Start On Level 3 (Marble Zone)",
+  "code": "AA2A-AEC8"
+ },
+ {
+  "desc": "Start On Level 4 (Star Light Zone)",
+  "code": "AA2A-AGC8"
+ },
+ {
+  "desc": "Ring Count Goes To 50 After Getting Hit",
+  "code": "GLRT-AADY"
+ },
+ {
+  "desc": "Ring Count Goes To 99 After Getting Hit",
+  "code": "NRRT-AADY"
+ },
+ {
+  "desc": "Enable Stage Select",
+  "code": "FFFFD0:0100"
+ },
+ {
+  "desc": "Infinite Rings",
+  "code": "FFFE20:00C8"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "FFFE12:0009"
+ },
+ {
+  "desc": "Stage/Act Modifier",
+  "code": "FFFE10:0000"
+ },
+ {
+  "desc": "Makes Sonic Invulnerable To Enemies, Bullets, And Spikes Until He Picks Up Another Shield",
+  "code": "2E6T-BCHT"
+ },
+ {
+  "desc": "Aerial View of A Level",
+  "code": "2E6T-BCS6"
+ },
+ {
+  "desc": "Gives Sonic Turbo Shoes With Every TV He Breaks",
+  "code": "JLVT-AA48"
+ },
+ {
+  "desc": "Begin With Several Hundred Rings On Each Level",
+  "code": "CA3A-AA4C"
+ },
+ {
+  "desc": "Begin The Game With 99 Lives",
+  "code": "NN3T-AACL"
+ },
+ {
+  "desc": "Super Speed!",
+  "code": "FFF761:6411"
+ },
+ {
+  "desc": "Invincibility (Enemies Can't Touch You)",
+  "code": "FFD030:00FF"
+ },
+ {
+  "desc": "Invincibility (Always Have Shield)",
+  "code": "FFFE2C:0000"
+ },
+ {
+  "desc": "Invincibility (Starman Effect)",
+  "code": "FFFE2C:0001"
+ },
+ {
+  "desc": "Set Total Time To 0:01",
+  "code": "FFFE24:0000"
+ },
+ {
+  "desc": "Infinite Time Underwater For Sonic",
+  "code": "FFFE14:00FA"
+ },
+ {
+  "desc": "Defeat Stage 1 Robotnik Boss With 1 Hit",
+  "code": "FFD920:0001"
+ },
+ {
+  "desc": "Defeat Stage 2 Robotnik Boss With 1 Hit",
+  "code": "FFD820:0001"
+ },
+ {
+  "desc": "Defeat Stage 3 Robotnik Boss With 1 Hit",
+  "code": "FFDA20:0001"
+ },
+ {
+  "desc": "Defeat Stages 4 &amp; 5 Robotnik Bosses With 1 Hit",
+  "code": "FFD860:0001"
+ },
+ {
+  "desc": "Defeat Final Stage Robotnik Boss With 1 Hit",
+  "code": "FFFE5E:0001"
+ },
+ {
+  "desc": "Set All Chaos Emeralds",
+  "code": "FFFE56:0006"
+ },
+ {
+  "desc": "Switch F/X On For Levitate Jump",
+  "code": "FFD012:00FE"
+ },
+ {
+  "desc": "Faster Music",
+  "code": "FFF000:0000"
+ },
+ {
+  "desc": "Hyper Mode (Sonic)",
+  "code": "FFD01E:0000"
+ },
+ {
+  "desc": "Warp To End of Stage",
+  "code": "FFD008:0000"
+ },
+ {
+  "desc": "Alot of animals come out of enemies when you destroy them",
+  "code": "AGJA-AAX2"
+ },
+ {
+  "desc": "Invincibility",
+  "code": "R01T-C614+R02A-C6Y6"
+ },
+ {
+  "desc": "Skip Intro Screens",
+  "code": "ATBT-AAEE"
+ },
+ {
+  "desc": "Sonic Is Always In Debug Object Placement Mode",
+  "code": "NAZT-CA9L"
+ },
+ {
+  "desc": "When Sonic Dies He Falls Straight Through The Ground With No Expression On His Face",
+  "code": "HW2A-CA7L"
+ },
+ {
+  "desc": "God Mode",
+  "code": "FFD024:0002"
+ },
+ {
+  "desc": "Invincibility - Sonic the Hedgehog (Japan, Korea)",
+  "code": "R05T-C6ZR+R06A-C6WW"
+ },
+ {
+  "desc": "Walk On Air",
+  "code": "BVDA-CA7T"
+ },
+ {
+  "desc": "Infinite Time Underwater",
+  "code": "AJ9T-CA3A"
+ },
+ {
+  "desc": "Control Mode, in Pause press A reboot game, Press B play in slow motion, Press C move frame by frame",
+  "code": "REKT-A602"
+ },
+ {
+  "desc": "Don't Lose Rings When Hit, No Ring Scatter Either",
+  "code": "R0RT-A6TE"
+ },
+ {
+  "desc": "Disable Rings",
+  "code": "R0PT-A6VN"
+ },
+ {
+  "desc": "Invincibility Lasts Until The End Of The Level",
+  "code": "RY0A-C61R"
+ },
+ {
+  "desc": "Ring Monitors Gives You Speed Shoes Instead of 10 Rings",
+  "code": "FCVT-AA52"
+ },
+ {
+  "desc": "Ring Monitors Give You An Extra Life Instead of 10 Rings",
+  "code": "FCVT-BAX2"
+ },
+ {
+  "desc": "Walk Through Solid Objects (Except Ring Monitors)",
+  "code": "R17T-A6VN"
+ },
+ {
+  "desc": "Invincible",
+  "code": "R01T-C612"
+ },
+ {
+  "desc": "All Monitors Give You Speed Shoes Instead of 10 Rings (REV01)",
+  "code": "FCYT-AA94"
+ },
+ {
+  "desc": "All Monitors Give You An Extra Life Instead of 10 Rings (REV01)",
+  "code": "FCYT-BA14"
+ },
+ {
+  "desc": "Music Continue (No SFX)",
+  "code": "RYST-R6WN"
+ },
+ {
+  "desc": "No Music",
+  "code": "RYTA-R6W4"
+ },
+ {
+  "desc": "Music Sounds Different",
+  "code": "RY0A-R6V0"
+ },
+ {
+  "desc": "Walk Through Ring Monitors",
+  "code": "ALWA-AA8A"
+ },
+ {
+  "desc": "Disable HUD",
+  "code": "R1CT-C6WW"
+ },
+ {
+  "desc": "Disable Moveable Objects",
+  "code": "R1KT-A6W6"
+ },
+ {
+  "desc": "Pause the game to enable debugger. See notes.",
+  "code": "9JKT-B98J"
+ },
+ {
+  "desc": "Pause The Game To Enable Debugger (alternate version).  See notes.",
+  "code": "BEKT-B78J"
+ },
+ {
+  "desc": "Pause The Game To Become Invincible. See notes.",
+  "code": "HASA-SEXE+FYSA-S75G"
+ },
+ {
+  "desc": "Pause The Game And Press A To Play Special Stages. See notes.",
+  "code": "ATKT-AA8Y+CAKT-AAHE"
+ },
+ {
+  "desc": "Pause the game and press A to see ending sequence and credits. See notes.",
+  "code": "ATKT-AA8Y+DAKT-AAHE"
+ },
+ {
+  "desc": "Pause the game and press A, B, or C for different cheats.  See notes.",
+  "code": "ATKT-AA8Y+FYKT-B79G+DJKT-AA9J+HALA-BETW+CJLA-B72Y+SALA-ANA0+BJLA-AAA2+EALA-B724+62LA-AA26+DJKT-AN94"
+ },
+ {
+  "desc": "Pause The Game And Press A For Invincibility, or Press B Or C To Add 10 Rings To Your Total. See notes.",
+  "code": "ATKT-AA8Y+FYKT-B79G+DJKT-AA9J+SALA-ANAW+BJLA-AAAY+EALA-B720+DYLA-B726+6TLA-AA28"
+ },
+ {
+  "desc": "Invincibility (walk thru enemies and enemy fire). See notes.",
+  "code": "RG1T-C61E"
+ },
+ {
+  "desc": "Invincibility (partial). See notes.",
+  "code": "BL1T-CA3Y"
+ },
+ {
+  "desc": "Protection From Spikes",
+  "code": "FMHA-AA90"
+ },
+ {
+  "desc": "Don't Fall When You Walk Off Ledges (Walk on air). See notes",
+  "code": "RZDA-C6ZT"
+ },
+ {
+  "desc": "Pause The Game And Press A, B, Or C For Different Effects.  See Notes",
+  "code": "ATKT-AA8Y+BEKT-B79G+DJKT-AA9J+AALA-AYAY+NALA-BS20+D2LA-AAA4+NNLA-BS26+6TLA-AA28+DTKT-AN94"
+ },
+ {
+  "desc": "Walk thru rocks, spikes, walls (some), springs, etc. See notes.",
+  "code": "AD7A-AA88"
+ },
+ {
+  "desc": "Touching The Red Goal Markers In The Special Stages Won't Make You Exit",
+  "code": "AL9T-CA3N"
+ },
+ {
+  "desc": "Special/Bonus Stages Rotate Slower.  See notes.",
+  "code": "CBDA-AAGG"
+ },
+ {
+  "desc": "Special/bonus stages don't rotate at all.  See notes.",
+  "code": "ABDA-AAGG"
+ },
+ {
+  "desc": "Special/Bonus Stages Don't Rotate At All, And You'll Have High Moon Jump With Super Slow Moon Descent. See notes.",
+  "code": "AG8A-CAEE+ABDA-AAGG"
+ },
+ {
+  "desc": "Don't Die When Timer Reaches 10 Minutes",
+  "code": "RHDT-C6TR"
+ }
+]

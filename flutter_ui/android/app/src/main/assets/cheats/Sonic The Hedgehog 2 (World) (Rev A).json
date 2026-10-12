@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Tails is very light",
+  "code": "ABLT-CAR2"
+ },
+ {
+  "desc": "Tails can't spin dash",
+  "code": "ABRT-CATN"
+ },
+ {
+  "desc": "Master Code [Emulators Only]",
+  "code": "ATBT-AA4E"
+ },
+ {
+  "desc": "Enable Debugger",
+  "code": "AE7T-AAE2"
+ },
+ {
+  "desc": "Sonic's Rings Go To 99 When You're Hit",
+  "code": "NNTT-CACY"
+ },
+ {
+  "desc": "Tails' Rings go to 99 when you're Hit",
+  "code": "NNTT-CADJ"
+ },
+ {
+  "desc": "Access Hidden Palace Zone [Or At Least Whats Left]",
+  "code": "ACLA-ATD4"
+ },
+ {
+  "desc": "Auto Spin Dash",
+  "code": "MA3A-AAAT"
+ },
+ {
+  "desc": "Always go to the special stage",
+  "code": "DADA-AAAR"
+ },
+ {
+  "desc": "Skip levels",
+  "code": "AADA-AAAE"
+ },
+ {
+  "desc": "Rings worth 2 (player 1)",
+  "code": "SAST-DJ1A"
+ },
+ {
+  "desc": "Rings worth 3 (player 1)",
+  "code": "SAST-DN1A"
+ },
+ {
+  "desc": "Rings worth 4 (player 1)",
+  "code": "SAST-DT1A"
+ },
+ {
+  "desc": "Rings worth 5 (player 1)",
+  "code": "SAST-DY1A"
+ },
+ {
+  "desc": "Rings worth 6 (player 1)",
+  "code": "SAST-D21A"
+ },
+ {
+  "desc": "Rings worth 7 (player 1)",
+  "code": "SAST-D61A"
+ },
+ {
+  "desc": "Rings worth 8 (player 1)",
+  "code": "SAST-DA1A"
+ },
+ {
+  "desc": "Start with 1 life instead of 3 (player 1)",
+  "code": "AE8A-AAD2"
+ },
+ {
+  "desc": "Start with 5 lives (player 1)",
+  "code": "AY8A-AAD2"
+ },
+ {
+  "desc": "Start with 7 lives (player 1)",
+  "code": "A68A-AAD2"
+ },
+ {
+  "desc": "Start with 9 lives (player 1)",
+  "code": "BE8A-AAD2"
+ },
+ {
+  "desc": "Start with 25 lives (player 1)",
+  "code": "DE8A-AAD2"
+ },
+ {
+  "desc": "Start with 50 lives (player 1)",
+  "code": "GJ8A-AAD2"
+ },
+ {
+  "desc": "Start with 75 lives (player 1)",
+  "code": "KN8A-AAD2"
+ },
+ {
+  "desc": "Start with 99 lives (player 1)",
+  "code": "NN8A-AAD2"
+ },
+ {
+  "desc": "Infinite lives (player 1)",
+  "code": "JW3A-CA4J"
+ },
+ {
+  "desc": "Rings worth 2 (player 2)",
+  "code": "SATA-DJVW"
+ },
+ {
+  "desc": "Rings worth 3 (player 2)",
+  "code": "SATA-DNVW"
+ },
+ {
+  "desc": "Rings worth 4 (player 2)",
+  "code": "SATA-DTVW"
+ },
+ {
+  "desc": "Rings worth 5 (player 2)",
+  "code": "SATA-DYVW"
+ },
+ {
+  "desc": "Rings worth 6 (player 2)",
+  "code": "SATA-D2VW"
+ },
+ {
+  "desc": "Rings worth 7 (player 2)",
+  "code": "SATA-D6VW"
+ },
+ {
+  "desc": "Rings worth 8 (player 2)",
+  "code": "SATA-DAVW"
+ },
+ {
+  "desc": "Start with 1 life instead of 3 (player 2)",
+  "code": "AE8A-AAD8"
+ },
+ {
+  "desc": "Start with 5 lives (player 2)",
+  "code": "AY8A-AAD8"
+ },
+ {
+  "desc": "Start with 7 lives (player 2)",
+  "code": "A68A-AAD8"
+ },
+ {
+  "desc": "Start with 9 lives (player 2)",
+  "code": "BE8A-AAD8"
+ },
+ {
+  "desc": "Start with 25 lives (player 2)",
+  "code": "DE8A-AAD8"
+ },
+ {
+  "desc": "Start with 50 lives (player 2)",
+  "code": "GJ8A-AAD8"
+ },
+ {
+  "desc": "Start with 75 lives (player 2)",
+  "code": "KN8A-AAD8"
+ },
+ {
+  "desc": "Start with 99 lives (player 2)",
+  "code": "NN8A-AAD8"
+ },
+ {
+  "desc": "Infinite lives (player 2)",
+  "code": "JXGA-CA7G"
+ },
+ {
+  "desc": "Jump lower",
+  "code": "KBVT-CAE2"
+ },
+ {
+  "desc": "Jump a little higher",
+  "code": "FVVT-CAE2"
+ },
+ {
+  "desc": "Jump a lot higher",
+  "code": "EBVT-CAE2"
+ },
+ {
+  "desc": "Jump really high",
+  "code": "CBVT-CAE2"
+ },
+ {
+  "desc": "Sonic stays invincible for a shorter time after getting hit",
+  "code": "A02T-CAF8"
+ },
+ {
+  "desc": "Sonic stays invincible for a longer time after getting hit",
+  "code": "982T-CAF8"
+ },
+ {
+  "desc": "Sonic becomes invisible and invincible  for the rest of the level after getting hit",
+  "code": "ALTA-CA8N"
+ },
+ {
+  "desc": "Once invincible [stars], Sonic stays Invincible for the rest of the level",
+  "code": "ALTA-CA9J"
+ },
+ {
+  "desc": "Sonic doesn't lose rings when hit",
+  "code": "ATTT-CA4W"
+ },
+ {
+  "desc": "Tails doesn't lose rings when hit",
+  "code": "ATTT-CA5G"
+ },
+ {
+  "desc": "Sonic needs only 1 ring instead of 50 to enter special stage after touching a star post",
+  "code": "AH2T-CAH6"
+ },
+ {
+  "desc": "Rings worth 2 in special stages (Sonic only)",
+  "code": "SBJA-HJWJ"
+ },
+ {
+  "desc": "Rings worth 3 in special stages (Sonic only)",
+  "code": "SBJA-HNWJ"
+ },
+ {
+  "desc": "Rings worth 4 in special stages (Sonic only)",
+  "code": "SBJA-HTWJ"
+ },
+ {
+  "desc": "Rings worth 5 in special stages (Sonic only)",
+  "code": "SBJA-HYWJ"
+ },
+ {
+  "desc": "Rings worth 6 in special stages (Sonic only)",
+  "code": "SBJA-H2WJ"
+ },
+ {
+  "desc": "Rings worth 7 in special stages (Sonic only)",
+  "code": "SBJA-H6WJ"
+ },
+ {
+  "desc": "Rings Worth 8 In Special Stages (Sonic only)",
+  "code": "SBJA-HAWJ"
+ },
+ {
+  "desc": "Rings worth 2 in special stage (Tails only)",
+  "code": "SBJA-HJWR"
+ },
+ {
+  "desc": "Rings worth 3 in special stages (Tails only)",
+  "code": "SBJA-HNWR"
+ },
+ {
+  "desc": "Rings worth 4 in special stages (Tails only)",
+  "code": "SBJA-HTWR"
+ },
+ {
+  "desc": "Rings worth 5 in special stages (Tails only)",
+  "code": "SBJA-HYWR"
+ },
+ {
+  "desc": "Rings worth 6 in special stages (Tails only)",
+  "code": "SBJA-H2WR"
+ },
+ {
+  "desc": "Rings worth 7 in special stages (Tails only)",
+  "code": "SBJA-H6WR"
+ },
+ {
+  "desc": "Rings worth 8 in special stages (Tails only)",
+  "code": "SBJA-HAWR"
+ },
+ {
+  "desc": "Need 1 Chaos Emerald to become Super Sonic",
+  "code": "AGZT-CACA"
+ },
+ {
+  "desc": "Need 2 chaos emeralds to become Super Sonic",
+  "code": "ALZT-CACA"
+ },
+ {
+  "desc": "Need 3 chaos emeralds to become Super Sonic",
+  "code": "ARZT-CACA"
+ },
+ {
+  "desc": "Need 4 chaos emeralds to become Super Sonic",
+  "code": "AWZT-CACA"
+ },
+ {
+  "desc": "Need 5 chaos emeralds to become Super Sonic",
+  "code": "A0ZT-CACA"
+ },
+ {
+  "desc": "Need 6 chaos emeralds to become Super Sonic",
+  "code": "A4ZT-CACA"
+ },
+ {
+  "desc": "Need 1 ring to become Super Sonic, don't lose rings with time",
+  "code": "AGZT-CACJ+K4ZT-CA9N"
+ },
+ {
+  "desc": "Need 5 rings to become Super Sonic",
+  "code": "A0ZT-CACJ"
+ },
+ {
+  "desc": "Need 10 rings to become Super Sonic",
+  "code": "BLZT-CACJ"
+ },
+ {
+  "desc": "Need 25 rings to become Super Sonic",
+  "code": "DGZT-CACJ"
+ },
+ {
+  "desc": "Need 40 rings to become Super Sonic",
+  "code": "FCZT-CACJ"
+ },
+ {
+  "desc": "Super Sonic doesn't lose rings with time",
+  "code": "K4ZT-CA9N"
+ },
+ {
+  "desc": "Level select menu",
+  "code": "RE8A-A60W"
+ },
+ {
+  "desc": "Start most levels with some rings 1 player game only)",
+  "code": "2VAT-BCRN"
+ },
+ {
+  "desc": "Invincibility",
+  "code": "J56T-GR3L+8X6A-GR5Y+AVPA-CA76"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "AL3A-CA4J"
+ },
+ {
+  "desc": "Infinite Time",
+  "code": "REHA-J6TA"
+ },
+ {
+  "desc": "Infinite Time In Debugger",
+  "code": "REHT-J6V0"
+ },
+ {
+  "desc": "Get Rings From Anywhere",
+  "code": "E32T-CA3A"
+ },
+ {
+  "desc": "Start With All Emeralds",
+  "code": "SA8A-B61J"
+ },
+ {
+  "desc": "Don't Use Up Rings To Maintain Transformation of Super Sonic",
+  "code": "ACZT-CAFY"
+ },
+ {
+  "desc": "Become Super Sonic With 0 Rings",
+  "code": "ACZT-CACJ"
+ },
+ {
+  "desc": "Become Super Sonic With 0 Emeralds",
+  "code": "ACZT-CACA"
+ },
+ {
+  "desc": "The Regular Level Music Plays When Super Sonic, Instead of The Super Theme",
+  "code": "ADFT-8AF6"
+ },
+ {
+  "desc": "One Hit And You Are Invincible",
+  "code": "982T-C9F8"
+ },
+ {
+  "desc": "Disable HUD",
+  "code": "ATEA-JA2J"
+ },
+ {
+  "desc": "Walk Thru Solid Objects",
+  "code": "J4PA-CA5R"
+ },
+ {
+  "desc": "Untouchable",
+  "code": "R16A-G6YW+R16A-G6Z8"
+ },
+ {
+  "desc": "Sonic - Super-jump",
+  "code": "2CZA-CWC6"
+ },
+ {
+  "desc": "Sonic - Mega-jump",
+  "code": "ACZA-C4C6"
+ },
+ {
+  "desc": "Sonic - Orbital-jump",
+  "code": "ACZA-DYC6"
+ },
+ {
+  "desc": "Tails - Super-jump",
+  "code": "2DDA-CWCC"
+ },
+ {
+  "desc": "Tails - Mega-jump",
+  "code": "ADDA-C4CC"
+ }
+]

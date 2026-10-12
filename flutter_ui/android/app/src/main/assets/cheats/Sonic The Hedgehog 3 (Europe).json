@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Can Access 'Sound Test' Menu From Title Screen",
+  "code": "D3AT-AR2E"
+ },
+ {
+  "desc": "Fast run",
+  "code": "ABLT-CA9Y"
+ },
+ {
+  "desc": "Enable Debugger",
+  "code": "AE5A-AABL"
+ },
+ {
+  "desc": "Don't use up Rings to maintain the transformation",
+  "code": "AAZA-CAEY"
+ },
+ {
+  "desc": "Invincibility",
+  "code": "ATLA-CARA"
+ },
+ {
+  "desc": "Sonic's Flash attack, Fire ball, Bubble bounce are disable",
+  "code": "AAYT-CAA8"
+ },
+ {
+  "desc": "Disable Super Sonic Transformation Music",
+  "code": "AJZA-CA56+RG6A-C604+AKAA-LA7A"
+ },
+ {
+  "desc": "Become Super Sonic with 0 Emeralds",
+  "code": "AAYT-CAHR"
+ },
+ {
+  "desc": "Sonic can now use Bubble Bounce",
+  "code": "AAYT-CAGC"
+ },
+ {
+  "desc": "Sonic can now use Fireball",
+  "code": "AAYT-CAWT"
+ },
+ {
+  "desc": "Sonic can now use Electric Jump",
+  "code": "AAYT-CAY4"
+ },
+ {
+  "desc": "Become Super Sonic with 0 Rings",
+  "code": "AAYT-CAH0"
+ },
+ {
+  "desc": "Tails is very light",
+  "code": "ABLT-CAR2"
+ },
+ {
+  "desc": "Tails can't Spin Dash",
+  "code": "ABRT-CATN"
+ },
+ {
+  "desc": "Tails Runs Differently #1",
+  "code": "GVWA-CA42"
+ },
+ {
+  "desc": "Tails Runs Differently #2",
+  "code": "GVWA-CA4E"
+ },
+ {
+  "desc": "Tails Runs Differently #3",
+  "code": "GVWA-CA40"
+ },
+ {
+  "desc": "Tails Runs Differently #4",
+  "code": "GVWA-CA44"
+ },
+ {
+  "desc": "Tails Never Get Tired of Flying",
+  "code": "VPLA-CACG"
+ },
+ {
+  "desc": "Tails Always Swims",
+  "code": "AFLA-CARE"
+ },
+ {
+  "desc": "Don't lose rings",
+  "code": "AWHA-CA92"
+ },
+ {
+  "desc": "Rings worth 2",
+  "code": "SCGT-DJYL"
+ },
+ {
+  "desc": "Rings worth 3",
+  "code": "SCGT-DNYL"
+ },
+ {
+  "desc": "Rings worth 4",
+  "code": "SCGT-DTYL"
+ },
+ {
+  "desc": "Rings worth 5",
+  "code": "SCGT-DYYL"
+ },
+ {
+  "desc": "Rings worth 6",
+  "code": "SCGT-D2YL"
+ },
+ {
+  "desc": "Rings worth 7",
+  "code": "SCGT-D6YL"
+ },
+ {
+  "desc": "Rings worth 8",
+  "code": "SCGT-DAYL"
+ },
+ {
+  "desc": "75 Rings needed for a free guy",
+  "code": "KRGT-CAE0"
+ },
+ {
+  "desc": "50 Rings needed for a free guy",
+  "code": "GLGT-CAE0"
+ },
+ {
+  "desc": "30 Rings needed for a free guy",
+  "code": "D4GT-CAE0"
+ },
+ {
+  "desc": "20 Rings needed for a free guy",
+  "code": "CWGT-CAE0"
+ },
+ {
+  "desc": "10 Rings needed for a free guy",
+  "code": "BLGT-CAE0"
+ },
+ {
+  "desc": "Get 2 free guys for 100 rings instead of 1",
+  "code": "HCGT-DJZY"
+ },
+ {
+  "desc": "Get 3 free guys for 100 rings",
+  "code": "HCGT-DNZY"
+ },
+ {
+  "desc": "Get 4 free guys for 100 rings",
+  "code": "HCGT-DTZY"
+ },
+ {
+  "desc": "Get 5 free guys for 100 rings",
+  "code": "HCGT-DYZY"
+ },
+ {
+  "desc": "Get 6 free guys for 100 rings",
+  "code": "HCGT-D2ZY"
+ },
+ {
+  "desc": "Get 7 free guys for 100 rings",
+  "code": "HCGT-D6ZY"
+ },
+ {
+  "desc": "Get 8 free guys for 100 rings",
+  "code": "HCGT-DAZY"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 0",
+  "code": "AC5A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 5 Instead Of 10",
+  "code": "A05A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 15",
+  "code": "B85A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 20",
+  "code": "CW5A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 25",
+  "code": "DG5A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 30",
+  "code": "D45A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 50",
+  "code": "GL5A-CAHN"
+ },
+ {
+  "desc": "Super Ring Powerup Worth 100 [1-Up Every Time]",
+  "code": "NW5A-CAHN"
+ },
+ {
+  "desc": "Super Sonic doesn't lose rings",
+  "code": "AJZA-CA8N"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "AJ3A-CA7A"
+ },
+ {
+  "desc": "Start with 1 life",
+  "code": "AG4T-AAH4"
+ },
+ {
+  "desc": "Start With 2 Lives",
+  "code": "AL4T-AAH4"
+ },
+ {
+  "desc": "Start with 5 lives",
+  "code": "A04T-AAH4"
+ },
+ {
+  "desc": "Start with 10 lives",
+  "code": "BL4T-AAH4"
+ },
+ {
+  "desc": "Start with 25 lives",
+  "code": "DG4T-AAH4"
+ },
+ {
+  "desc": "Start with 50 lives",
+  "code": "GL4T-AAH4"
+ },
+ {
+  "desc": "Start with 99 lives",
+  "code": "NR4T-AAH4"
+ },
+ {
+  "desc": "Shield can be activated multiple times",
+  "code": "ACAT-CAB6"
+ },
+ {
+  "desc": "Invincibility power-ups last forever",
+  "code": "AJRT-CA8R"
+ },
+ {
+  "desc": "Invincibility lasts almost twice as long",
+  "code": "986A-CAB6"
+ },
+ {
+  "desc": "Invincibility lasts half as long",
+  "code": "KR6A-CAB6"
+ },
+ {
+  "desc": "Invincibility lasts 1/4 as long",
+  "code": "E06A-CAB6"
+ },
+ {
+  "desc": "Only need 6 chaos emeralds",
+  "code": "SCFT-BJT4"
+ },
+ {
+  "desc": "Only need 4 chaos emeralds",
+  "code": "SCFT-BNT4"
+ },
+ {
+  "desc": "Only need 3 chaos emeralds",
+  "code": "SCFT-BTT4"
+ },
+ {
+  "desc": "Only need 2 chaos emeralds",
+  "code": "SCFT-B2T4"
+ },
+ {
+  "desc": "1 Blue sphere needed for chaos emerald",
+  "code": "ACGA-AA8T"
+ },
+ {
+  "desc": "Bonus jump",
+  "code": "TAYA-CRB6"
+ },
+ {
+  "desc": "Super jump",
+  "code": "AAYA-CWB6"
+ },
+ {
+  "desc": "Mega-jump",
+  "code": "AAYA-C0B6"
+ },
+ {
+  "desc": "Never drown [must switch off for some occasions]",
+  "code": "ATST-CA38"
+ },
+ {
+  "desc": "One Blue Sphere To Win Emeralds",
+  "code": "9WGA-BCGN"
+ },
+ {
+  "desc": "Invincibility",
+  "code": "JALT-CR5G+ZTLA-CR7Y+ATYT-EA22"
+ },
+ {
+  "desc": "Infinite Time",
+  "code": "RHZT-A6TC"
+ },
+ {
+  "desc": "Infinite Time In Debugger",
+  "code": "RHZT-A602"
+ },
+ {
+  "desc": "Jump in Midair - Sonic",
+  "code": "CTYA-CA88+HTYA-DESY+AAYA-DZ90+ANYA-DP94+ATYT-CR2A+C2YT-CA2G"
+ },
+ {
+  "desc": "Jump in Midair - Tails",
+  "code": "BVRA-CA36+ABRA-DZ4N+RFRA-C6WW+PPRA-DP40+AVRA-CR46"
+ },
+ {
+  "desc": "Get Rings From Anywhere",
+  "code": "F55T-AA36"
+ },
+ {
+  "desc": "Chaos Emerald Stage No Speed Up",
+  "code": "ALJA-AA5E"
+ },
+ {
+  "desc": "Red Spheres do nothing in special stages (won't make you exit them)",
+  "code": "HWDA-AA3T"
+ },
+ {
+  "desc": "White &amp; Red Star Spheres don't bump you backwards",
+  "code": "ELDA-AN5W+R0DA-A6YN"
+ },
+ {
+  "desc": "Blue Spheres Worth 2",
+  "code": "SCGA-BL0N+A4GA-A28T"
+ },
+ {
+  "desc": "Blue Spheres Worth 3",
+  "code": "SCGA-BR0N+A4GA-A28T"
+ },
+ {
+  "desc": "Blue Spheres Worth 4",
+  "code": "SCGA-BW0N+A4GA-A28T"
+ },
+ {
+  "desc": "Blue Spheres Worth 5",
+  "code": "SCGA-B00N+A4GA-A28T"
+ },
+ {
+  "desc": "Blue Spheres Worth 6",
+  "code": "SCGA-B40N+A4GA-A28T"
+ },
+ {
+  "desc": "Blue Spheres Worth 7",
+  "code": "SCGA-B80N+A4GA-A28T"
+ },
+ {
+  "desc": "Blue Spheres Worth 8",
+  "code": "SCGA-BC0N+A4GA-A28T"
+ },
+ {
+  "desc": "Trick The Game Into Thinking You're Playing As Knuckles",
+  "code": "ASCA-AAHC+ASCA-BA9Y"
+ },
+ {
+  "desc": "Enable Stage Select",
+  "code": "FFFFD0:0100"
+ },
+ {
+  "desc": "Enable Debug Mode",
+  "code": "FFFFFA:0100"
+ },
+ {
+  "desc": "Infinite Rings",
+  "code": "FFFE20:00C8"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "FFFE12:0009"
+ },
+ {
+  "desc": "Only Need 1 Blue Sphere For Chaos Emerald",
+  "code": "FFE438:0001"
+ },
+ {
+  "desc": "Only Need 1 Blue Sphere For Chaos Emerald (On An Actual System)",
+  "code": "FFE439:0001"
+ },
+ {
+  "desc": "Stage/Act Modifier",
+  "code": "FFFE10:0000"
+ },
+ {
+  "desc": "All Emeralds Collected",
+  "code": "FFFFB0:0007"
+ },
+ {
+  "desc": "Stop Timer",
+  "code": "FFFE24:000F"
+ },
+ {
+  "desc": "Super Speed! [Sonic]",
+  "code": "FFF761:6419"
+ },
+ {
+  "desc": "Super Speed! [Tails]",
+  "code": "FFFEC1:6419"
+ }
+]

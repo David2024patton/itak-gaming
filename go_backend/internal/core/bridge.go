@@ -23,6 +23,8 @@ typedef size_t (*retro_serialize_size_fn)(void);
 typedef bool (*retro_serialize_fn)(void* data, size_t size);
 typedef bool (*retro_unserialize_fn)(void* data, size_t size);
 typedef void (*retro_get_system_av_info_fn)(void* info);
+typedef void (*retro_cheat_reset_fn)(void);
+typedef void (*retro_cheat_set_fn)(unsigned index, bool enabled, const char* code);
 
 typedef struct {
     void* handle;
@@ -34,6 +36,8 @@ typedef struct {
     retro_serialize_fn serialize;
     retro_unserialize_fn unserialize;
     retro_get_system_av_info_fn get_av_info;
+    retro_cheat_reset_fn cheat_reset;
+    retro_cheat_set_fn cheat_set;
     float aspect_ratio;
     double fps;
     double sample_rate;
@@ -168,6 +172,9 @@ CoreHandle* core_load(const char* path) {
     h->serialize = (retro_serialize_fn)dlsym(h->handle, "retro_serialize");
     h->unserialize = (retro_unserialize_fn)dlsym(h->handle, "retro_unserialize");
     h->get_av_info = (retro_get_system_av_info_fn)dlsym(h->handle, "retro_get_system_av_info");
+    // Cheats are optional: a core without these exports simply has none.
+    h->cheat_reset = (retro_cheat_reset_fn)dlsym(h->handle, "retro_cheat_reset");
+    h->cheat_set = (retro_cheat_set_fn)dlsym(h->handle, "retro_cheat_set");
     h->aspect_ratio = 0;
     h->fps = 60.0;
     h->sample_rate = 32000.0;
@@ -279,11 +286,25 @@ bool core_load_save(CoreHandle* h, void* data, size_t size) {
     if (h->unserialize) return h->unserialize(data, size);
     return false;
 }
+
+// Cheats (Game Genie / Action Replay codes, decoded by the core itself)
+bool core_cheats_supported(CoreHandle* h) {
+    return h && h->cheat_reset && h->cheat_set;
+}
+
+void core_cheat_reset(CoreHandle* h) {
+    if (h && h->cheat_reset) h->cheat_reset();
+}
+
+void core_cheat_set(CoreHandle* h, unsigned index, const char* code) {
+    if (h && h->cheat_set) h->cheat_set(index, true, code);
+}
 */
 import "C"
 import (
 	"fmt"
 	"os"
+	"strings"
 	"unsafe"
 )
 
@@ -458,6 +479,39 @@ func (b *Bridge) LoadState(data []byte) error {
 		return fmt.Errorf("load state failed")
 	}
 	return nil
+}
+
+// CheatsSupported reports whether the loaded core accepts cheat codes
+// (Game Genie / Action Replay). The core decodes the codes itself.
+func (b *Bridge) CheatsSupported() bool {
+	return bool(C.core_cheats_supported(b.handle))
+}
+
+// ApplyCheats replaces the core's cheat list with the given codes and
+// returns how many entries were set. Multi-part codes joined with '+'
+// are registered as separate entries, the way cheat managers hand
+// them to cores.
+func (b *Bridge) ApplyCheats(codes []string) int {
+	C.core_cheat_reset(b.handle)
+	idx := 0
+	for _, code := range codes {
+		for _, part := range strings.Split(code, "+") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			ccode := C.CString(part)
+			C.core_cheat_set(b.handle, C.unsigned(idx), ccode)
+			C.free(unsafe.Pointer(ccode))
+			idx++
+		}
+	}
+	return idx
+}
+
+// ClearCheats removes every cheat from the core.
+func (b *Bridge) ClearCheats() {
+	C.core_cheat_reset(b.handle)
 }
 
 // Joypad button IDs (libretro RETRO_DEVICE_ID_JOYPAD_*)

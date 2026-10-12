@@ -1,0 +1,30 @@
+[
+ {
+  "desc": "Slower Running",
+  "code": "AZSLPIAK"
+ },
+ {
+  "desc": "Faster Jumps",
+  "code": "AUSUPLAZ"
+ },
+ {
+  "desc": "Don't Lose Power-Ups When Hit",
+  "code": "SXULKNSE"
+ },
+ {
+  "desc": "Every Power-Up Acts As A Star",
+  "code": "ALASKA"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "SXIOPO"
+ },
+ {
+  "desc": "Higher Jumping From Turbo Running Only",
+  "code": "GPZUAG"
+ },
+ {
+  "desc": "Extra High Jumping From Turbo Running Only",
+  "code": "GAZUAG"
+ }
+]

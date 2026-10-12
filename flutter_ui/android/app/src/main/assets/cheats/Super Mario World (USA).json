@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Infinite Maximum Coins",
+  "code": "7E0DBF63"
+ },
+ {
+  "desc": "Powerup Always ?? In Level",
+  "code": "7E001900"
+ },
+ {
+  "desc": "In-level music mod",
+  "code": "7E0DDA00"
+ },
+ {
+  "desc": "Spare Item Type(In-Level)",
+  "code": "7E0DC200"
+ },
+ {
+  "desc": "Spare Item Type(On Map)",
+  "code": "7E0DBC00"
+ },
+ {
+  "desc": "Infinite 99 Lives",
+  "code": "7E0DBE63"
+ },
+ {
+  "desc": "Always 999 Time",
+  "code": "7E0F3109+7E0F3209+7E0F3309"
+ },
+ {
+  "desc": "Always 100 Bonus Points",
+  "code": "7E0F4864"
+ },
+ {
+  "desc": "Exit Level, Second Exit",
+  "code": "7E143401"
+ },
+ {
+  "desc": "Exit Level, Normal Exit",
+  "code": "7E149301"
+ },
+ {
+  "desc": "Disable Mosaic Effect",
+  "code": "7E0DB000"
+ },
+ {
+  "desc": "Activates Green Blocks",
+  "code": "7E1F2701"
+ },
+ {
+  "desc": "Activates Yellow Blocks",
+  "code": "7E1F2801"
+ },
+ {
+  "desc": "Activates Blue Blocks",
+  "code": "7E1F2901"
+ },
+ {
+  "desc": "Activates Red Blocks",
+  "code": "7E1F2A01"
+ },
+ {
+  "desc": "Deactivates Green Blocks",
+  "code": "7E1F2700"
+ },
+ {
+  "desc": "Deactivates Yellow Blocks",
+  "code": "7E1F2800"
+ },
+ {
+  "desc": "Deactivates Blue Blocks",
+  "code": "7E1F2900"
+ },
+ {
+  "desc": "Deactivates Red Blocks",
+  "code": "7E1F2A00"
+ },
+ {
+  "desc": "",
+  "code": "7E1F2A00"
+ },
+ {
+  "desc": "Mario On Ice",
+  "code": "EDA5-0F6F+61A5-040F+61A6-0D6F"
+ },
+ {
+  "desc": "Waterworld Mario",
+  "code": "EDA5-0F6F+69A5-040F+69A6-0D6F"
+ },
+ {
+  "desc": "Reverse Switch Palace Blocks",
+  "code": "2D80-0DE1+ED8B-0D89"
+ },
+ {
+  "desc": "Yoshi is Invincible",
+  "code": "89E4-AFD9+89C6-D4DB"
+ },
+ {
+  "desc": "Infinite Items Yoshi Picks Up",
+  "code": "82E9-64A0+82E2-04D0"
+ },
+ {
+  "desc": "Infinite Flying Time For Yoshi",
+  "code": "C2EC-0700"
+ },
+ {
+  "desc": "Collecting A Yoshi Coin Gives You Yoshi's Wings",
+  "code": "B9E5-A4AD+F8E5-A7DD"
+ },
+ {
+  "desc": "Multi-Jump and Low Gravity",
+  "code": "336B-D4D0"
+ },
+ {
+  "desc": "Shoot Fireballs Straight",
+  "code": "DDEA-6F07+DDB2-AFD8"
+ },
+ {
+  "desc": "Power-up Select",
+  "code": "EDA5-0F6F"
+ },
+ {
+  "desc": "Warp to Star World",
+  "code": "EDB7-0FBD"
+ },
+ {
+  "desc": "Rapid-Fire Fireballs (Facing Right Only)",
+  "code": "D5EB-6F07"
+ },
+ {
+  "desc": "Stomp 8 Enemies And Get 1-Ups",
+  "code": "C23B-AF07"
+ },
+ {
+  "desc": "Nintendo Debug #2",
+  "code": "DDA6-DF07"
+ },
+ {
+  "desc": "Blocks That Produce A Mushroom When Small & ! Boxes",
+  "code": "7E0DB4DD"
+ },
+ {
+  "desc": "Blocks That Produce A Flower",
+  "code": "7E0DB4DD"
+ },
+ {
+  "desc": "Blocks That Produce A Feather",
+  "code": "7E0DB4DD"
+ },
+ {
+  "desc": "Turn Blocks That Produce A Star",
+  "code": "7E0DB400"
+ },
+ {
+  "desc": "Turn Blocks That Produce A 1-Up Mushroom",
+  "code": "7E0DB400"
+ },
+ {
+  "desc": "Turn Blocks That Produce A Vine",
+  "code": "7E0DB400"
+ },
+ {
+  "desc": "Lakitu's Ammo Modifier",
+  "code": "7E0DB4DD"
+ },
+ {
+  "desc": "Lakitu's Ammo Modifier When Silver Pow Switch is Active",
+  "code": "7E0DB400"
+ },
+ {
+  "desc": "What Hatches From Green Eggs If You Don't Have Him",
+  "code": "7E0DB4DD"
+ },
+ {
+  "desc": "What Hatches From Green Eggs If You Already Have Him",
+  "code": "7E0DB400"
+ },
+ {
+  "desc": "Item Doesn't Fall From Box When You Get Hit",
+  "code": "6DEE-14DF+D4EE-140F"
+ },
+ {
+  "desc": "Start with 1 life instead of 5",
+  "code": "DDB4-6F07"
+ },
+ {
+  "desc": "Start with 9 lives",
+  "code": "D6B4-6F07"
+ },
+ {
+  "desc": "Start with 15 lives",
+  "code": "D3B4-6F07"
+ },
+ {
+  "desc": "Start with 25 lives",
+  "code": "F6B4-6F07"
+ },
+ {
+  "desc": "Start with 50 lives",
+  "code": "7FB4-6F07"
+ },
+ {
+  "desc": "Start with 99 lives",
+  "code": "14B4-6F07"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "C222-D4DD"
+ },
+ {
+  "desc": "Extra life at 5 coins instead of 100",
+  "code": "D964-A7D7+D967-AFA7"
+ },
+ {
+  "desc": "Extra life at 10 coins",
+  "code": "DC64-A7D7+DC67-AFA7"
+ },
+ {
+  "desc": "Extra life at 20 coins",
+  "code": "F064-A7D7+F067-AFA7"
+ },
+ {
+  "desc": "Extra life at 50 coins",
+  "code": "7464-A7D7+7467-AFA7"
+ },
+ {
+  "desc": "Start and stay invincible most of the time",
+  "code": "DD32-6DAD"
+ },
+ {
+  "desc": "Stay as Super Mario, Fire Mario or Cape Mario when you get hit",
+  "code": "CBED-6DDF"
+ },
+ {
+  "desc": "Stay as Super Mario, Fire Mario or Cape Mario when you fall and die",
+  "code": "CB28-DF6D"
+ },
+ {
+  "desc": "Low jump",
+  "code": "D02C-AF6F"
+ },
+ {
+  "desc": "Super jump",
+  "code": "D42C-AF6F"
+ },
+ {
+  "desc": "Mega-jump",
+  "code": "DF2C-AF6F"
+ },
+ {
+  "desc": "Infinite time",
+  "code": "C264-64D7"
+ },
+ {
+  "desc": "Extra life with every dragon coin instead of 5",
+  "code": "D2E5-A7AD"
+ },
+ {
+  "desc": "Start as Super Mario",
+  "code": "31B7-6F07"
+ },
+ {
+  "desc": "Start as Cape Mario",
+  "code": "CBB7-6D67+D4B7-6DA7+3CB7-6FD7+69B7-6F07"
+ },
+ {
+  "desc": "Start as Fire Mario",
+  "code": "CBB7-6D67+D7B7-6DA7+3CB7-6FD7+69B7-6F07"
+ },
+ {
+  "desc": "Little Yoshi grows into big Yoshi after eating just 1 enemy instead of 5",
+  "code": "DFCE-64A0"
+ },
+ {
+  "desc": "Little Yoshi grows into big Yoshi after eating just 2 enemies",
+  "code": "D4CE-64A0"
+ },
+ {
+  "desc": "Little Yoshi grows into big Yoshi after eating just 3 enemies",
+  "code": "D7CE-64A0"
+ },
+ {
+  "desc": "Little Yoshi grows into big Yoshi after eating just 4 enemies",
+  "code": "D0CE-64A0"
+ },
+ {
+  "desc": "Mutli-Jump Spin-Jumps, Hold For Slow Descent",
+  "code": "F53F-6767+DD3F-67A7"
+ },
+ {
+  "desc": "Coins Rack Up All The Time",
+  "code": "4064-ADD7"
+ },
+ {
+  "desc": "Get Yoshi Coin Must Of The Time",
+  "code": "40ED-A4AD"
+ },
+ {
+  "desc": "Get Coins Must Of The Time",
+  "code": "6DED-A7AD"
+ },
+ {
+  "desc": "Jump In Midair",
+  "code": "6D2E-0FDF"
+ },
+ {
+  "desc": "Disable Swimming",
+  "code": "1031-6DD4+6D30-67A4"
+ },
+ {
+  "desc": "Always Shoot Fireballs",
+  "code": "4026-DDAD"
+ },
+ {
+  "desc": "Invincible Pits/Lava/Enemies",
+  "code": "CBED-646F+6DED-64AF+69ED-67DF+52ED-670F+18ED-676F+CECF-0FA1"
+ },
+ {
+  "desc": "Walk Through Walls",
+  "code": "1D3F-6D04+C23D-64D4+6D3F-0D67+1D37-6D64"
+ },
+ {
+  "desc": "Enemies Die When You Get Close To Them",
+  "code": "40C7-DDD1+6DC7-DF01+40C7-D761+40C0-DF01"
+ },
+ {
+  "desc": "Fireballs Hit Anywhere",
+  "code": "40C2-D7A6"
+ },
+ {
+  "desc": "Cape Hits Anywhere",
+  "code": "40BE-AD66"
+ },
+ {
+  "desc": "Fireballs Turn Most Enemies Into Lives",
+  "code": "56C4-0466"
+ },
+ {
+  "desc": "Fireballs Turn Most Enemies Into Starman",
+  "code": "51C4-0466"
+ },
+ {
+  "desc": "Fireballs Turn Most Enemies Into Flowers",
+  "code": "59C4-0466"
+ },
+ {
+  "desc": "Grab Key To Finish Level From Anywhere",
+  "code": "DD3D-6460"
+ },
+ {
+  "desc": "Press L / R To Cycle Items In The Item Box",
+  "code": "F6AE-07A7+A4AD-67D7+D2AD-6707+A4AD-67A7+D2AF-6DD7+D1AF-6D67+17AF-6FD7+CBAF-6F07+DFAF-6F67+62AF-6FA7+A4AF-64D7+D2AF-6407+1DAF-6467"
+ },
+ {
+  "desc": "Causes Mario To Jump And Float Until You Let Go Of Jump",
+  "code": "DD2C-AF6F"
+ },
+ {
+  "desc": "Funky Mario",
+  "code": "CBB7-6D67+DEB7-6DA7+3CB7-6FD7+69B7-6F07"
+ },
+ {
+  "desc": "Swim In Every Level!",
+  "code": "CBEA-6DAD"
+ },
+ {
+  "desc": "Fake Fire Mario",
+  "code": "7732-6DAD"
+ },
+ {
+  "desc": "Nighttime!",
+  "code": "0DED-AFDF"
+ },
+ {
+  "desc": "Fake Invincibility",
+  "code": "D032-6DAD"
+ },
+ {
+  "desc": "Jackhammer Jump",
+  "code": "232C-AF6F"
+ },
+ {
+  "desc": "Spontaneously Change From Mario To Luigi",
+  "code": "FD32-6DAD"
+ },
+ {
+  "desc": "If You Hold Down The B Button, You Float Around!",
+  "code": "EE2C-AF6F"
+ },
+ {
+  "desc": "Little Yoshie Only Has To Eat 13 Enemies To Get Big",
+  "code": "DECE-64A0"
+ },
+ {
+  "desc": "Little Yoshie Only Has To Eat 25 Enemies To Get Big",
+  "code": "F8CE-64A0"
+ },
+ {
+  "desc": "Extra Life After Each Coin, Even Yoshi Coins",
+  "code": "DD64-A7D7+DD67-AFA7"
+ }
+]

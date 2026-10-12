@@ -70,6 +70,10 @@ class EmulatorActivity : Activity(), TextureListener {
             finish()
             return
         }
+        // Cheats for this game (bundled list + the codes left on last
+        // time). Applied before the first frame runs.
+        loadCheatDb()
+        if (enabledCheats.isNotEmpty()) applyEnabledCheats()
         startAudio()
         Log.i(TAG, "onCreate done")
     }
@@ -258,10 +262,13 @@ class EmulatorActivity : Activity(), TextureListener {
 
         val filterName = FilterSettings.NAMES[FilterSettings.mode]
         val displayName = FilterSettings.DISPLAY_NAMES[FilterSettings.displayMode]
+        val cheatLabel =
+            if (enabledCheats.isEmpty()) "Cheats" else "Cheats: ${enabledCheats.size} on"
         val items = arrayOf(
             "Resume",
             "Save Game",
             "Load Game",
+            cheatLabel,
             "Picture: $filterName",
             "Display: $displayName",
             "Exit Game"
@@ -275,16 +282,129 @@ class EmulatorActivity : Activity(), TextureListener {
                     0 -> Unit // resume via dismiss
                     1 -> doSave()
                     2 -> doLoad()
-                    3 -> cycleFilter()
-                    4 -> toggleDisplay()
-                    5 -> finish()
+                    3 -> {
+                        // Keep the game parked while the cheat picker
+                        // is open; its own dismiss resumes play.
+                        keepPaused = true
+                        window.decorView.postDelayed({ showCheats() }, 200)
+                    }
+                    4 -> cycleFilter()
+                    5 -> toggleDisplay()
+                    6 -> finish()
                 }
             }
             .setOnDismissListener {
-                menuOpen = false
-                paused = false
-                try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
+                if (keepPaused) {
+                    keepPaused = false
+                } else {
+                    resumeFromMenu()
+                }
             }
+            .show()
+    }
+
+    private fun resumeFromMenu() {
+        menuOpen = false
+        paused = false
+        try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
+    }
+
+    // ---------------------------------------------------------------
+    // Cheats: bundled per-game lists (assets/cheats/<game>.json from
+    // the libretro cheat database), toggles persist per game in
+    // files/cheats/<game>.txt, one code per line.
+    // ---------------------------------------------------------------
+
+    private data class Cheat(val desc: String, val code: String)
+
+    private var cheatDb: List<Cheat> = emptyList()
+    private var enabledCheats: MutableSet<String> = mutableSetOf()
+    private var keepPaused = false
+
+    private fun cheatFile(): File {
+        val dir = File(filesDir, "cheats")
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, "${romBase()}.txt")
+    }
+
+    private fun loadCheatDb() {
+        val name = File(romPath).nameWithoutExtension
+        cheatDb = try {
+            val text = assets.open("cheats/$name.json").bufferedReader().readText()
+            val arr = org.json.JSONArray(text)
+            List(arr.length()) { i ->
+                val o = arr.getJSONObject(i)
+                Cheat(o.getString("desc"), o.getString("code"))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        enabledCheats = try {
+            val f = cheatFile()
+            if (f.exists()) {
+                f.readLines().map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .toMutableSet()
+            } else {
+                mutableSetOf()
+            }
+        } catch (e: Exception) {
+            mutableSetOf()
+        }
+        Log.i(TAG, "cheats: ${cheatDb.size} available, ${enabledCheats.size} enabled")
+    }
+
+    private fun persistCheats() {
+        try {
+            cheatFile().writeText(enabledCheats.joinToString("\n"))
+        } catch (e: Exception) {
+            Log.e(TAG, "cheat save failed", e)
+        }
+    }
+
+    private fun applyEnabledCheats() {
+        if (!Mobile.cheatsSupported()) {
+            Log.i(TAG, "core does not support cheats")
+            return
+        }
+        if (enabledCheats.isEmpty()) {
+            Mobile.clearCheats()
+            Log.i(TAG, "cheats cleared")
+            return
+        }
+        val n = Mobile.applyCheats(enabledCheats.joinToString("\n"))
+        Log.i(TAG, "applied $n cheat entries from ${enabledCheats.size} codes")
+    }
+
+    private fun showCheats() {
+        if (cheatDb.isEmpty()) {
+            Toast.makeText(this, "No cheats for this game yet", Toast.LENGTH_LONG).show()
+            resumeFromMenu()
+            return
+        }
+        val labels = cheatDb.map { it.desc }.toTypedArray()
+        val working = BooleanArray(cheatDb.size) { enabledCheats.contains(cheatDb[it].code) }
+        AlertDialog.Builder(this)
+            .setTitle("Cheats")
+            .setMultiChoiceItems(labels, working) { _, which, isChecked ->
+                working[which] = isChecked
+            }
+            .setPositiveButton("Done") { _, _ ->
+                enabledCheats = cheatDb
+                    .filterIndexed { i, _ -> working[i] }
+                    .map { it.code }
+                    .toMutableSet()
+                persistCheats()
+                applyEnabledCheats()
+                Toast.makeText(
+                    this,
+                    if (enabledCheats.isEmpty()) "Cheats off"
+                    else "${enabledCheats.size} cheat(s) on",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { resumeFromMenu() }
             .show()
     }
 

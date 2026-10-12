@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Infinite time",
+  "code": "7E137F00"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "7E057708"
+ },
+ {
+  "desc": "Drop slowly",
+  "code": "7E12A911"
+ },
+ {
+  "desc": "Level Mod",
+  "code": "7E003E01"
+ },
+ {
+  "desc": "Infinite Health",
+  "code": "7E057901"
+ },
+ {
+  "desc": "Moon Jump",
+  "code": "7E0EF380+7E052B09"
+ },
+ {
+  "desc": "Have 999 Bananas",
+  "code": "7E052C09+7E052D09"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "7E057763"
+ },
+ {
+  "desc": "Donkey Kong Moon Jump",
+  "code": "7E0EF200+7E0EF36C"
+ },
+ {
+  "desc": "Donkey Kong Can't Jump",
+  "code": "7E102B01"
+ },
+ {
+  "desc": "Donkey Kong Can't Roll",
+  "code": "7E16E504"
+ },
+ {
+  "desc": "Donkey Kong Infinite Rolls",
+  "code": "7E16E500"
+ },
+ {
+  "desc": "Donkey Kong Has Slight Pause Before Jump",
+  "code": "7E102B00"
+ },
+ {
+  "desc": "Diddy Kong Can't Jump",
+  "code": "7E102D01"
+ },
+ {
+  "desc": "Diddy Kong Can't Roll or Jump",
+  "code": "7E1636FE"
+ },
+ {
+  "desc": "Invincibility (Donkey Kong)",
+  "code": "7E16D5FF"
+ },
+ {
+  "desc": "Invincibility (Diddy Kong)",
+  "code": "7E16D7FF"
+ },
+ {
+  "desc": "Continous Roll (Donkey Kong)",
+  "code": "7E002A01"
+ },
+ {
+  "desc": "Continous Cartwheel (Diddy Kong)",
+  "code": "7E002801"
+ },
+ {
+  "desc": "Set 99 Bananas",
+  "code": "7E057B63"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "7E057509"
+ },
+ {
+  "desc": "Only Need Icon &quot;K&quot; of &quot;KONG&quot; For 1-UP",
+  "code": "7E057F07"
+ },
+ {
+  "desc": "Only Need Icon &quot;O&quot; of &quot;KONG&quot; For 1-UP",
+  "code": "7E057F0B"
+ },
+ {
+  "desc": "Only Need Icon &quot;N&quot; of &quot;KONG&quot; For 1-UP",
+  "code": "7E057F0D"
+ },
+ {
+  "desc": "Only Need Icon &quot;G&quot; of &quot;KONG&quot; For 1-UP",
+  "code": "7E057F0E"
+ },
+ {
+  "desc": "Only Need One Frog Icon For Bonus Stage",
+  "code": "7E057102"
+ },
+ {
+  "desc": "Only Need One Ostrich Icon For Bonus Stage",
+  "code": "7E057202"
+ },
+ {
+  "desc": "Only Need One Rhino Icon For Bonus Stage",
+  "code": "7E057302"
+ },
+ {
+  "desc": "Only Need One Swordfish Icon For Bonus Stage",
+  "code": "7E057402"
+ },
+ {
+  "desc": "Infinite Time In Bonus Stage",
+  "code": "7E137F99+7E13F399"
+ },
+ {
+  "desc": "One Hit To Kill Necky Boss",
+  "code": "7E150101"
+ },
+ {
+  "desc": "One Hit To Kill Very Gnawty Boss",
+  "code": "7E150301"
+ },
+ {
+  "desc": "Alternate Codes",
+  "code": "7E150301"
+ },
+ {
+  "desc": "Language Select",
+  "code": "7E05F810"
+ },
+ {
+  "desc": "Moon Jump Donkey Kong",
+  "code": "EE81-1273"
+ },
+ {
+  "desc": "Moon Jump Diddy Kong",
+  "code": "EE81-1E73"
+ },
+ {
+  "desc": "Moon Jump Animals",
+  "code": "EE8F-C273"
+ },
+ {
+  "desc": "Expresso MultiJump",
+  "code": "EE80-C373"
+ },
+ {
+  "desc": "See The Ending of DKC",
+  "code": "CD68-3FDD+226A-333D"
+ },
+ {
+  "desc": "Animals On All Boards Code",
+  "code": "D76B-3FDD+196A-333D"
+ },
+ {
+  "desc": "Invincibility [No 'Lockup']",
+  "code": "1DCC-CA7A+F6CF-13EA+F6CC-3E7A"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "C2C9-4E2C"
+ },
+ {
+  "desc": "Start with 8 lives",
+  "code": "D568-C34D"
+ },
+ {
+  "desc": "Start with 11 lives",
+  "code": "DC68-C34D"
+ },
+ {
+  "desc": "Start with 16 lives",
+  "code": "DE68-C34D"
+ },
+ {
+  "desc": "Start with 26 lives",
+  "code": "FB68-C34D"
+ },
+ {
+  "desc": "Start with 51 lives",
+  "code": "7468-C34D"
+ },
+ {
+  "desc": "Start with 76 lives",
+  "code": "0868-C34D"
+ },
+ {
+  "desc": "Start with 100 lives",
+  "code": "1768-C34D"
+ },
+ {
+  "desc": "When your last Kong is hit, the other one returns (reset if you get stuck)",
+  "code": "EE65-C37E"
+ },
+ {
+  "desc": "Almost invincible (Switch off if you get stuck)",
+  "code": "1DCC-CA7A"
+ },
+ {
+  "desc": "10 bananas needed for an extra life",
+  "code": "DBC1-3D6D+DCC1-34AD"
+ },
+ {
+  "desc": "25 bananas needed for an extra life",
+  "code": "F6C1-3D6D+FBC1-34AD"
+ },
+ {
+  "desc": "50 bananas needed for an extra life",
+  "code": "7FC1-3D6D+74C1-34AD"
+ },
+ {
+  "desc": "75 bananas needed for an extra life",
+  "code": "0CC1-3D6D+08C1-34AD"
+ },
+ {
+  "desc": "Keep animals between stages [keeping fish on a non-water stage or others on a water stage will cause problems]",
+  "code": "1D6B-3FDD+196A-333D"
+ },
+ {
+  "desc": "High jump for Donkey Kong",
+  "code": "A081-1273"
+ },
+ {
+  "desc": "Super jump for Donkey Kong",
+  "code": "2D81-1273"
+ },
+ {
+  "desc": "Mega-jump for Donkey Kong",
+  "code": "3D81-1273"
+ },
+ {
+  "desc": "High jump for Diddy Kong",
+  "code": "8081-1E73"
+ },
+ {
+  "desc": "Super jump for Diddy Kong",
+  "code": "AD81-1E73"
+ },
+ {
+  "desc": "Mega-jump for Diddy Kong",
+  "code": "2D81-1E73"
+ },
+ {
+  "desc": "High jump for all animals",
+  "code": "A08F-C273"
+ },
+ {
+  "desc": "Super jump for all animals",
+  "code": "2D8F-C273"
+ },
+ {
+  "desc": "Mega-jump for all animals",
+  "code": "3D8F-C273"
+ },
+ {
+  "desc": "Get both Kongs back on the map screen after dying [doesn't work when you fall off screen]",
+  "code": "D76B-337E"
+ },
+ {
+  "desc": "In the 2-player team mode, the inactive player can get control at any time by pressing A or SELECT on their controller",
+  "code": "DD8B-C28A"
+ },
+ {
+  "desc": "Pressing Start and then Select will exit any level, not just completed levels",
+  "code": "DDB9-3DD4"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "C2C1-4A9C"
+ },
+ {
+  "desc": "Start with 8 lives",
+  "code": "D568-C33D"
+ },
+ {
+  "desc": "Start with 11 lives",
+  "code": "DC68-C33D"
+ },
+ {
+  "desc": "Start with 16 lives",
+  "code": "DE68-C33D"
+ },
+ {
+  "desc": "Start with 26 lives",
+  "code": "FB68-C33D"
+ },
+ {
+  "desc": "Start with 51 lives",
+  "code": "7468-C33D"
+ },
+ {
+  "desc": "Start with 76 lives",
+  "code": "0868-C33D"
+ },
+ {
+  "desc": "Start with 100 lives",
+  "code": "1768-C33D"
+ },
+ {
+  "desc": "When your last Kong is hit, the other one returns (reset if you get stuck)",
+  "code": "EE66-C27E"
+ },
+ {
+  "desc": "Almost invincible (Switch off if you get stuck)",
+  "code": "1DCA-C2EA"
+ },
+ {
+  "desc": "10 bananas needed for an extra life",
+  "code": "DBC9-340D+DCC1-3D6D"
+ },
+ {
+  "desc": "25 bananas needed for an extra life",
+  "code": "F6C9-340D+FBC1-3D6D"
+ },
+ {
+  "desc": "50 bananas needed for an extra life",
+  "code": "7FC9-340D+74C1-3D6D"
+ },
+ {
+  "desc": "75 bananas needed for an extra life",
+  "code": "0CC9-340D+08C1-3D6D"
+ },
+ {
+  "desc": "Keep animals between stages [keeping fish on a non-water stage or others on a water stage will cause problems]",
+  "code": "1D6B-3D6D+166A-3ECD"
+ },
+ {
+  "desc": "High jump for Donkey Kong",
+  "code": "A086-13E3"
+ },
+ {
+  "desc": "Super jump for Donkey Kong",
+  "code": "2D86-13E3"
+ },
+ {
+  "desc": "Mega-jump for Donkey Kong",
+  "code": "3D86-13E3"
+ },
+ {
+  "desc": "High jump for Diddy Kong",
+  "code": "808B-1AE3"
+ },
+ {
+  "desc": "Super jump for Diddy Kong",
+  "code": "AD8B-1AE3"
+ },
+ {
+  "desc": "Mega-jump for Diddy Kong",
+  "code": "2D8B-1AE3"
+ },
+ {
+  "desc": "High jump for all animals",
+  "code": "A087-C3E3"
+ },
+ {
+  "desc": "Super jump for all animals",
+  "code": "2D87-C3E3"
+ },
+ {
+  "desc": "Mega-jump for all animals",
+  "code": "3087-C3E3"
+ },
+ {
+  "desc": "Get both Kongs back on the map screen after dying [doesn't work when you fall off screen]",
+  "code": "D76C-327E"
+ },
+ {
+  "desc": "In the 2-player team mode, the inactive player can get control at any time by pressing A or SELECT on their controller",
+  "code": "DD88-CE5A"
+ },
+ {
+  "desc": "Pressing Start and then Select will exit any level, not just completed levels",
+  "code": "DDB0-34A4"
+ },
+ {
+  "desc": "Jump In Midair",
+  "code": "6D84-33EA+4084-1273+6D84-1353+2D87-1273"
+ },
+ {
+  "desc": "Get Life Balloons From Anywhere",
+  "code": "6DC7-3ABB"
+ },
+ {
+  "desc": "Get KONG Letters From Anywhere",
+  "code": "6D2B-C272"
+ },
+ {
+  "desc": "Get Banana Bunches From Anywhere",
+  "code": "6D20-3E52"
+ },
+ {
+  "desc": "Get Midway Barrel From Anywhere",
+  "code": "6DEA-CEBB"
+ }
+]

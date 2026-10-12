@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Drive Thru Walls",
+  "code": "4FEB-CDA4"
+ },
+ {
+  "desc": "Player Shrink Modifiers [Player 1]",
+  "code": "7E019200+7E103100"
+ },
+ {
+  "desc": "Player Shrink Modifiers [Player 2]",
+  "code": "7E019400+7E103200"
+ },
+ {
+  "desc": "&quot;Choose Your Driver&quot; Message Stop Go",
+  "code": "7E006002"
+ },
+ {
+  "desc": "Debug Options",
+  "code": "C2BC-C7A9+D0BC-C4A9"
+ },
+ {
+  "desc": "Beat 50cc Mushroom Cup To Get Gold Cup On All Courses, And 150cc Courses",
+  "code": "DDEF-1D97+D4EF-1D27+F9EF-1FB7+F9EF-1F27"
+ },
+ {
+  "desc": "Random Effects On Impact",
+  "code": "0EEB-CDA4"
+ },
+ {
+  "desc": "No Coins",
+  "code": "20EB-CDA4"
+ },
+ {
+  "desc": "Racers Get Stuck",
+  "code": "2CEB-CDA4"
+ },
+ {
+  "desc": "High Jumps",
+  "code": "41EB-CDA4"
+ },
+ {
+  "desc": "No Jumps",
+  "code": "45EB-CDA4"
+ },
+ {
+  "desc": "Float Super High",
+  "code": "4BEB-CDA4"
+ },
+ {
+  "desc": "Ride In Air",
+  "code": "19EB-CDA4"
+ },
+ {
+  "desc": "Drunk Drivers",
+  "code": "C4EB-CDA4"
+ },
+ {
+  "desc": "Track Distortion (Bowser's Castle 1 Only)",
+  "code": "00AE-44BA"
+ },
+ {
+  "desc": "These Codes Can Cause Slight Increase In Various Karts",
+  "code": "EE3D-EE57+9886-EEB2"
+ },
+ {
+  "desc": "Computer Karts Are Invisible",
+  "code": "6EEB-CDA4"
+ },
+ {
+  "desc": "1000 Speed No Dust",
+  "code": "3FC4-CDA4"
+ },
+ {
+  "desc": "All Karts Except Yours Do Not Move",
+  "code": "9980-44DD"
+ },
+ {
+  "desc": "Time Never Gets Past 1 Minute",
+  "code": "3AC6-44DD"
+ },
+ {
+  "desc": "Hopping Code",
+  "code": "FDEB-67A7+2CAE-CDA4+4BEB-CDA4+3DEB-CDA4"
+ },
+ {
+  "desc": "Princess Is Invisible",
+  "code": "E18E-BBD2"
+ },
+ {
+  "desc": "Mud And Other Land Features Have No Effect On Karts",
+  "code": "80BA-93F5+E9EB-CDA4"
+ },
+ {
+  "desc": "No Background Music In Lap 5",
+  "code": "FA65-CDA4"
+ },
+ {
+  "desc": "Change Princess To Mario",
+  "code": "0DB6-4F6D"
+ },
+ {
+  "desc": "Change Koopa To Mario",
+  "code": "0DB6-446D"
+ },
+ {
+  "desc": "Change Yoshi To Mario",
+  "code": "0DB6-476D"
+ },
+ {
+  "desc": "Change Donkey Kong Jr. Into Red Yoshi",
+  "code": "00B6-44DD"
+ },
+ {
+  "desc": "Sensitive Steering",
+  "code": "F1C4-CDA4"
+ },
+ {
+  "desc": "Always In Last Place",
+  "code": "AFC4-CDA4"
+ },
+ {
+  "desc": "Pass Through Obstacles After Using Mushroom Or Running Over Turbo Arrow",
+  "code": "7338-CDA4"
+ },
+ {
+  "desc": "Pass Through Obstacles After Mushroom Or Turbo Arrow And Invisible",
+  "code": "2338-CDA4"
+ },
+ {
+  "desc": "Fly After Using Mushroom Or Running Over Turbo Arrow",
+  "code": "E338-CDA4"
+ },
+ {
+  "desc": "Invincibility",
+  "code": "1A3E-CDA4"
+ },
+ {
+  "desc": "Poor CPU Driving",
+  "code": "F4EB-CDA4"
+ },
+ {
+  "desc": "Drive Anywhere On Track",
+  "code": "4DEB-CDA4"
+ },
+ {
+  "desc": "Always Keep Coins",
+  "code": "03EB-CDA4"
+ },
+ {
+  "desc": "All Racers Appear As Ghosts",
+  "code": "67EB-CDA4"
+ },
+ {
+  "desc": "Unlimited Retries In GP Mode",
+  "code": "C7EB-CDA4"
+ },
+ {
+  "desc": "Driver Cannot Move",
+  "code": "CBEB-CDA4"
+ },
+ {
+  "desc": "Drive Sideways",
+  "code": "C8EB-CDA4"
+ },
+ {
+  "desc": "Spinning Kart",
+  "code": "87EB-CDA4"
+ },
+ {
+  "desc": "No Slow Down In Turns",
+  "code": "34EB-CDA4"
+ },
+ {
+  "desc": "Instant Top Speed, Instant Braking",
+  "code": "33EB-CDA4"
+ },
+ {
+  "desc": "Throw Up Pipes",
+  "code": "1DEB-CDA4"
+ },
+ {
+  "desc": "Cannot Pick Up Coins, ? Marks",
+  "code": "EFEB-CDA4"
+ },
+ {
+  "desc": "Slight Increase In Acceleration",
+  "code": "9886-EEB2+EE3D-EE57"
+ },
+ {
+  "desc": "Multi-Cam Mario Code",
+  "code": "1A3E-CDA4+5E38-4DD4+C4EB-CDA4+34EB-CDA4+E9EB-CDA4"
+ },
+ {
+  "desc": "Obtain Any Item Without Landing On A '?' Mark",
+  "code": "5E38-4DD4"
+ },
+ {
+  "desc": "Green Shells Bounce Very Fast",
+  "code": "CDEF-CDA4"
+ },
+ {
+  "desc": "Spin Out If You Go On Snow, Grass, Etc.",
+  "code": "37EB-CDA4"
+ },
+ {
+  "desc": "Can't Rank Out",
+  "code": "31C4-CDA4"
+ },
+ {
+  "desc": "Baby Carriage Cart",
+  "code": "F9C4-CDA4"
+ },
+ {
+  "desc": "Computer Doesn't Show Up On Map",
+  "code": "D5C4-CDA4"
+ },
+ {
+  "desc": "Faster Kart",
+  "code": "3F31-CDA4"
+ },
+ {
+  "desc": "Strange Jumps",
+  "code": "F3C4-CDA4"
+ },
+ {
+  "desc": "Automatic Smallness",
+  "code": "60EB-CDA4"
+ },
+ {
+  "desc": "Non-Bumpable",
+  "code": "36EB-CDA4"
+ },
+ {
+  "desc": "Better Steering",
+  "code": "5DE9-67A4"
+ },
+ {
+  "desc": "Lakita Kidnaps You",
+  "code": "47EB-CDA4"
+ },
+ {
+  "desc": "Terrible Muffler",
+  "code": "BABD-CDA4"
+ },
+ {
+  "desc": "Objects Remain On Track",
+  "code": "77EC-4DD4"
+ },
+ {
+  "desc": "Speed = 1CC",
+  "code": "25C4-CDA4"
+ },
+ {
+  "desc": "Weird",
+  "code": "EEC4-CDA4"
+ },
+ {
+  "desc": "Always See The Front of The Kart",
+  "code": "4CC4-CDA4"
+ },
+ {
+  "desc": "Always Jump Backward Instead of Forward",
+  "code": "C6C4-CDA4"
+ },
+ {
+  "desc": "Kart Doesn't Slow Down On Track",
+  "code": "C6C4-C4D4"
+ },
+ {
+  "desc": "Mushrooms Make You Jump",
+  "code": "3DC4-CDA4"
+ },
+ {
+  "desc": "Never Lose Speed",
+  "code": "B5C4-CDA4"
+ },
+ {
+  "desc": "Acceleration Freeze",
+  "code": "DDC4-CDA4"
+ },
+ {
+  "desc": "Weird Start",
+  "code": "DDEB-CDA4"
+ },
+ {
+  "desc": "Never Slow Down/Land In Water",
+  "code": "EEEB-CDA4"
+ },
+ {
+  "desc": "Super Boost",
+  "code": "ED4C-DE7E"
+ },
+ {
+  "desc": "Conditions Don't Wear Off",
+  "code": "AA4E-7DE5"
+ },
+ {
+  "desc": "Expert Code",
+  "code": "EE63-CDA4"
+ },
+ {
+  "desc": "Sliding Code",
+  "code": "32C4-CDA4"
+ },
+ {
+  "desc": "Perfect Sliding",
+  "code": "2EC4-CDA4"
+ },
+ {
+  "desc": "Race With Red Tinted Background",
+  "code": "CD64-4DDF"
+ },
+ {
+  "desc": "Invincible",
+  "code": "E33E-CDA4"
+ },
+ {
+  "desc": "Other Karts Spin Out",
+  "code": "3DEB-CDA4"
+ },
+ {
+  "desc": "Invisible",
+  "code": "41A3-CDA4"
+ },
+ {
+  "desc": "Feather Jumping Repeatedly (Game Usually Freezes)",
+  "code": "3FEB-CDA4"
+ },
+ {
+  "desc": "400 cc Driving",
+  "code": "94C4-44D7"
+ },
+ {
+  "desc": "Character &quot;Morph&quot; Codes",
+  "code": "33B6-44DD"
+ },
+ {
+  "desc": "Pipes Shoot Out of Your Car",
+  "code": "1FEB-CDA4"
+ },
+ {
+  "desc": "Karts Shoot Off Screen",
+  "code": "3EEB-CDA4"
+ },
+ {
+  "desc": "Front Wheels May Be Broken",
+  "code": "7DC4-CDA4"
+ },
+ {
+  "desc": "Odd Drivers",
+  "code": "F7C4-CDA4"
+ },
+ {
+  "desc": "Hit The &quot;X&quot; Button To Drive In Reverse",
+  "code": "1A6E-CDA4"
+ },
+ {
+  "desc": "Slow Motion Code",
+  "code": "6286-4F6D"
+ },
+ {
+  "desc": "Stupid Opponents!",
+  "code": "2282-44DD"
+ },
+ {
+  "desc": "Stop Your Opponents",
+  "code": "DF80-44DD"
+ },
+ {
+  "desc": "Faster And Slow Opponents",
+  "code": "DE86-44DD"
+ },
+ {
+  "desc": "Ultra Fast Opponents",
+  "code": "3786-44DD"
+ },
+ {
+  "desc": "Reset Timer At 00'00''",
+  "code": "DFC6-44DD"
+ },
+ {
+  "desc": "Stop Time Counter",
+  "code": "C9C6-44DD"
+ },
+ {
+  "desc": "Get Item Instantly",
+  "code": "DF81-37D9"
+ },
+ {
+  "desc": "Infinite Item When You Get One",
+  "code": "8B8F-4F69"
+ },
+ {
+  "desc": "Item Select",
+  "code": "AD88-3D60+CB88-3DD0"
+ },
+ {
+  "desc": "Koopa Troopa",
+  "code": "33B6-446D"
+ }
+]

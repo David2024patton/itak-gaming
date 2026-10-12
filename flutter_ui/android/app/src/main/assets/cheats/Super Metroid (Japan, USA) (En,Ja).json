@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Immune To Enemy Attacks",
+  "code": "7E18A801"
+ },
+ {
+  "desc": "Infinite Life",
+  "code": "7E09C2DB+7E09C305"
+ },
+ {
+  "desc": "Max Life",
+  "code": "7E09C4DB+7E09C505"
+ },
+ {
+  "desc": "Crateria Mapped",
+  "code": "7ED908FF"
+ },
+ {
+  "desc": "Brinstar Mapped",
+  "code": "7ED909FF"
+ },
+ {
+  "desc": "Norfair Mapped",
+  "code": "7ED90AFF"
+ },
+ {
+  "desc": "Wrecked Ship Mapped",
+  "code": "7ED90BFF"
+ },
+ {
+  "desc": "Maridia Mapped",
+  "code": "7ED90CFF"
+ },
+ {
+  "desc": "Tourain Mapped",
+  "code": "7ED90DFF"
+ },
+ {
+  "desc": "Infinite 999 Rockets",
+  "code": "7E09C6E7+7E09C703"
+ },
+ {
+  "desc": "Maximum 999 Rockets",
+  "code": "7E09C8E7+7E09C903"
+ },
+ {
+  "desc": "Maximum 99 Super Rockets",
+  "code": "7E09CC63"
+ },
+ {
+  "desc": "Infinite 99 Super Bombs",
+  "code": "7E09CE63"
+ },
+ {
+  "desc": "Maximum 99 Super Bombs",
+  "code": "7E09D063"
+ },
+ {
+  "desc": "0 Hours Played",
+  "code": "7E09E000"
+ },
+ {
+  "desc": "Can Access Tourain From Sunken Statues Room",
+  "code": "7ED820C1+7ED8211F"
+ },
+ {
+  "desc": "Have all suits and Misc Items",
+  "code": "7E09A4FF"
+ },
+ {
+  "desc": "Have all Boots and Bombs",
+  "code": "7E09A5FF"
+ },
+ {
+  "desc": "Have all Guns minus the Charge Beam",
+  "code": "7E09A8FF"
+ },
+ {
+  "desc": "Have Charge Beam",
+  "code": "7E09A9FF"
+ },
+ {
+  "desc": "Grapple and X-Ray",
+  "code": "7E09A3C0"
+ },
+ {
+  "desc": "Switching Areas Fills Map",
+  "code": "CE6B-1FAF+D76B-146F"
+ },
+ {
+  "desc": "Skip intro and start on Planet Zebes when starting a new game",
+  "code": "DD38-C4A8"
+ },
+ {
+  "desc": "Select area when loading a game [press right on map screen to select]",
+  "code": "DDCF-4461+6DCC-47A1"
+ },
+ {
+  "desc": "No energy loss from enemies",
+  "code": "C225-3005"
+ },
+ {
+  "desc": "Super jumps don't drain energy",
+  "code": "C22A-456D"
+ },
+ {
+  "desc": "Almost infinite missiles",
+  "code": "C288-C5A7"
+ },
+ {
+  "desc": "Almost infinite super missiles",
+  "code": "C28A-C9D7"
+ },
+ {
+  "desc": "Almost infinite super bombs",
+  "code": "3CA4-450D"
+ },
+ {
+  "desc": "Start with hyper gun in inventory",
+  "code": "62C5-14A6"
+ },
+ {
+  "desc": "Start with about 500 energy tanks",
+  "code": "E7D7-FAAD+DFD7-FA6D"
+ },
+ {
+  "desc": "Start with about 700 energy tanks",
+  "code": "88D7-FAAD+D4D7-FA6D"
+ },
+ {
+  "desc": "Start with about 1000 energy tanks",
+  "code": "35D7-FAAD+D7D7-FA6D"
+ },
+ {
+  "desc": "Start with about 1200 energy tanks",
+  "code": "CED7-FAAD+D0D7-FA6D"
+ },
+ {
+  "desc": "Start with about 1500 energy tanks",
+  "code": "28D7-FAAD+D9D7-FA6D"
+ },
+ {
+  "desc": "10 Maximum missiles",
+  "code": "DCD7-F26D"
+ },
+ {
+  "desc": "25 Maximum missiles",
+  "code": "FBD7-F26D"
+ },
+ {
+  "desc": "50 Maximum missiles",
+  "code": "74D7-F26D"
+ },
+ {
+  "desc": "75 Maximum missiles",
+  "code": "08D7-F26D"
+ },
+ {
+  "desc": "100 Maximum missiles",
+  "code": "10D7-F26D"
+ },
+ {
+  "desc": "125 Maximum missiles",
+  "code": "52D7-F26D"
+ },
+ {
+  "desc": "150 Maximum missiles",
+  "code": "B1D7-F26D"
+ },
+ {
+  "desc": "175 Maximum missiles",
+  "code": "CED7-F26D"
+ },
+ {
+  "desc": "200 Maximum missiles",
+  "code": "A6D7-F26D"
+ },
+ {
+  "desc": "5 Maximum super missiles",
+  "code": "D9D7-F36D"
+ },
+ {
+  "desc": "10 Maximum super missiles",
+  "code": "DCD7-F36D"
+ },
+ {
+  "desc": "25 Maximum super missiles",
+  "code": "FBD7-F36D"
+ },
+ {
+  "desc": "50 Maximum super missiles",
+  "code": "74D7-F36D"
+ },
+ {
+  "desc": "5 Maximum super bombs",
+  "code": "D9D7-FE6D"
+ },
+ {
+  "desc": "10 Maximum super bombs",
+  "code": "DCD7-FE6D"
+ },
+ {
+  "desc": "25 Maximum super bombs",
+  "code": "FBD7-FE6D"
+ },
+ {
+  "desc": "50 Maximum super bombs",
+  "code": "74D7-FE6D"
+ },
+ {
+  "desc": "Set hours played to 0 [for better ending]",
+  "code": "DDD0-FE6D"
+ },
+ {
+  "desc": "Add charge beam",
+  "code": "FDDF-F2AD"
+ },
+ {
+  "desc": "Get wave beam",
+  "code": "DFDF-F26D"
+ },
+ {
+  "desc": "Get ice and wave beams",
+  "code": "D7DF-F26D"
+ },
+ {
+  "desc": "Get ice, wave, and spazer beam",
+  "code": "D5DF-F26D"
+ },
+ {
+  "desc": "Get ice, wave, spazer, and plasma beams",
+  "code": "DEDF-F26D"
+ },
+ {
+  "desc": "Add ball",
+  "code": "D0DF-FA6D"
+ },
+ {
+  "desc": "Add ball and varia suit",
+  "code": "D9DF-FA6D"
+ },
+ {
+  "desc": "Add ball, varia suit, spring ball",
+  "code": "D5DF-FA6D"
+ },
+ {
+  "desc": "Add ball, varia suit, spring ball, gravity suit",
+  "code": "45DF-FA6D"
+ },
+ {
+  "desc": "Add ball, varia suit, spring ball, screw attack, gravity suit",
+  "code": "4EDF-FA6D"
+ },
+ {
+  "desc": "Add bomb",
+  "code": "FDDF-FAAD"
+ },
+ {
+  "desc": "Add X-ray",
+  "code": "6DDF-FAAD+6DDF-FA0D"
+ },
+ {
+  "desc": "Add X-ray and grapple",
+  "code": "ADDF-FAAD+ADDF-FA0D"
+ },
+ {
+  "desc": "Add X-ray and bomb",
+  "code": "BDDF-FAAD+BDDF-FA0D"
+ },
+ {
+  "desc": "Add X-ray, grapple, bomb",
+  "code": "2DDF-FAAD+2DDF-FA0D"
+ },
+ {
+  "desc": "Add bomb and hi-jump boots",
+  "code": "FFDF-FAAD"
+ },
+ {
+  "desc": "Add bomb, hi-jump boots and speed boots",
+  "code": "7FDF-FAAD"
+ },
+ {
+  "desc": "Add bomb, all boots",
+  "code": "77DF-FAAD"
+ },
+ {
+  "desc": "Add all boots, bomb, grapple, X-ray",
+  "code": "E7DF-FAAD+E7DF-FA0D"
+ },
+ {
+  "desc": "Crateria is already mapped out",
+  "code": "EED9-93DD"
+ },
+ {
+  "desc": "Brinstar is already mapped out",
+  "code": "EED9-930D"
+ },
+ {
+  "desc": "Norfair is already mapped out",
+  "code": "EED9-936D"
+ },
+ {
+  "desc": "Wrecked ship is already mapped out",
+  "code": "EED9-93AD"
+ },
+ {
+  "desc": "Maridia is already mapped out",
+  "code": "EED9-9EDD"
+ },
+ {
+  "desc": "Tourian is already mapped out",
+  "code": "EED9-9E0D"
+ },
+ {
+  "desc": "Avoid sinking in Maridia sand",
+  "code": "6D8F-14FF"
+ },
+ {
+  "desc": "Event Modifier",
+  "code": "DFDB-11D4"
+ },
+ {
+  "desc": "Disable SFX",
+  "code": "DFDB-1104"
+ },
+ {
+  "desc": "Brightness Control",
+  "code": "7E005100"
+ },
+ {
+  "desc": "Disable Low Health Alarm",
+  "code": "F036-C964"
+ },
+ {
+  "desc": "Full movement speed in Maridia sand",
+  "code": "6D8F-14FF+DDBF-4504"
+ },
+ {
+  "desc": "Get All Items In Current Room",
+  "code": "402B-3DB7+402E-3FF7"
+ },
+ {
+  "desc": "Jump In Midair - Button A",
+  "code": "C933-C9A7+6333-C1D7+DC33-C107+BD33-C167+D033-C1A7+4433-C5D7+8A33-C507+B633-C567+BD33-C5A7"
+ },
+ {
+  "desc": "Jump In Midair - Button B",
+  "code": "C933-C9A7+6E33-C1D7+DC33-C107+BD33-C167+D033-C1A7+4433-C5D7+8A33-C507+B633-C567+BD33-C5A7"
+ },
+ {
+  "desc": "Have Speed Booster Effect",
+  "code": "6DCC-4BDF+6DC8-4CDF"
+ },
+ {
+  "desc": "Enemies Die When You Get Close To Them",
+  "code": "6DCC-4BDF+6DC3-4B6D+FCC3-4BAD+18CB-3C1F+D18F-3601+1825-1B4D"
+ },
+ {
+  "desc": "Enemies Die When You Get Close To Them",
+  "code": "6DCC-4BDF+6DBF-3BA4+40BF-3CD4+18BB-46F2+D18F-3601+1825-1B4D+1826-38D6"
+ },
+ {
+  "desc": "Invincibility Projectiles",
+  "code": "1DB4-16A4"
+ },
+ {
+  "desc": "Invincibility Spikes",
+  "code": "6DB1-4194+6D62-C0B7+6D6B-C927"
+ },
+ {
+  "desc": "Metroids Can Be Killed Without Freezing Them",
+  "code": "403F-38DE+6D34-3BAE"
+ },
+ {
+  "desc": "Walk Through Walls",
+  "code": "6DB4-39BF"
+ },
+ {
+  "desc": "Jump In Mid Air",
+  "code": "6DB8-39BF+6D3D-C5DF"
+ },
+ {
+  "desc": "Jump Through Ceilings",
+  "code": "DDB0-C9FF"
+ },
+ {
+  "desc": "Hit Anywhere (Projectiles)",
+  "code": "6DB1-3C6F+40C8-18DD+6DC2-1BDD"
+ },
+ {
+  "desc": "Allow Space Station Inventory Access",
+  "code": "4039-C504"
+ },
+ {
+  "desc": "Press Start to Beat the Game",
+  "code": "4135-C1D4"
+ },
+ {
+  "desc": "All Doors Open",
+  "code": "6DB9-409F+6DBF-412F"
+ }
+]

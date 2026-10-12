@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Mario Lives Mod",
+  "code": "0736:63"
+ },
+ {
+  "desc": "Infinite Time",
+  "code": "05EE:09+05EF:09+05F0:09"
+ },
+ {
+  "desc": "Max P Meter",
+  "code": "03DD:7F"
+ },
+ {
+  "desc": "Hammer Bros. 1 On Map Modifier [See Note!]",
+  "code": "7F17:00"
+ },
+ {
+  "desc": "Hammer Bros. 2 On Map Modifier",
+  "code": "7F18:00"
+ },
+ {
+  "desc": "Hammer Bros. 3 On Map Modifier",
+  "code": "7F19:00"
+ },
+ {
+  "desc": "Hammer Bros. 4 On Map Modifier",
+  "code": "7F1A:00"
+ },
+ {
+  "desc": "Lives DOUBLE When You Die",
+  "code": "YLXPLOVS"
+ },
+ {
+  "desc": "Everytime You Hit A ? Block, Or Collect A Power-Up, Or Kill Enemies, You Gain 1-UPs Instead Of Points",
+  "code": "NEPZXZ"
+ },
+ {
+  "desc": "Coins And Points Rack Up All The Time",
+  "code": "KKGZTO"
+ },
+ {
+  "desc": "Moon Jumps, Just Don't Shoot A Plant",
+  "code": "SXLZSK"
+ },
+ {
+  "desc": "Ending",
+  "code": "NKGZSO"
+ },
+ {
+  "desc": "Debug Mode",
+  "code": "KKKZSPIU"
+ },
+ {
+  "desc": "Always Be Behind Background",
+  "code": "AAOGNYTA"
+ },
+ {
+  "desc": "Re-Enterable Levels Beaten By Mario",
+  "code": "AEUGNSSL"
+ },
+ {
+  "desc": "Re-Enterable Mushroom Houses Beaten By Mario",
+  "code": "AKUGNSSL"
+ },
+ {
+  "desc": "Lava No Longer Kills Mario",
+  "code": "NYNZPAKO"
+ },
+ {
+  "desc": "When Tanooki Mario Goes To Turn Into A Statue, He Instead Gains The Magic White Block Power",
+  "code": "EEVZLUZN"
+ },
+ {
+  "desc": "Turns All Bricks Into Coins",
+  "code": "AGOGVLYT"
+ },
+ {
+  "desc": "Many Blocks Will Have Infinite Multiple Coins Inside Them",
+  "code": "LVUSVKYI"
+ },
+ {
+  "desc": "Start And Stay As Invincible Mario",
+  "code": "ONKXGLIE"
+ },
+ {
+  "desc": "Start The Game As ???",
+  "code": "AEUXKGAE"
+ },
+ {
+  "desc": "No Turbo Running",
+  "code": "AANZKLLE"
+ },
+ {
+  "desc": "2 Marios When You Press &quot;B&quot;",
+  "code": "EANZKLLA"
+ },
+ {
+  "desc": "Infinite Time 2 (Works On All Levels)",
+  "code": "SXKXKNVK"
+ },
+ {
+  "desc": "Infinite Time In World 1-1",
+  "code": "EKEUXLAA"
+ },
+ {
+  "desc": "Infinite Time In World 1-2",
+  "code": "EGUZXNAE"
+ },
+ {
+  "desc": "Infinite Time In World 1-3",
+  "code": "EGOZOTAA"
+ },
+ {
+  "desc": "Infinite Time In World 1-5",
+  "code": "OGKXOZPA"
+ },
+ {
+  "desc": "Infinite Time In World 1-6",
+  "code": "EKULAUAE"
+ },
+ {
+  "desc": "Invulnerable Mario",
+  "code": "AENINEZZ"
+ },
+ {
+  "desc": "Constant Starman",
+  "code": "AEVGEVZZ"
+ },
+ {
+  "desc": "Infinite Re-Use of Items For Mario And Luigi",
+  "code": "ATUXYVOP"
+ },
+ {
+  "desc": "1 Coin For A 1 Up",
+  "code": "PEEULAGT+PEOLAAGT"
+ },
+ {
+  "desc": "All Powers Can Fly",
+  "code": "AEVZVKAA"
+ },
+ {
+  "desc": "All Powers Throw Hammers",
+  "code": "AAKZPKLI+AEVZPZPA+AASZAZYP"
+ },
+ {
+  "desc": "Somersault Mario",
+  "code": "AAKXSKTP"
+ },
+ {
+  "desc": "Backwards Animations For Things (Backgrounds, Some Sprite Animations)",
+  "code": "VKAYPI"
+ },
+ {
+  "desc": "Fireballs Turn Most Solid Objects Into Coins",
+  "code": "AAKXTIYP+AAVZAIIA"
+ },
+ {
+  "desc": "Raccoon/Tanooki Mario's tail wag causes hovering [",
+  "code": "UYOZNIAP"
+ },
+ {
+  "desc": "Raccoon/Tanooki Mario's tail wag causes a small ju",
+  "code": "EIOZNIAO"
+ },
+ {
+  "desc": "Ice Mode [All Objects Give Ice Traction]",
+  "code": "PEVUKIAA"
+ },
+ {
+  "desc": "Super Ice Mode [Even Slippier Traction]",
+  "code": "ZEVUKIAA"
+ },
+ {
+  "desc": "Kicked Shells Go Through Objects",
+  "code": "SZVIAPSP"
+ },
+ {
+  "desc": "Invincible",
+  "code": "VXKXGLIE"
+ },
+ {
+  "desc": "Flying Mario",
+  "code": "KUKXGLIE"
+ },
+ {
+  "desc": "99 Lives After Continue",
+  "code": "YNKPTZGE"
+ },
+ {
+  "desc": "Lets Super Mario Turn Into Fiery When He's Hit",
+  "code": "KGSIUZZA"
+ },
+ {
+  "desc": "Lets Super Mario Turn Into Tanooki When He's Hit",
+  "code": "SGSIUZZA"
+ },
+ {
+  "desc": "Lets Super Mario Turn Into Frog When He's Hit",
+  "code": "VGSIUZZA"
+ },
+ {
+  "desc": "Super Mushroom Turns Mario Small",
+  "code": "PEOXNAZA"
+ },
+ {
+  "desc": "Super Mushroom Turns Mario Into Fire Mario",
+  "code": "LEOXNAZA"
+ },
+ {
+  "desc": "Super Mushroom Turns Mario Into Raccoon Mario",
+  "code": "GEOXNAZA"
+ },
+ {
+  "desc": "Super Mushroom Turns Mario Into Frog Mario",
+  "code": "IEOXNAZA"
+ },
+ {
+  "desc": "Super Mushroom turns Mario Into Tanooki Mario",
+  "code": "TEOXNAZA"
+ },
+ {
+  "desc": "Super Mushroom turns Mario Into Hammer Mario",
+  "code": "YEOXNAZA"
+ },
+ {
+  "desc": "Fire Flower Turns Mario Small",
+  "code": "PAEXNZLA"
+ },
+ {
+  "desc": "Fire Flower Turns Mario Into Big Mario",
+  "code": "ZAEXNZLA"
+ },
+ {
+  "desc": "Fire Flower Turns Mario Into Raccoon Mario",
+  "code": "GAEXNZLA"
+ },
+ {
+  "desc": "Fire Flower Turns Mario Into Frog Mario",
+  "code": "IAEXNZLA"
+ },
+ {
+  "desc": "Fire Flower Turns Mario Into Tanooki Mario",
+  "code": "TAEXNZLA"
+ },
+ {
+  "desc": "Fire Flower Turns Mario Into Hammer Mario",
+  "code": "YAEXNZLA"
+ },
+ {
+  "desc": "Super Leaf Turns Mario Small",
+  "code": "PAKXVGGA"
+ },
+ {
+  "desc": "Super Leaf Turns Mario Into Big Mario",
+  "code": "ZAKXVGGA"
+ },
+ {
+  "desc": "Super Leaf Turns Mario Into Fire Mario",
+  "code": "LAKXVGGA"
+ },
+ {
+  "desc": "Super Leaf Turns Mario Into Frog Mario",
+  "code": "IAKXVGGA"
+ },
+ {
+  "desc": "Super Leaf Turns Mario Into Tanooki Mario",
+  "code": "TAKXVGGA"
+ },
+ {
+  "desc": "Super Leaf Turns Mario Into Hammer Mario",
+  "code": "YAKXVGGA"
+ },
+ {
+  "desc": "When Mario Begins Flying, He Gains P-Wing Abilities (Fly Forever Until Hit)",
+  "code": "NNOXXGEE"
+ },
+ {
+  "desc": "Small Mario Can Fly/Float",
+  "code": "PEVGALAA"
+ },
+ {
+  "desc": "Big Mario Can Fly/Float",
+  "code": "PEVGPLAA"
+ },
+ {
+  "desc": "Fire Mario Can Fly/Float",
+  "code": "PEVGZLAA"
+ },
+ {
+  "desc": "Raccoon Mario Cannot Fly/Float",
+  "code": "AEVGLLPA"
+ },
+ {
+  "desc": "Frog Mario Can Fly (Good Luck Getting A Full P-Meter)/Float",
+  "code": "LEVGGLZA"
+ },
+ {
+  "desc": "Tanooki Mario Cannot Fly/Float",
+  "code": "AEVGILPA"
+ },
+ {
+  "desc": "Hammer Mario Can Fly/Float",
+  "code": "LEVGTLZA"
+ },
+ {
+  "desc": "Small Mario Throws Fireballs Instead of Fire Mario",
+  "code": "AAKXTZZA"
+ },
+ {
+  "desc": "Big Mario Throws Fireballs Instead of Fire Mario",
+  "code": "PAKXTZZA"
+ },
+ {
+  "desc": "Raccoon Mario Throws Fireballs Instead of Fire Mario",
+  "code": "LAKXTZZA"
+ },
+ {
+  "desc": "Frog Mario Throws Fireballs Instead of Fire Mario",
+  "code": "GAKXTZZA"
+ },
+ {
+  "desc": "Tanooki Mario Throws Fireballs Instead of Fire Mario",
+  "code": "IAKXTZZA"
+ },
+ {
+  "desc": "Everyone Throws Fireballs [Except Hammer Mario]",
+  "code": "AASZAZYP"
+ },
+ {
+  "desc": "Mushrooms Are Now Fire Flowers",
+  "code": "PONZPKIE"
+ },
+ {
+  "desc": "Mushrooms Are Now Super Leafs",
+  "code": "TONZPKIE"
+ },
+ {
+  "desc": "Mushrooms Are Now Super Stars",
+  "code": "GENZPKIE"
+ },
+ {
+  "desc": "Mushrooms Are Now Kuribo's Shoes",
+  "code": "LXNZPKIE"
+ },
+ {
+  "desc": "Super Leafs Are Now Super Stars",
+  "code": "GEVXYKTO"
+ },
+ {
+  "desc": "Super Leafs Are Now Kuribo's Shoes",
+  "code": "LXVXYKTO"
+ },
+ {
+  "desc": "Super Leafs Are Now Turtle Shells",
+  "code": "GVVXYKTO"
+ },
+ {
+  "desc": "Turns Flying Koopas Into 1-Ups When Stomped",
+  "code": "LEOZGEGV"
+ },
+ {
+  "desc": "Start As Super Mario",
+  "code": "PEUXKGAA"
+ },
+ {
+  "desc": "Can Walk Anywheres On World Maps",
+  "code": "OXKIPZOS+APKSALAZ"
+ },
+ {
+  "desc": "Can Pass Over Most Stages",
+  "code": "EIXKXTEY"
+ },
+ {
+  "desc": "Plains 1",
+  "code": "GGNUGGXE+NZNUIKUL"
+ },
+ {
+  "desc": "Plains 2",
+  "code": "KZNUGGXE+OZNUIKUL"
+ },
+ {
+  "desc": "Dungeon",
+  "code": "ZZXUAGPZ+GINUGGXA+NLNUIKUL"
+ },
+ {
+  "desc": "Underground 2",
+  "code": "LZXUAGPZ+ZGNUGGXA+KLNUIKUL"
+ },
+ {
+  "desc": "Sky 1",
+  "code": "GZXUAGPZ+SGNUGGXE+SZNUIKUU"
+ },
+ {
+  "desc": "Sky 3",
+  "code": "GZXUAGPZ+KGNUGGXA+ELNUIKUL"
+ },
+ {
+  "desc": "Cloudy 1",
+  "code": "IZXUAGPX+OZNUGGXE+KZNUIKUU"
+ }
+]

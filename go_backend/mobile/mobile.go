@@ -5,6 +5,7 @@ package mobile
 
 import (
 	"encoding/binary"
+	"strings"
 
 	"github.com/davidpatton/itak-gaming/go_backend/internal/core"
 )
@@ -161,6 +162,37 @@ func LoadState(data []byte) error {
 		return errNoCore
 	}
 	return emu.LoadState(data)
+}
+
+// CheatsSupported reports whether the loaded core takes cheat codes.
+func CheatsSupported() bool {
+	if emu == nil {
+		return false
+	}
+	return emu.CheatsSupported()
+}
+
+// ApplyCheats replaces the core's cheat list. Codes arrive newline
+// separated; multi-part codes keep their '+' joins and are expanded
+// by the bridge. Returns how many entries were set on the core.
+func ApplyCheats(joined string) int {
+	if emu == nil {
+		return 0
+	}
+	var codes []string
+	for _, line := range strings.Split(joined, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			codes = append(codes, line)
+		}
+	}
+	return emu.ApplyCheats(codes)
+}
+
+// ClearCheats removes all cheats from the core.
+func ClearCheats() {
+	if emu != nil {
+		emu.ClearCheats()
+	}
 }
 
 // Close shuts down the core.

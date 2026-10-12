@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "High Max. Health",
+  "code": "7E08FF44"
+ },
+ {
+  "desc": "Infinite Health",
+  "code": "7E0A7944"
+ },
+ {
+  "desc": "Debug Mode On",
+  "code": "7E010C01"
+ },
+ {
+  "desc": "Cheats On",
+  "code": "7E0110C0"
+ },
+ {
+  "desc": "Always Plasma Gun",
+  "code": "7E098504"
+ },
+ {
+  "desc": "Always Rapid Ion",
+  "code": "7E098503"
+ },
+ {
+  "desc": "Always Seeker Gun",
+  "code": "7E098502"
+ },
+ {
+  "desc": "Infinite Jets",
+  "code": "7E087224"
+ },
+ {
+  "desc": "Detonator Lasts",
+  "code": "7E0977FF"
+ },
+ {
+  "desc": "Infinite Detonators",
+  "code": "7E097806"
+ },
+ {
+  "desc": "Infinite Fighter Life",
+  "code": "7E087664"
+ },
+ {
+  "desc": "Infinite Torpedoes",
+  "code": "7E087863"
+ },
+ {
+  "desc": "Quick End D. Star",
+  "code": "7E087300"
+ },
+ {
+  "desc": "Start with 2 lives",
+  "code": "DF35-CDA0"
+ },
+ {
+  "desc": "Start with 6 lives",
+  "code": "D935-CDA0"
+ },
+ {
+  "desc": "Start with 8 lives",
+  "code": "D535-CDA0"
+ },
+ {
+  "desc": "Start with 11 lives",
+  "code": "DC35-CDA0"
+ },
+ {
+  "desc": "Start with 16 lives",
+  "code": "DE35-CDA0"
+ },
+ {
+  "desc": "Start with 26 lives",
+  "code": "FB35-CDA0"
+ },
+ {
+  "desc": "Start with 51 lives",
+  "code": "7435-CDA0"
+ },
+ {
+  "desc": "Start with 100 lives",
+  "code": "1735-CDA0"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "C232-14D4+CB6C-3767"
+ },
+ {
+  "desc": "Start with no continues",
+  "code": "DD3B-C760"
+ },
+ {
+  "desc": "Start with 5 continues",
+  "code": "D93B-C760"
+ },
+ {
+  "desc": "Start with 7 continues",
+  "code": "D53B-C760"
+ },
+ {
+  "desc": "Start with 10 continues",
+  "code": "DC3B-C760"
+ },
+ {
+  "desc": "Start with 15 continues",
+  "code": "DE3B-C760"
+ },
+ {
+  "desc": "Start with 25 continues",
+  "code": "FB3B-C760"
+ },
+ {
+  "desc": "Start with 50 continues",
+  "code": "743B-C760"
+ },
+ {
+  "desc": "Start with 99 continues",
+  "code": "173B-C760"
+ },
+ {
+  "desc": "Infinite continues",
+  "code": "4A21-14D5"
+ },
+ {
+  "desc": "Protection against most damage",
+  "code": "1D34-C704"
+ },
+ {
+  "desc": "Start with 1/2 as much health as usual [Easy Difficulty]",
+  "code": "F435-CFA0"
+ },
+ {
+  "desc": "Start with twice as much health as usual [Easy Difficulty]",
+  "code": "0635-CFA0"
+ },
+ {
+  "desc": "Small hearts restore half as much health as usual [Easy Difficulty]",
+  "code": "D43B-CF00"
+ },
+ {
+  "desc": "Small hearts restore twice as much health as usual [Easy Difficulty]",
+  "code": "D13B-CF00"
+ },
+ {
+  "desc": "Small hearts restore 4 times as much health as usual [Easy Difficulty]",
+  "code": "DA3B-CF00"
+ },
+ {
+  "desc": "Start with 1/2 as much health as usual [Brave Difficulty]",
+  "code": "FD35-C400"
+ },
+ {
+  "desc": "Start with twice as much health as usual [Brave Difficulty]",
+  "code": "0D35-C400"
+ },
+ {
+  "desc": "Small hearts restore half as much health as usual [Brave Difficulty]",
+  "code": "DF3B-CFA0"
+ },
+ {
+  "desc": "Small hearts restore twice as much health as usual [Brave Difficulty]",
+  "code": "D03B-CFA0"
+ },
+ {
+  "desc": "Small hearts restore 4 times as much health as usual [Brave Difficulty]",
+  "code": "D63B-CFA0"
+ },
+ {
+  "desc": "Start with 1/2 as much health as usual [Jedi Difficulty]",
+  "code": "D335-C4A0"
+ },
+ {
+  "desc": "Start with twice as much health as usual [Jedi Difficulty]",
+  "code": "7635-C4A0"
+ },
+ {
+  "desc": "Small hearts restore half as much health as usual [Jedi Difficulty]",
+  "code": "DF3B-C400"
+ },
+ {
+  "desc": "Small hearts restore twice as much health as usual [Jedi Difficulty]",
+  "code": "D03B-C400"
+ },
+ {
+  "desc": "Small hearts restore 4 times as much health as usual [Jedi Difficulty]",
+  "code": "D63B-C400"
+ },
+ {
+  "desc": "Begin the game with the lightsaber",
+  "code": "DDB0-C767"
+ },
+ {
+  "desc": "Han Solo &amp; Chewbacca begin with a blaster",
+  "code": "DD88-37A5"
+ },
+ {
+  "desc": "Han Solo &amp; Chewbacca begin with a seeker gun",
+  "code": "D488-37A5"
+ },
+ {
+  "desc": "Han Solo &amp; Chewbacca begin with a rapid ion gun",
+  "code": "D788-37A5"
+ },
+ {
+  "desc": "Han Solo &amp; Chewbacca begin with a plasma gun",
+  "code": "D088-37A5"
+ },
+ {
+  "desc": "Blaster power-ups remain after dying",
+  "code": "553A-1764"
+ },
+ {
+  "desc": "All 3 characters selectable at the beginning of the game",
+  "code": "DDB9-CF67"
+ },
+ {
+  "desc": "Only 1 Jawa needed to pass landspeeder levels",
+  "code": "DF67-4FAF+DF60-4D6F"
+ },
+ {
+  "desc": "Only 5 Jawas needed to pass landspeeder levels",
+  "code": "D967-4FAF+D960-4D6F"
+ },
+ {
+  "desc": "Only 10 Jawas needed to pass landspeeder levels",
+  "code": "DC67-4FAF+DC60-4D6F"
+ },
+ {
+  "desc": "25 Jawas needed to pass landspeeder levels",
+  "code": "FB67-4FAF+FB60-4D6F"
+ },
+ {
+  "desc": "50 Jawas needed to pass landspeeder levels",
+  "code": "7467-4FAF+7460-4D6F"
+ },
+ {
+  "desc": "Start with half fuel on landspeeder levels",
+  "code": "F467-4D0F"
+ },
+ {
+  "desc": "Start with double fuel on landspeeder levels",
+  "code": "0667-4D0F"
+ },
+ {
+  "desc": "No fuel maximum [for fuel power-ups]",
+  "code": "6DA5-4D04"
+ },
+ {
+  "desc": "Fuel power-ups completely refill the landspeeder",
+  "code": "40A1-47D4"
+ },
+ {
+  "desc": "Hit Anywhere",
+  "code": "AD8B-1F67+DD8B-1FA7+DD8B-14D7+2D8B-1407+1D8B-1467+DD8C-1FD7"
+ },
+ {
+  "desc": "Only Explosions, Clawed Creatures, And End Bosses Can Hurt You!",
+  "code": "AFAC-34A7"
+ },
+ {
+  "desc": "Freak-O Color Changes",
+  "code": "EEA8-34A7"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "7E08FB03"
+ },
+ {
+  "desc": "Inincibility",
+  "code": "7E0A79FF"
+ },
+ {
+  "desc": "Infinite Time",
+  "code": "7E096F0F"
+ },
+ {
+  "desc": "Infinite Shields",
+  "code": "7E098801"
+ },
+ {
+  "desc": "Character Modifier",
+  "code": "7E09D934"
+ },
+ {
+  "desc": "Max Score - Ones",
+  "code": "7E095F09"
+ },
+ {
+  "desc": "Max Score - Tens",
+  "code": "7E096109"
+ },
+ {
+  "desc": "Max Score - Hundreds",
+  "code": "7E096309"
+ },
+ {
+  "desc": "Max Score - Thousands",
+  "code": "7E096509"
+ },
+ {
+  "desc": "Max Score - Hundred-Thousand",
+  "code": "7E096709"
+ },
+ {
+  "desc": "Max Score - Millions",
+  "code": "7E096909"
+ },
+ {
+  "desc": "Max Score - Hundred-Millions",
+  "code": "7E096B09"
+ },
+ {
+  "desc": "Max Total Bonus",
+  "code": "7E0870CD+7E0871FF"
+ },
+ {
+  "desc": "Max Point Bonus",
+  "code": "7E097900+E0979C03"
+ },
+ {
+  "desc": "Start At Level",
+  "code": "7E017E00"
+ },
+ {
+  "desc": "Max. Health",
+  "code": "7E08FF44+7E0A7944"
+ },
+ {
+  "desc": "You Are Invisible, But So Are The Enemies",
+  "code": "1737-C704"
+ },
+ {
+  "desc": "Chewie & Han Start Equipped With Fast Homing Missiles",
+  "code": "7088-37A5"
+ },
+ {
+  "desc": "Chewie & Han Have Reverse Homing Missiles",
+  "code": "7E88-37A5"
+ },
+ {
+  "desc": "Blasters Hit And Even Bounce Off Invisible Objects; Game May Freeze",
+  "code": "DDBA-C707"
+ },
+ {
+  "desc": "Invincibility (Only Falls Kill You, Nothing Else Does Damage)",
+  "code": "1D34-C704"
+ },
+ {
+  "desc": "Chewie And Han Start With Big Life Capacity (Any Difficulty); Lose It First Level After You Get A Blaster Powerup Until You Die",
+  "code": "DDBA-3D65"
+ },
+ {
+  "desc": "Walk On Lava Unhurt",
+  "code": "7E098801+7E04DE04"
+ },
+ {
+  "desc": "Debug Menu Text Level Modifier",
+  "code": "7E087600"
+ },
+ {
+  "desc": "Infinite Thermal Detonator",
+  "code": "7E098701"
+ },
+ {
+  "desc": "Gun Power Modifier",
+  "code": "7E098500"
+ },
+ {
+  "desc": "Weapon Modifier (Luke)",
+  "code": "7E098102"
+ },
+ {
+  "desc": "Bosses 1, 2, 3, 4, 6, 7 & 8 Die With 1 Hit",
+  "code": "7E0A7B00"
+ },
+ {
+  "desc": "Boss 5 Dies With 1 Hit",
+  "code": "7E0A7F00"
+ },
+ {
+  "desc": "Boss 9 Dies With 1 Hit",
+  "code": "7E0A8100"
+ },
+ {
+  "desc": "Pass Jawa Shooting Instantly",
+  "code": "7E086E00"
+ },
+ {
+  "desc": "# of Jawas Left Modifier",
+  "code": "7E086E00"
+ },
+ {
+  "desc": "Infinite Jets On Speeder",
+  "code": "7E087228"
+ },
+ {
+  "desc": "Pass Deathstar Tower And TIE Shooting Instantly",
+  "code": "7E088800+7E088600"
+ }
+]

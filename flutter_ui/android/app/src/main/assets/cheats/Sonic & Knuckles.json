@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Enable Level Select",
+  "code": "RFLA-A6W4"
+ },
+ {
+  "desc": "Enable Debugger",
+  "code": "RFTT-A6XW"
+ },
+ {
+  "desc": "Knuckles can fight Knuckles",
+  "code": "BCTT-LA3Y+BA8T-NA24"
+ },
+ {
+  "desc": "Invincible against dynamic objects (bullets, enemies, for example), except Knuckles.",
+  "code": "REBA-C6V6"
+ },
+ {
+  "desc": "Invincible against static objects (spikes, for example)",
+  "code": "RZBA-E6YA"
+ },
+ {
+  "desc": "Invincible against Knuckles",
+  "code": "ABTA-NA7Y"
+ },
+ {
+  "desc": "Touch an enemy, and you will destroy it (except Knuckles)",
+  "code": "PJAA-CA8C"
+ },
+ {
+  "desc": "Touch Knuckles, and you will damage him.",
+  "code": "ABTT-NA3G"
+ },
+ {
+  "desc": "Become Super/Hyper Sonic with 0 rings",
+  "code": "AANT-CAHL"
+ },
+ {
+  "desc": "Become Super/Hyper Knuckles with 0 rings",
+  "code": "AB6A-CADA"
+ },
+ {
+  "desc": "Don't use up rings to maintain the transformation of any Super/Hyper character",
+  "code": "AAPT-CAB8"
+ },
+ {
+  "desc": "Become Super Sonic without collecting Emeralds first",
+  "code": "AANT-CAG6"
+ },
+ {
+  "desc": "Become Hyper Sonic without collecting Emeralds first",
+  "code": "AANT-CAGY+AAPA-CAB8"
+ },
+ {
+  "desc": "Become Super Knuckles without collecting Emeralds first",
+  "code": "AB6A-CACW"
+ },
+ {
+  "desc": "Become Hyper Knuckles without collecting Emeralds first",
+  "code": "AB6A-CACL+AB6A-CAHR"
+ },
+ {
+  "desc": "Don't lose rings when hit",
+  "code": "AWXT-CA4C"
+ },
+ {
+  "desc": "Infinite time",
+  "code": "HXRT-AA6A"
+ },
+ {
+  "desc": "Keep shields [fire, water, lightning] when hit",
+  "code": "96BA-CAG6+98MA-CAF0"
+ },
+ {
+  "desc": "Keep rings between levels",
+  "code": "AKVT-AA76+AMNA-EA24"
+ },
+ {
+  "desc": "Super shoes don't run out with time",
+  "code": "ATGT-CA3Y"
+ },
+ {
+  "desc": "Sonic can always double jump [can't use water shield or become Super Sonic]",
+  "code": "RENT-C6YA"
+ },
+ {
+  "desc": "Sonic can always use Fireball Spin Dash [can't double jump, bounce, or become Super Sonic]",
+  "code": "RENT-C6V6"
+ },
+ {
+  "desc": "Only 1 blue sphere needed to get a chaos emerald",
+  "code": "RGSA-A6YY"
+ },
+ {
+  "desc": "Sonic jumps as high as Knuckles [slightly lower than usual]",
+  "code": "AANA-CNA0"
+ },
+ {
+  "desc": "High jump for Sonic",
+  "code": "4ANA-CRA0"
+ },
+ {
+  "desc": "Super jump for Sonic",
+  "code": "2ANA-CWA0"
+ },
+ {
+  "desc": "Mega jump for Sonic",
+  "code": "AANA-C4A0"
+ },
+ {
+  "desc": "Orbital jump for Sonic",
+  "code": "AANA-DYA0"
+ },
+ {
+  "desc": "Knuckles jumps as high as Sonic [slightly higher than usual]",
+  "code": "TB5T-CNCR"
+ },
+ {
+  "desc": "High jump for Knuckles",
+  "code": "PV5T-CRCR"
+ },
+ {
+  "desc": "Super jump for Knuckles",
+  "code": "AB5T-CWCR"
+ },
+ {
+  "desc": "Mega jump for Knuckles",
+  "code": "AB5T-C2CR"
+ },
+ {
+  "desc": "Orbital jump for Knuckles",
+  "code": "AB5T-DTCR"
+ },
+ {
+  "desc": "Rings worth 2 in special stage",
+  "code": "ALNA-AACR"
+ },
+ {
+  "desc": "Rings worth 3 in special stage",
+  "code": "ARNA-AACR"
+ },
+ {
+  "desc": "Rings worth 4 in special stage",
+  "code": "AWNA-AACR"
+ },
+ {
+  "desc": "Rings worth 5 in special stage",
+  "code": "A0NA-AACR"
+ },
+ {
+  "desc": "Rings worth 10 in special stage",
+  "code": "BLNA-AACR"
+ },
+ {
+  "desc": "Only 6 chaos emeralds needed to become Super Sonic",
+  "code": "A2NT-CAG6"
+ },
+ {
+  "desc": "Only 5 chaos emeralds needed to become Super Sonic",
+  "code": "AYNT-CAG6"
+ },
+ {
+  "desc": "Only 4 chaos emeralds needed to become Super Sonic",
+  "code": "ATNT-CAG6"
+ },
+ {
+  "desc": "Only 3 chaos emeralds needed to become Super Sonic",
+  "code": "ANNT-CAG6"
+ },
+ {
+  "desc": "Only 2 chaos emeralds needed to become Super Sonic",
+  "code": "AJNT-CAG6"
+ },
+ {
+  "desc": "Only 1 chaos emerald needed to become Super Sonic",
+  "code": "AENT-CAG6"
+ },
+ {
+  "desc": "100 rings needed to become Super Sonic instead of 50",
+  "code": "NTNT-CAHL"
+ },
+ {
+  "desc": "40 rings needed to become Super Sonic",
+  "code": "FANT-CAHL"
+ },
+ {
+  "desc": "25 rings needed to become Super Sonic",
+  "code": "DENT-CAHL"
+ },
+ {
+  "desc": "10 rings needed to become Super Sonic",
+  "code": "BJNT-CAHL"
+ },
+ {
+  "desc": "1 ring needed to become Super Sonic",
+  "code": "AENT-CAHL"
+ },
+ {
+  "desc": "Rings aren't used up as Super [or Super-Duper] Sonic/Knuckles",
+  "code": "NTPT-CA50"
+ },
+ {
+  "desc": "Bonus round always activated after every checkpoint",
+  "code": "RHJA-E60L"
+ },
+ {
+  "desc": "Bonus round is always Slot Machine",
+  "code": "BXLA-EA5G"
+ },
+ {
+  "desc": "Bonus round is always Glowing Spheres",
+  "code": "A5LA-EA5G"
+ },
+ {
+  "desc": "Only 6 chaos emeralds needed to become Super Knuckles",
+  "code": "A36A-CACW"
+ },
+ {
+  "desc": "Only 5 chaos emeralds needed to become Super Knuckles",
+  "code": "AZ6A-CACW"
+ },
+ {
+  "desc": "Only 4 chaos emeralds needed to become Super Knuckles",
+  "code": "AV6A-CACW"
+ },
+ {
+  "desc": "Only 3 chaos emeralds needed to become Super Knuckles",
+  "code": "AP6A-CACW"
+ },
+ {
+  "desc": "Only 2 chaos emeralds needed to become Super Knuckles",
+  "code": "AK6A-CACW"
+ },
+ {
+  "desc": "Only 1 chaos emerald needed to become Super Knuckles",
+  "code": "AF6A-CACW"
+ },
+ {
+  "desc": "100 rings needed to become Super Knuckles instead of 50",
+  "code": "NV6A-CADA"
+ },
+ {
+  "desc": "40 rings needed to become Super Knuckles",
+  "code": "FB6A-CADA"
+ },
+ {
+  "desc": "25 rings needed to become Super Knuckles",
+  "code": "DF6A-CADA"
+ },
+ {
+  "desc": "10 rings needed to become Super Knuckles",
+  "code": "BK6A-CADA"
+ },
+ {
+  "desc": "1 ring needed to become Super Knuckles",
+  "code": "AF6A-CADA"
+ },
+ {
+  "desc": "Can't drown",
+  "code": "ACCT-CA2R"
+ },
+ {
+  "desc": "Knuckles doesn't lose rings when hit",
+  "code": "AX6D-AA3W"
+ },
+ {
+  "desc": "Infinite time",
+  "code": "HWLX-GA2Y"
+ },
+ {
+  "desc": "Rings worth 2",
+  "code": "SD5X-BJT2"
+ },
+ {
+  "desc": "Rings worth 3",
+  "code": "SD5X-BNT2"
+ },
+ {
+  "desc": "Rings worth 4",
+  "code": "SD5X-BTT2"
+ },
+ {
+  "desc": "Rings worth 5",
+  "code": "SD5X-BYT2"
+ },
+ {
+  "desc": "Rings worth 6",
+  "code": "SD5X-B2T2"
+ },
+ {
+  "desc": "Rings worth 7",
+  "code": "SD5X-B6T2"
+ },
+ {
+  "desc": "Rings worth 8",
+  "code": "SD5X-BAT2"
+ },
+ {
+  "desc": "Knuckles starts with 1 life instead of 3",
+  "code": "AE5X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 5 lives",
+  "code": "AY5X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 7 lives",
+  "code": "A65X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 9 lives",
+  "code": "BE5X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 25 lives",
+  "code": "DE5X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 50 lives",
+  "code": "GJ5X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 75 lives",
+  "code": "KN5X-AAFY"
+ },
+ {
+  "desc": "Knuckles starts with 99 lives",
+  "code": "NN5X-AAFY"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "JV1D-CA6W"
+ },
+ {
+  "desc": "High jump for Knuckles",
+  "code": "PVWD-CRDC"
+ },
+ {
+  "desc": "Super jump for Knuckles",
+  "code": "ABWD-CWDC"
+ },
+ {
+  "desc": "Mega jump for Knuckles",
+  "code": "ABWD-C2DC"
+ },
+ {
+  "desc": "Orbital jump for Knuckles",
+  "code": "ABWD-DTDC"
+ },
+ {
+  "desc": "Start with 1 life instead of 3",
+  "code": "AFKT-AAG0"
+ },
+ {
+  "desc": "Start with 2 lives",
+  "code": "AKKT-AAG0"
+ },
+ {
+  "desc": "Start with 4 lives",
+  "code": "AVKT-AAG0"
+ },
+ {
+  "desc": "Start with 5 lives",
+  "code": "AZKT-AAG0"
+ },
+ {
+  "desc": "Start with 7 lives",
+  "code": "A7KT-AAG0"
+ },
+ {
+  "desc": "Start with 9 lives",
+  "code": "BFKT-AAG0"
+ },
+ {
+  "desc": "Start with 25 lives",
+  "code": "DFKT-AAG0"
+ },
+ {
+  "desc": "Start with 50 lives",
+  "code": "GKKT-AAG0"
+ },
+ {
+  "desc": "Start with 99 lives",
+  "code": "NPKT-AAG0"
+ },
+ {
+  "desc": "Infinite lives",
+  "code": "K2WA-CA4J"
+ },
+ {
+  "desc": "Get One Emerald To Get Them All",
+  "code": "CLRA-BA0Y"
+ },
+ {
+  "desc": "Only One Blue Sphere Needed To Win Emerald",
+  "code": "9WSA-BCET"
+ },
+ {
+  "desc": "Infinite Lives",
+  "code": "AJWA-CA4J"
+ }
+]

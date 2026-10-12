@@ -1,0 +1,402 @@
+[
+ {
+  "desc": "Have All Tri-Force Pieces",
+  "code": "0671:FF"
+ },
+ {
+  "desc": "Have Maps For Dungeons 1-8 + Have Compass For Dungeon 9",
+  "code": "0668:FF+0669:FF"
+ },
+ {
+  "desc": "Infinite Keys",
+  "code": "066E:03"
+ },
+ {
+  "desc": "Shield Modifier",
+  "code": "0676:00"
+ },
+ {
+  "desc": "Name Modifier (File 1)",
+  "code": "0638:00+0639:00+063A:00+063B:00+063C:00+063D:00+063E:00+063F:00"
+ },
+ {
+  "desc": "Name Modifier (File 2)",
+  "code": "0640:00+0641:00+0642:00+0643:00+0644:00+0645:00+0646:00+0647:00"
+ },
+ {
+  "desc": "Name Modifier (File 3)",
+  "code": "0648:00+0649:00+064A:00+064B:00+064C:00+064D:00+064E:00+064F:00"
+ },
+ {
+  "desc": "Die And Continue To Get A Free Rupee Whenever You Get Hit",
+  "code": "PAIZPI"
+ },
+ {
+  "desc": "Rupies Goes Up Once In A While",
+  "code": "IYIOOV"
+ },
+ {
+  "desc": "Recieve Items Automatically In Caves And Dungeons",
+  "code": "IEITAT"
+ },
+ {
+  "desc": "Shows You Beat The Game Once",
+  "code": "PAIOVY"
+ },
+ {
+  "desc": "Reset Your Continues To Zero",
+  "code": "PALZZI"
+ },
+ {
+  "desc": "Faster Text Scrolling",
+  "code": "OPPEEA"
+ },
+ {
+  "desc": "Automatically Recieve Items, Rupees, Maps, And Compasses In Dungeons",
+  "code": "AAITAT"
+ },
+ {
+  "desc": "Can walk all over the Status bar on top of the screen",
+  "code": "SXYAPO"
+ },
+ {
+  "desc": "No Darkened Rooms",
+  "code": "AOEUYTEY"
+ },
+ {
+  "desc": "Start Game At The Top Left Corner of World Map",
+  "code": "AAPVEX"
+ },
+ {
+  "desc": "Start In The Graveyard",
+  "code": "PEANLE"
+ },
+ {
+  "desc": "Any Item Link Picks Up, He'll Hold It Above His Head Like He Found A Treasure",
+  "code": "OEYZEU"
+ },
+ {
+  "desc": "Press The B Button To Use Weapons You Do Not Have",
+  "code": "OSTLLY"
+ },
+ {
+  "desc": "Secret Entrances Are Open",
+  "code": "KTTXXZ"
+ },
+ {
+  "desc": "Enable Walking When You Normally Can't",
+  "code": "VXZTSS"
+ },
+ {
+  "desc": "Change Dungeon Environment",
+  "code": "PPZXYY"
+ },
+ {
+  "desc": "Rapid Sword Attacks On, Walk Through Some Enemies",
+  "code": "XXLLLZ"
+ },
+ {
+  "desc": "Wall Changes Into &quot;Rock Man&quot; Then You Touch It",
+  "code": "IZLZZZ"
+ },
+ {
+  "desc": "Options Screen Frame is Green",
+  "code": "POSOVGZO"
+ },
+ {
+  "desc": "Options Screen Frame is Red",
+  "code": "TOSOVGZP"
+ },
+ {
+  "desc": "Dark Overworld Complete",
+  "code": "YAEOILYU+YAOPPLYU+ZAEOGUZP+ZAOPALYP+ZAEPGLAL+YAEPILAE"
+ },
+ {
+  "desc": "Green Heart Containers/Inventory Text",
+  "code": "PPEOALTO"
+ },
+ {
+  "desc": "Play Zelda in Black and White",
+  "code": "YOXTGKTO"
+ },
+ {
+  "desc": "Takes Out The Music",
+  "code": "GATOOK"
+ },
+ {
+  "desc": "Collecting A Rupee Gives You 255 Bombs",
+  "code": "PKIXXU"
+ },
+ {
+  "desc": "Small Heart Refills All Your Health",
+  "code": "PPIXXU"
+ },
+ {
+  "desc": "Small  Heart Gives You 255 Bombs",
+  "code": "ZKIXXU"
+ },
+ {
+  "desc": "Can Keep Collecting Items Until It Disappears [Game freezes inside caves]",
+  "code": "AOIZUU"
+ },
+ {
+  "desc": "Collecting a Rupee Maxes them out",
+  "code": "AAIZTI"
+ },
+ {
+  "desc": "Collect ? , And Recieve ?",
+  "code": "TTIZEU"
+ },
+ {
+  "desc": "Collect A Rupee, Bomb, Or Heart And Receive ?",
+  "code": "PEIXXU+AEIZXU"
+ },
+ {
+  "desc": "Collect A Bomb, Rupee, Or Heart And Receive ?",
+  "code": "LEIXXU"
+ },
+ {
+  "desc": "Start A New Game With ? Items",
+  "code": "PALOOY"
+ },
+ {
+  "desc": "Start New Game With ? Items",
+  "code": "PALOOY+AALOEY"
+ },
+ {
+  "desc": "Starts New Game With 1 Or 2 Items",
+  "code": "PALONY"
+ },
+ {
+  "desc": "Infinite Bombs &amp; Blastable Rock Revealed!",
+  "code": "SZYZNO"
+ },
+ {
+  "desc": "Catch Items Over And Over",
+  "code": "AOSZUUNO"
+ },
+ {
+  "desc": "Walk Around And Use Sword, You Will Get Stuff On ? Location",
+  "code": "POZXXU"
+ },
+ {
+  "desc": "Start With 24 Bombs",
+  "code": "AIIOOV"
+ },
+ {
+  "desc": "Start With The Potion",
+  "code": "TIIOOV"
+ },
+ {
+  "desc": "Start With The Wand",
+  "code": "YIIOOV"
+ },
+ {
+  "desc": "Start With The Meat",
+  "code": "IIIOOV"
+ },
+ {
+  "desc": "Start With The Whistle",
+  "code": "GIIOOV"
+ },
+ {
+  "desc": "Start With A Green Candle",
+  "code": "LIIOOV"
+ },
+ {
+  "desc": "Start With The Bow",
+  "code": "ZIIOOV"
+ },
+ {
+  "desc": "Start With A Very Strong Arrow",
+  "code": "PIIOOV"
+ },
+ {
+  "desc": "Start With 24 Keys",
+  "code": "TTIOOV"
+ },
+ {
+  "desc": "Start With 24 Coins",
+  "code": "ITIOOV"
+ },
+ {
+  "desc": "Buy the Large Shield for free",
+  "code": "AAVATTEZ"
+ },
+ {
+  "desc": "Buy Keys for free",
+  "code": "AAVAYTGT"
+ },
+ {
+  "desc": "Buy the Blue Candle for free",
+  "code": "AAVEAVGL"
+ },
+ {
+  "desc": "All Items are Free",
+  "code": "XPZAYV"
+ },
+ {
+  "desc": "Blue Ring Costs 2 Rupies",
+  "code": "ZAVEIVXY"
+ },
+ {
+  "desc": "Black Environment",
+  "code": "NYAZPA"
+ },
+ {
+  "desc": "Link Has Green Hair In Overworld",
+  "code": "ZPOPTLYO"
+ },
+ {
+  "desc": "Armos Statue Has 6 Spots On Shield",
+  "code": "SLKEUVSY"
+ },
+ {
+  "desc": "Change Trees Into Gravestones",
+  "code": "KUOZSPKK"
+ },
+ {
+  "desc": "Fill Dungeons With Sand",
+  "code": "ATOXPYGN"
+ },
+ {
+  "desc": "Every Screen Has The Sound Of A Secret Found",
+  "code": "KEGAYN"
+ },
+ {
+  "desc": "When An Enemy Drops A Bomb, It's Invisible",
+  "code": "TTIZSU+TTIXSU"
+ },
+ {
+  "desc": "Water Enemy (Zora) On Land Too",
+  "code": "STZALY"
+ },
+ {
+  "desc": "Touch Wall And A Ghost Will Appear",
+  "code": "PPLXZZ"
+ },
+ {
+  "desc": "Brings Up Dungeon Subscreen At All Times",
+  "code": "PPAEAA"
+ },
+ {
+  "desc": "Puts You On Beginning Screen",
+  "code": "VVTTSP"
+ },
+ {
+  "desc": "All Enemies In Game Are Tumbling Rocks",
+  "code": "AEAAEE"
+ },
+ {
+  "desc": "Different Stuff In Caves",
+  "code": "EEYAKP"
+ },
+ {
+  "desc": "Meat Comes Out of Shooting Sword",
+  "code": "XYYYYL"
+ },
+ {
+  "desc": "Rooms Are Split In Half, You Might Be Able To Find",
+  "code": "KIPZXX"
+ },
+ {
+  "desc": "Link Is Different Colors",
+  "code": "SZZVVZ"
+ },
+ {
+  "desc": "Link Keeps Spinning When He Dies",
+  "code": "SXVEKGVG"
+ },
+ {
+  "desc": "No enemies in some areas (Overworld)",
+  "code": "AAXPILGA"
+ },
+ {
+  "desc": "No enemies in other areas (Overworld)",
+  "code": "AAXPTLIA"
+ },
+ {
+  "desc": "No enemies in still other areas (Overworld)",
+  "code": "AAXPYLTA"
+ },
+ {
+  "desc": "More enemies in some areas (Overworld)",
+  "code": "AAXPILGE"
+ },
+ {
+  "desc": "Some Enemies can't move",
+  "code": "SXPAPO"
+ },
+ {
+  "desc": "Enemies in more places",
+  "code": "YGAEXP"
+ },
+ {
+  "desc": "Fewer Enemies",
+  "code": "AEOANAEG"
+ },
+ {
+  "desc": "No Zolas",
+  "code": "AEVATVAA"
+ },
+ {
+  "desc": "Most Enemies And Bosses Are Already Defeated",
+  "code": "LEGENE"
+ },
+ {
+  "desc": "Enemies Take Longer To Start Moving And Most Enemies Fireballs Travel Thru You",
+  "code": "KITANA"
+ },
+ {
+  "desc": "Enemies Appear Instantly",
+  "code": "KAIETY"
+ },
+ {
+  "desc": "Don't take damage from anything",
+  "code": "AVVLAUSZ"
+ },
+ {
+  "desc": "Create character with 8 life hearts",
+  "code": "YYKPOYZZ"
+ },
+ {
+  "desc": "Create character with 16 life hearts",
+  "code": "NYKPOYZX"
+ },
+ {
+  "desc": "Don't lose rubies when buying",
+  "code": "SZVXASVK"
+ },
+ {
+  "desc": "Infinite bombs",
+  "code": "SZNZVOVK"
+ },
+ {
+  "desc": "Wear a blue ring",
+  "code": "ESKUILTA"
+ },
+ {
+  "desc": "Wear a red ring",
+  "code": "OSKUILTA"
+ },
+ {
+  "desc": "Untouchable",
+  "code": "04F0:09"
+ },
+ {
+  "desc": "Infinite health",
+  "code": "066F:FF"
+ },
+ {
+  "desc": "Have Magic Sword",
+  "code": "0657:03"
+ },
+ {
+  "desc": "Infinite Bombs",
+  "code": "0658:FF"
+ },
+ {
+  "desc": "Have Regular Arrows",
+  "code": "0659:01"
+ }
+]
