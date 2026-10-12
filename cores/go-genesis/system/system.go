@@ -1,0 +1,380 @@
+// Package system wires the parts of the Genesis into a running machine:
+// the two CPUs, the bus, the VDP and the sound section, clocked and
+// interrupted the way the real hardware does it (NTSC timing).
+//
+// Timing model: the NTSC master clock is 53,693,175 Hz, divided by 7 for
+// the 68000 (7.67 MHz) and by 15 for the Z80 (3.58 MHz). One frame is 3420
+// master cycles x 262 lines = 896,040 master cycles (59.92 fps). The CPUs
+// run in per-scanline budgets; the VDP renders each visible line after the
+// CPUs have run for it, raises the HBlank interrupt during the line
+// sequence and the VBlank interrupt (level 6) plus the Z80 interrupt at
+// the start of the blanking period.
+package system
+
+import (
+	"encoding/binary"
+	"errors"
+	"math"
+
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/bus"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/cart"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/sound"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/vdp"
+
+	m68k "github.com/user-none/go-chip-m68k"
+	"github.com/user-none/go-chip-z80"
+)
+
+const (
+	masterHz      = 53693175
+	masterPerLine = 3420
+	linesTotal    = 262
+	masterFrame   = masterPerLine * linesTotal // 896,040
+	z80PerLine    = 228                        // 896,040 / 15 / 262, exact
+)
+
+// System is one Genesis console.
+type System struct {
+	cart  *cart.Cart
+	vdp   *vdp.VDP
+	sound *sound.Sound
+	bus   *bus.Bus
+	cpu   *m68k.CPU
+	zcpu  *z80.CPU
+
+	audio    []int16 // samples produced since the last AudioBuffer call
+	audioAcc float64 // fractional samples owed
+	frame    uint64  // frames run since power-on (drives cumulative cycle targets)
+	loaded   bool
+}
+
+// New returns an empty machine; call LoadGame before RunFrame.
+func New() *System { return &System{} }
+
+// LoadGame builds the machine around a cartridge image and powers it on.
+func (s *System) LoadGame(data []byte) error {
+	c, err := cart.Load(data)
+	if err != nil {
+		return err
+	}
+	s.cart = c
+	s.vdp = vdp.New()
+	s.sound = sound.New()
+	s.bus = bus.New(c, s.vdp, s.sound)
+	s.cpu = m68k.New(s.bus)
+	s.zcpu = z80.New(s.bus)
+	s.audio = nil
+	s.audioAcc = 0
+	s.frame = 0
+	s.loaded = true
+	s.cpu.Reset()  // reads SSP + PC from the cartridge vectors
+	s.zcpu.Reset() // held in reset by the bus until the game releases it
+	return nil
+}
+
+// Loaded reports whether a game is in the machine.
+func (s *System) Loaded() bool { return s.loaded }
+
+// Reset is the console reset button: the 68000 restarts from its vectors.
+// RAM, VRAM and cartridge save RAM survive, as they do on hardware.
+func (s *System) Reset() {
+	if !s.loaded {
+		return
+	}
+	s.cpu.Reset()
+}
+
+// Title returns the cartridge's overseas title, for logs and UIs.
+func (s *System) Title() string {
+	if s.cart == nil {
+		return ""
+	}
+	return s.cart.Title
+}
+
+// SetButtons records pad state for a player, in bus.Pad* bit layout.
+func (s *System) SetButtons(player int, mask uint16) {
+	if s.loaded {
+		s.bus.SetPad(player, mask)
+	}
+}
+
+// Framebuffer returns the VDP's RGB565 frame (stride vdp.MaxWidth).
+func (s *System) Framebuffer() []uint16 {
+	if !s.loaded {
+		return nil
+	}
+	return s.vdp.Framebuffer()
+}
+
+// Width is the current display width in pixels (256 or 320).
+func (s *System) Width() int {
+	if !s.loaded {
+		return 320
+	}
+	return s.vdp.DisplayWidth()
+}
+
+// Height is the current display height in pixels (224 or 240).
+func (s *System) Height() int {
+	if !s.loaded {
+		return 224
+	}
+	return s.vdp.DisplayHeight()
+}
+
+// SystemRAM exposes the 64KB work RAM (libretro memory interface).
+func (s *System) SystemRAM() []uint8 {
+	if !s.loaded {
+		return nil
+	}
+	return s.bus.RAM[:]
+}
+
+// SaveRAM exposes the cartridge save RAM, if the cartridge has any.
+func (s *System) SaveRAM() []uint8 {
+	if !s.loaded {
+		return nil
+	}
+	return s.bus.SRAM
+}
+
+// SoundWrites reports how many PSG and YM2612 register writes the game
+// has made (diagnostics; see sound.WriteCounts).
+func (s *System) SoundWrites() (psg, ym int) {
+	if !s.loaded {
+		return 0, 0
+	}
+	return s.sound.WriteCounts()
+}
+
+// AudioBuffer drains the samples produced by the last RunFrame.
+func (s *System) AudioBuffer() []int16 {
+	out := s.audio
+	s.audio = nil
+	return out
+}
+
+// m68kTarget is the 68000 cycle count at the end of the given line.
+func m68kTarget(line int) uint64 {
+	return uint64(line+1) * masterFrame / 7 / linesTotal
+}
+
+// run68k advances the 68000 toward target cycles. A CPU parked in STOP
+// makes no progress; it wakes when an interrupt lands at a line boundary.
+func (s *System) run68k(target uint64) {
+	for i := 0; i < 32; i++ {
+		cur := s.cpu.Cycles()
+		if cur >= target {
+			return
+		}
+		s.cpu.StepCycles(int(target - cur))
+		if s.cpu.Cycles() == cur {
+			return
+		}
+	}
+}
+
+// runZ80Line advances the Z80 by one scanline of cycles, honoring the
+// bus-request and reset lines the 68000 controls.
+func (s *System) runZ80Line() {
+	if s.bus.TakeZ80Reset() {
+		s.zcpu.Reset()
+	}
+	if s.bus.Z80Halted() {
+		return
+	}
+	target := s.zcpu.Cycles() + z80PerLine
+	for i := 0; i < 32; i++ {
+		cur := s.zcpu.Cycles()
+		if cur >= target {
+			return
+		}
+		s.zcpu.StepCycles(int(target - cur))
+		if s.zcpu.Cycles() == cur {
+			return
+		}
+	}
+}
+
+// RunFrame runs one whole video frame: 262 scanlines of CPU time, VDP
+// rendering and interrupts, then produces the frame's audio.
+func (s *System) RunFrame() {
+	if !s.loaded {
+		return
+	}
+	h := s.vdp.DisplayHeight()
+	// The CPU cycle counter is cumulative since power-on, so line targets
+	// must be too: base this frame's targets on the frames already run.
+	base := s.frame * masterFrame / 7
+	s.vdp.BeginFrame()
+	for line := 0; line < linesTotal; line++ {
+		if line == 0 {
+			s.vdp.ExitVBlank()
+			s.zcpu.INT(false, 0)
+		}
+		s.run68k(base + m68kTarget(line))
+		s.runZ80Line()
+		if line < h {
+			if s.vdp.LineIRQ(line) {
+				s.cpu.RequestInterrupt(4, nil)
+			}
+			s.vdp.RenderLine(line)
+		}
+		if line == h {
+			if s.vdp.EnterVBlank() {
+				s.cpu.RequestInterrupt(6, nil)
+			}
+			s.zcpu.INT(true, 0xFF)
+		}
+	}
+	s.frame++
+	// 44,100 Hz at 59.92 fps is ~735.9 samples per frame; carry the fraction.
+	s.audioAcc += float64(sound.SampleRate) * masterFrame / masterHz
+	n := int(s.audioAcc)
+	s.audioAcc -= float64(n)
+	s.audio = append(s.audio, s.sound.Produce(n)...)
+}
+
+// --- save states ---------------------------------------------------------
+
+const m68kStateSize = 80 // D[8]+A[8] u32, PC u32, SR u16, USP u32, SSP u32, IR u16
+
+// trailerSize holds the machine-level bookkeeping appended after the
+// component states: frame counter (u64), 68000 cycle counter (u64) and
+// the audio fraction accumulator (f64 bits). The cycle counter MUST be
+// saved: the CPU library's SetState zeroes it, and this system's frame
+// timing is derived from it, so losing it fast-forwards the machine on
+// the first frame after a restore.
+const trailerSize = 24
+
+// SerializeSize is the total save-state size in bytes.
+func (s *System) SerializeSize() int {
+	if !s.loaded {
+		return 0
+	}
+	return m68kStateSize + z80.SerializeSize +
+		s.bus.SerializeSize() + s.vdp.SerializeSize() + s.sound.SerializeSize() +
+		trailerSize
+}
+
+// Serialize writes the full machine state into buf.
+//
+// Note: a pending-but-unserviced 68000 interrupt is not part of the CPU
+// library's register snapshot. Interrupts re-fire every frame (VBlank) or
+// are re-requested by the game, so a restore at worst shifts one interrupt
+// by a frame.
+func (s *System) Serialize(buf []byte) error {
+	if !s.loaded {
+		return errors.New("system: no game loaded")
+	}
+	if len(buf) < s.SerializeSize() {
+		return errors.New("system: serialize buffer too small")
+	}
+	off := 0
+	r := s.cpu.Registers()
+	// The CPU library's SetState ignores the A[7] slot and derives the
+	// active stack pointer from SSP (supervisor) or USP (user) instead,
+	// while its Registers() can report a stale SSP/USP next to the live
+	// A[7]. Fold the live A[7] into whichever stack pointer is active so
+	// a restore lands on the exact stack the game was using. (Genesis
+	// games always run in supervisor mode.)
+	if r.SR&0x2000 != 0 {
+		r.SSP = r.A[7]
+	} else {
+		r.USP = r.A[7]
+	}
+	for i := 0; i < 8; i++ {
+		binary.LittleEndian.PutUint32(buf[off:], r.D[i])
+		off += 4
+	}
+	for i := 0; i < 8; i++ {
+		binary.LittleEndian.PutUint32(buf[off:], r.A[i])
+		off += 4
+	}
+	binary.LittleEndian.PutUint32(buf[off:], r.PC)
+	off += 4
+	binary.LittleEndian.PutUint16(buf[off:], r.SR)
+	off += 2
+	binary.LittleEndian.PutUint32(buf[off:], r.USP)
+	off += 4
+	binary.LittleEndian.PutUint32(buf[off:], r.SSP)
+	off += 4
+	binary.LittleEndian.PutUint16(buf[off:], r.IR)
+	off += 2
+
+	if err := s.zcpu.Serialize(buf[off:]); err != nil {
+		return err
+	}
+	off += z80.SerializeSize
+	if err := s.bus.Serialize(buf[off:]); err != nil {
+		return err
+	}
+	off += s.bus.SerializeSize()
+	if err := s.vdp.Serialize(buf[off:]); err != nil {
+		return err
+	}
+	off += s.vdp.SerializeSize()
+	if err := s.sound.Serialize(buf[off:]); err != nil {
+		return err
+	}
+	off += s.sound.SerializeSize()
+	binary.LittleEndian.PutUint64(buf[off:], s.frame)
+	binary.LittleEndian.PutUint64(buf[off+8:], s.cpu.Cycles())
+	binary.LittleEndian.PutUint64(buf[off+16:], math.Float64bits(s.audioAcc))
+	return nil
+}
+
+// Deserialize restores a state written by Serialize.
+func (s *System) Deserialize(buf []byte) error {
+	if !s.loaded {
+		return errors.New("system: no game loaded")
+	}
+	if len(buf) < s.SerializeSize() {
+		return errors.New("system: state too small")
+	}
+	off := 0
+	var r m68k.Registers
+	for i := 0; i < 8; i++ {
+		r.D[i] = binary.LittleEndian.Uint32(buf[off:])
+		off += 4
+	}
+	for i := 0; i < 8; i++ {
+		r.A[i] = binary.LittleEndian.Uint32(buf[off:])
+		off += 4
+	}
+	r.PC = binary.LittleEndian.Uint32(buf[off:])
+	off += 4
+	r.SR = binary.LittleEndian.Uint16(buf[off:])
+	off += 2
+	r.USP = binary.LittleEndian.Uint32(buf[off:])
+	off += 4
+	r.SSP = binary.LittleEndian.Uint32(buf[off:])
+	off += 4
+	r.IR = binary.LittleEndian.Uint16(buf[off:])
+	off += 2
+	s.cpu.SetState(r)
+
+	if err := s.zcpu.Deserialize(buf[off:]); err != nil {
+		return err
+	}
+	off += z80.SerializeSize
+	if err := s.bus.Deserialize(buf[off:]); err != nil {
+		return err
+	}
+	off += s.bus.SerializeSize()
+	if err := s.vdp.Deserialize(buf[off:]); err != nil {
+		return err
+	}
+	off += s.vdp.SerializeSize()
+	if err := s.sound.Deserialize(buf[off:]); err != nil {
+		return err
+	}
+	off += s.sound.SerializeSize()
+	s.frame = binary.LittleEndian.Uint64(buf[off:])
+	// SetState zeroed the CPU's cycle counter; put it back so the frame
+	// timing base and the counter agree again.
+	s.cpu.AddCycles(binary.LittleEndian.Uint64(buf[off+8:]))
+	s.audioAcc = math.Float64frombits(binary.LittleEndian.Uint64(buf[off+16:]))
+	return nil
+}

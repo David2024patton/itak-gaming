@@ -1,0 +1,6 @@
+github.com/user-none/go-chip-m68k v0.1.2 h1:X1BKRbNBhH501N8eALYQDim3ECJ18KtPwL3hhPLLsSA=
+github.com/user-none/go-chip-m68k v0.1.2/go.mod h1:RNJR6/n5/2bMF0clriCmuFXvj4LBukgYqsjdxcWxvlY=
+github.com/user-none/go-chip-sn76489 v0.0.0-20260309231832-eec93e7fc417 h1:5SrVDSN4mP57WKe5NcY6805gDBsq8lYAkyts7gYzRIg=
+github.com/user-none/go-chip-sn76489 v0.0.0-20260309231832-eec93e7fc417/go.mod h1:WJdKIGKYMXS8F4eDTaHoG44+l5b1Bm5JDksdAPhDGf0=
+github.com/user-none/go-chip-z80 v0.0.0-20260315161243-6c949bf925bb h1:yLswfTcs6c2y8yHhTkwFZw/KMe9ig23x1LD5tOhYmAA=
+github.com/user-none/go-chip-z80 v0.0.0-20260315161243-6c949bf925bb/go.mod h1:DEa23nvjxHzpDH3aAMDKa41UK860YiLUhLtscPc6Trs=
