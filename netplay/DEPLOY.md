@@ -39,6 +39,27 @@ to bare processes on this port while Docker's published-port NAT
 passes it. Running in Docker with `--restart unless-stopped` also
 brings the server back after host reboots with no manual step.
 
+## App updates
+
+The same binary serves app self-updates when `ITAK_APP_DIR`
+points at a directory holding published builds:
+
+- `GET /app/version.json` — the manifest: versionCode,
+  versionName, apk file name, sha256, size, notes, publishedAt.
+- `GET /app/latest.apk` — the APK the manifest names (plain file
+  names only; path traversal is refused).
+
+Publishing a build is a file operation: copy the APK into the
+directory and write a fresh `version.json` with the new
+versionCode and the APK's SHA-256. Mount the directory read-only
+into the container (for example `/appdist`).
+
+The app checks the manifest on launch and from Settings, offers
+the update, downloads it, verifies the SHA-256, and opens the
+system installer. The first update on a box asks the user to allow
+installs from iTaK Gaming once (Android's per-app setting); after
+that, each update is one press on the installer's Update button.
+
 ## Checks
 
 - `GET /healthz` returns `{"lobbies":0,"status":"ok"}` on both the

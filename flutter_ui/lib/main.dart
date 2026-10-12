@@ -415,12 +415,18 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
 
   bool _locked(SystemInfo sys) => sys.requires64 && !gIs64Bit;
 
+  String _versionName = '';
+
   Future<void> _loadDeviceInfo() async {
     try {
       final info = await _channel.invokeMethod<Map>('deviceInfo');
       final is64 = info?['is64'] == true;
+      final ai = await AppUpdate.installed();
       if (!mounted) return;
-      setState(() => gIs64Bit = is64);
+      setState(() {
+        gIs64Bit = is64;
+        _versionName = ai?['versionName']?.toString() ?? '';
+      });
     } catch (_) {
       // Channel unavailable (desktop dev): stay optimistic.
     }
@@ -435,6 +441,17 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     _loadControllerMap();
     _loadSystemImages();
     _countGames();
+    // Self-update: check the server once per launch and offer the
+    // new build if there is one (quiet when there is not).
+    Future.delayed(const Duration(seconds: 4), () async {
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      final check = await AppUpdate.check();
+      if (check == null || !mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true) return;
+      if (check.available != null) {
+        showAppUpdateDialog(context, check, manual: false);
+      }
+    });
     // Native side calls this when a gamepad connects: ask who picked
     // it up by jumping to the players row with a banner.
     _channel.setMethodCallHandler((call) async {
@@ -1714,9 +1731,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  const Text(
-                    'UP / DOWN switch rows · LEFT / RIGHT browse · OK to select · In game, BACK opens the menu',
-                    style: TextStyle(fontSize: 16.5, color: Colors.white54),
+                  Text(
+                    'UP / DOWN switch rows · LEFT / RIGHT browse · OK to select · In game, BACK opens the menu${_versionName.isEmpty ? '' : ' · iTaK Gaming v$_versionName'}',
+                    style: const TextStyle(fontSize: 16.5, color: Colors.white54),
                   ),
                   const SizedBox(height: 22),
                 ],
@@ -2222,6 +2239,172 @@ class _OnlineScreenState extends State<OnlineScreen> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Self-update: the server publishes /app/version.json plus the APK.
+// The app compares version codes; the native side downloads the APK,
+// verifies its SHA-256, and opens the system installer (Android
+// always shows its own Install prompt; that press is the user's).
+// ---------------------------------------------------------------------------
+
+class AppUpdateInfo {
+  final int versionCode;
+  final String versionName;
+  final String sha256;
+  final String notes;
+  const AppUpdateInfo(
+      this.versionCode, this.versionName, this.sha256, this.notes);
+}
+
+class UpdateCheck {
+  final int currentCode;
+  final String currentName;
+  final AppUpdateInfo? available;
+  const UpdateCheck(this.currentCode, this.currentName, this.available);
+}
+
+class AppUpdate {
+  static const _channel = MethodChannel('net.itak/emu');
+
+  static Future<Map<String, dynamic>?> installed() async {
+    try {
+      final m = await _channel.invokeMethod<Map>('appInfo');
+      return m?.map((k, v) => MapEntry(k.toString(), v));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Null when the check itself failed (offline, server down).
+  static Future<UpdateCheck?> check() async {
+    final info = await installed();
+    final code = (info?['versionCode'] as num?)?.toInt() ?? 0;
+    final name = info?['versionName']?.toString() ?? '';
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final req =
+          await client.getUrl(Uri.parse('$kServerBase/app/version.json'));
+      req.headers.set(HttpHeaders.userAgentHeader, 'iTaK-Gaming/1.0');
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      if (resp.statusCode != 200) return UpdateCheck(code, name, null);
+      final body = await resp.transform(utf8.decoder).join();
+      final j = jsonDecode(body) as Map<String, dynamic>;
+      final latest = (j['versionCode'] as num?)?.toInt() ?? 0;
+      AppUpdateInfo? avail;
+      if (latest > code) {
+        avail = AppUpdateInfo(
+          latest,
+          j['versionName']?.toString() ?? '',
+          j['sha256']?.toString() ?? '',
+          j['notes']?.toString() ?? '',
+        );
+      }
+      return UpdateCheck(code, name, avail);
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// "" = installer opened; "needs-permission"; else an error line.
+  static Future<String> install(AppUpdateInfo u) async {
+    try {
+      final r = await _channel.invokeMethod<String>('installUpdate', {
+        'url': '$kServerBase/app/latest.apk',
+        'sha256': u.sha256,
+      });
+      return r ?? '';
+    } catch (e) {
+      return 'Update failed: $e';
+    }
+  }
+}
+
+Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
+    {required bool manual}) async {
+  const bg = Color(0xFF262640);
+  final avail = check.available;
+  if (avail == null) {
+    if (!manual) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: bg,
+        title: const Text('App updates'),
+        content: Text('You are up to date.\n\niTaK Gaming ${check.currentName} is the newest build.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
+          ),
+        ],
+      ),
+    );
+    return;
+  }
+  final go = await showDialog<bool>(
+    context: context,
+    barrierColor: Colors.black.withOpacity(0.8),
+    builder: (ctx) => AlertDialog(
+      backgroundColor: bg,
+      title: const Text('Update available'),
+      content: Text(
+          'iTaK Gaming ${avail.versionName} is ready to install.${avail.notes.isEmpty ? '' : '\n\n${avail.notes}'}'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Later', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Update now',
+              style: TextStyle(
+                  color: Color(0xFF00E676), fontWeight: FontWeight.bold)),
+        ),
+      ],
+    ),
+  );
+  if (go != true || !context.mounted) return;
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    barrierColor: Colors.black.withOpacity(0.8),
+    builder: (_) => const AlertDialog(
+      backgroundColor: bg,
+      content: Row(
+        children: [
+          CircularProgressIndicator(color: Color(0xFF00E676)),
+          SizedBox(width: 18),
+          Text('Downloading update...'),
+        ],
+      ),
+    ),
+  );
+  final result = await AppUpdate.install(avail);
+  if (!context.mounted) return;
+  Navigator.of(context).pop(); // progress dialog
+  if (result.isEmpty) return; // the system installer is on screen
+  final needsPerm = result == 'needs-permission';
+  await showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withOpacity(0.8),
+    builder: (ctx) => AlertDialog(
+      backgroundColor: bg,
+      title: Text(needsPerm ? 'One more step' : 'Update failed'),
+      content: Text(needsPerm
+          ? 'The TV opened a Settings page. Turn ON "Allow" for iTaK Gaming, press BACK, then choose Update again.'
+          : result),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
+        ),
+      ],
+    ),
+  );
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -2236,9 +2419,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _swapAB = false;
   bool _autoArt = true;
   bool _autoSave = true;
+  String _versionName = '';
+  bool _checkingUpdate = false;
   final FocusNode _focusNode = FocusNode();
 
-  static const int _rowCount = 6; // Picture, Display, Swap, Auto art, Auto-save, Back
+  static const int _rowCount = 7; // Picture, Display, Swap, Auto art, Auto-save, App updates, Back
 
   @override
   void initState() {
@@ -2255,6 +2440,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final sw = await Prefs.getInt('swap_ab');
     final a = await Prefs.get('art_autofetch');
     final asv = await Prefs.get('autosave');
+    final ai = await AppUpdate.installed();
     if (!mounted) return;
     setState(() {
       _filter = (f ?? 0).clamp(0, kFilterNames.length - 1);
@@ -2262,7 +2448,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _swapAB = (sw ?? 0) != 0;
       _autoArt = a != '0';
       _autoSave = asv != '0';
+      _versionName = ai?['versionName']?.toString() ?? '';
     });
+  }
+
+  Future<void> _openUpdates() async {
+    if (_checkingUpdate) return;
+    setState(() => _checkingUpdate = true);
+    final check = await AppUpdate.check();
+    if (mounted) setState(() => _checkingUpdate = false);
+    if (!mounted) return;
+    if (check == null) {
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.black.withOpacity(0.8),
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF262640),
+          title: const Text('App updates'),
+          content: const Text(
+              'Cannot reach the update server. Check the internet connection and try again.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    showAppUpdateDialog(context, check, manual: true);
   }
 
   @override
@@ -2294,6 +2510,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _onKey(KeyEvent event) {
     if (event is! KeyDownEvent) return;
+    // Dialogs above this screen own the remote while they are up.
+    if (ModalRoute.of(context)?.isCurrent != true) return;
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowUp) {
       setState(() => _row = (_row - 1 + _rowCount) % _rowCount);
@@ -2306,8 +2524,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 5) {
+      if (_row == 6) {
         Navigator.pop(context);
+      } else if (_row == 5) {
+        _openUpdates();
       } else {
         _adjust(1);
       }
@@ -2425,6 +2645,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     hint: 'Saves your game every minute and when you exit, so you never lose progress',
                   ),
                   GestureDetector(
+                    onTap: () {
+                      setState(() => _row = 5);
+                      _openUpdates();
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      margin: const EdgeInsets.symmetric(vertical: 7),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 22, vertical: 16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1B1B28),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: _row == 5 ? Colors.white : Colors.white12,
+                          width: _row == 5 ? 3 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.system_update),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('App updates',
+                                    style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold)),
+                                Text('Check the iTaK server for a newer build',
+                                    style: TextStyle(
+                                        fontSize: 15, color: Colors.white54)),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            _checkingUpdate
+                                ? 'Checking...'
+                                : 'Version $_versionName',
+                            style: const TextStyle(
+                                fontSize: 19, color: Color(0xFF00E676)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
                     onTap: () => Navigator.pop(context),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 120),
@@ -2436,8 +2703,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 5 ? Colors.white : Colors.white12,
-                          width: _row == 5 ? 3 : 1,
+                              _row == 6 ? Colors.white : Colors.white12,
+                          width: _row == 6 ? 3 : 1,
                         ),
                       ),
                       child: const Row(

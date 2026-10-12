@@ -18,10 +18,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/davidpatton/itak-gaming/netplay/internal/appdist"
 	"github.com/davidpatton/itak-gaming/netplay/internal/lobby"
 	"github.com/davidpatton/itak-gaming/netplay/internal/server"
 	"github.com/davidpatton/itak-gaming/netplay/internal/stats"
 )
+
+// defaultAppDir is where published app builds live for self-update:
+// the ITAK_APP_DIR environment variable wins; empty disables the
+// /app routes entirely.
+func defaultAppDir() string {
+	return os.Getenv("ITAK_APP_DIR")
+}
 
 // defaultStatsFile is where the global leaderboard persists: the
 // ITAK_STATS_FILE environment variable wins, else a file next to
@@ -37,6 +45,7 @@ func main() {
 	addr := flag.String("addr", ":8790", "listen address (host:port)")
 	sweepInterval := flag.Duration("sweep", 15*time.Second, "lobby reaper interval")
 	statsFile := flag.String("statsfile", defaultStatsFile(), "path to the global leaderboard stats file")
+	appDir := flag.String("appdir", defaultAppDir(), "directory with published app builds (version.json + APK) for self-update; empty disables")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "lobbyserver ", log.LstdFlags)
@@ -58,6 +67,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	statsHandler.Register(mux)
+	if *appDir != "" {
+		appdist.New(*appDir, logger).Register(mux)
+		logger.Printf("app updates served from %s", *appDir)
+	}
 	mux.Handle("/", srv.Handler())
 
 	httpServer := &http.Server{
