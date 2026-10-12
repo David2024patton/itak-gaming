@@ -34,6 +34,16 @@ type Config struct {
 	// InputDelay is what the guest proposes in session_accept.
 	// Zero means the default (4).
 	InputDelay int
+	// PlayerName is this player's display name, exchanged in the
+	// waiting room.
+	PlayerName string
+	// ReadyNow skips the waiting room's ready ritual: the peer
+	// introduces itself and readies immediately. For headless
+	// drivers (tests, the netplayguest rig) that have no UI.
+	ReadyNow bool
+	// Countdown is the shared countdown once both players are
+	// ready. Zero means the default (5s).
+	Countdown time.Duration
 }
 
 type envelope struct {
@@ -55,6 +65,9 @@ type envelope struct {
 	// session accept
 	InputDelay   int `json:"inputDelay,omitempty"`
 	HashInterval int `json:"hashInterval,omitempty"`
+	// waiting room
+	Player string `json:"player,omitempty"`
+	EndsAt int64  `json:"endsAt,omitempty"`
 	// snapshot
 	Bytes  int    `json:"bytes,omitempty"`
 	Chunks int    `json:"chunks,omitempty"`
@@ -114,6 +127,15 @@ type Session struct {
 	lastPeerMsg time.Time
 	desyncs     int
 	stalls      int
+
+	// waiting room state (room.go)
+	phase         int
+	peerPresent   bool
+	peerPresentAt time.Time
+	peerName      string
+	peerReady     bool
+	localReady    bool
+	countdownEnds time.Time
 }
 
 func NewSession(t Transport, core Core, cfg Config) *Session {
@@ -152,10 +174,17 @@ func (s *Session) send(v any) error {
 
 func (s *Session) sendEnv(e envelope) error { return s.send(e) }
 
-// Start runs the session setup handshake (PROTOCOL.md section 4.1)
-// and returns once both sides are ready to step frames from 0.
+// Start runs the waiting room (PROTOCOL.md section 4.0) and then
+// the session setup handshake (section 4.1), returning once both
+// sides are ready to step frames from 0.
 func (s *Session) Start() error {
 	go s.reader()
+	if err := s.roomPhase(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.phase = phasePlaying
+	s.mu.Unlock()
 	if s.cfg.IsHost {
 		return s.startHost()
 	}

@@ -80,7 +80,16 @@ func main() {
 	frames := flag.Int("frames", 3600, "frames to simulate")
 	startAt := flag.Int("start-at", 400, "frame to start pressing Start")
 	pressFor := flag.Int("press-for", 12, "frames to hold Start")
+	name := flag.String("name", "", "player name for the waiting room (default TestHost/TestGuest)")
+	readyDelay := flag.Int("ready-delay", -1, "seconds before pressing Ready in the room; -1 readies instantly")
 	flag.Parse()
+	if *name == "" {
+		if *asHost {
+			*name = "TestHost"
+		} else {
+			*name = "TestGuest"
+		}
+	}
 	if *corePath == "" || *romPath == "" {
 		fmt.Println("need -core and -rom")
 		os.Exit(2)
@@ -97,7 +106,7 @@ func main() {
 		gameName := filepath.Base(*romPath)
 		if err := httpJSON("POST", *server+"/lobbies",
 			map[string]any{"name": "TestHost lobby", "game": gameName,
-				"hostPlayer": "TestHost", "password": ""}, &created); err != nil {
+				"hostPlayer": *name, "password": ""}, &created); err != nil {
 			fmt.Println("create:", err)
 			os.Exit(1)
 		}
@@ -134,7 +143,7 @@ func main() {
 			GuestToken string `json:"guestToken"`
 		}
 		if err := httpJSON("POST", *server+"/lobbies/"+id+"/join",
-			map[string]any{"player": "TestGuest", "password": ""}, &join); err != nil {
+			map[string]any{"player": *name, "password": ""}, &join); err != nil {
 			fmt.Println("join:", err)
 			os.Exit(1)
 		}
@@ -166,10 +175,19 @@ joined:
 		os.Exit(1)
 	}
 	sess := netsession.NewSession(conn, adapter{bridge}, netsession.Config{
-		Game:    filepath.Base(*romPath),
-		ROMHash: hex.EncodeToString(sum[:]),
-		IsHost:  *asHost,
+		Game:       filepath.Base(*romPath),
+		ROMHash:    hex.EncodeToString(sum[:]),
+		IsHost:     *asHost,
+		PlayerName: *name,
+		ReadyNow:   *readyDelay < 0,
 	})
+	if *readyDelay >= 0 {
+		go func() {
+			time.Sleep(time.Duration(*readyDelay) * time.Second)
+			sess.SetReady()
+			fmt.Println("pressed Ready in the room")
+		}()
+	}
 	t0 := time.Now()
 	if err := sess.Start(); err != nil {
 		fmt.Println("session start:", err)

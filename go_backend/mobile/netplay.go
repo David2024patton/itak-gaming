@@ -60,17 +60,28 @@ func (bridgeCore) SaveState() []byte {
 func (bridgeCore) LoadState(data []byte) error { return emu.LoadState(data) }
 
 var npSession *netsession.Session
+
+// npPending is the session while Start() is still blocked in the
+// waiting room / handshake, so the UI can poll room state.
+var npPending *netsession.Session
 var npErr string
 
+func npActive() *netsession.Session {
+	if npSession != nil {
+		return npSession
+	}
+	return npPending
+}
+
 // NetplayStart connects to the lobby signaling socket and runs the
-// session handshake (PROTOCOL.md 4.1). It blocks until both players
-// are ready to step frames, so call it from a background thread.
-// Returns "" on success or an error message.
-func NetplayStart(serverBase, lobbyID, token, game string, isHost bool) string {
+// waiting room plus session handshake (PROTOCOL.md 4.0-4.1). It
+// blocks until both players are ready to step frames, so call it
+// from a background thread. Returns "" on success or an error.
+func NetplayStart(serverBase, lobbyID, token, game string, isHost bool, playerName string) string {
 	if emu == nil {
 		return "no core loaded"
 	}
-	if npSession != nil {
+	if npSession != nil || npPending != nil {
 		return "a session is already running"
 	}
 	wsBase := strings.Replace(serverBase, "http://", "ws://", 1)
@@ -82,16 +93,71 @@ func NetplayStart(serverBase, lobbyID, token, game string, isHost bool) string {
 		return "cannot connect to the lobby server: " + err.Error()
 	}
 	sess := netsession.NewSession(conn, bridgeCore{}, netsession.Config{
-		Game: game, ROMHash: romHashHex, CoreName: coreLabel, IsHost: isHost,
+		Game: game, ROMHash: romHashHex, CoreName: coreLabel,
+		IsHost: isHost, PlayerName: playerName,
 	})
+	npPending = sess
 	if err := sess.Start(); err != nil {
 		_ = conn.Close()
+		npPending = nil
 		npErr = err.Error()
 		return npErr
 	}
+	npPending = nil
 	npErr = ""
 	npSession = sess
 	return ""
+}
+
+// NetplayPhase reports the waiting-room state for the UI:
+// "idle", "waiting", "room", "countdown", or "playing".
+func NetplayPhase() string {
+	if npSession != nil {
+		return "playing"
+	}
+	if npPending != nil {
+		return npPending.RoomPhase()
+	}
+	return "idle"
+}
+
+// NetplayPeerName is the other player's display name.
+func NetplayPeerName() string {
+	if s := npActive(); s != nil {
+		return s.PeerName()
+	}
+	return ""
+}
+
+// NetplayPeerReady reports whether the other player hit Ready.
+func NetplayPeerReady() bool {
+	if s := npActive(); s != nil {
+		return s.PeerReady()
+	}
+	return false
+}
+
+// NetplayLocalReady reports whether this player hit Ready.
+func NetplayLocalReady() bool {
+	if s := npActive(); s != nil {
+		return s.LocalReady()
+	}
+	return false
+}
+
+// NetplayCountdown is the seconds left on the shared countdown.
+func NetplayCountdown() int {
+	if s := npActive(); s != nil {
+		return s.CountdownSeconds()
+	}
+	return 0
+}
+
+// NetplaySetReady marks this player ready in the waiting room.
+func NetplaySetReady() {
+	if s := npActive(); s != nil {
+		s.SetReady()
+	}
 }
 
 // NetplayStep simulates one frame with the local player's current
@@ -124,6 +190,10 @@ func NetplayError() string { return npErr }
 
 // NetplayStop ends the session politely.
 func NetplayStop() {
+	if npPending != nil {
+		npPending.End("quit")
+		npPending = nil
+	}
 	if npSession != nil {
 		npSession.End("quit")
 		npSession = nil

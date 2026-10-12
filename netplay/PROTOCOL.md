@@ -166,6 +166,36 @@ key in the same fields) is equally valid.
 
 ## 4. Lockstep session
 
+### 4.0 The waiting room
+
+Before session setup, the two players sit in a waiting room so a
+human, not a timeout, decides when the game starts:
+
+1. On connecting, each peer introduces itself, and repeats the
+   introduction until the other side knows its name:
+   ```json
+   { "type": "hello", "player": "David" }
+   ```
+2. Each player presses Ready when they are set (one-way):
+   ```json
+   { "type": "ready" }
+   ```
+3. Once the host has seen both readys, it starts a shared
+   5-second countdown by absolute end time:
+   ```json
+   { "type": "countdown", "endsAt": 1760000005000 }
+   ```
+   When the countdown elapses on both sides, session setup
+   (4.1) begins. The countdown is a human sync point only; the
+   offer/snapshot handshake still gates frame 0 exactly.
+
+If a peer leaves during the room (`peer_left`), the seat empties
+and both readys reset. Local save states stay disabled for the
+whole session either way. A peer that connects but never says
+hello is an older build: after a 20-second grace the room is
+skipped and setup proceeds, and a guest that receives a
+`session_offer` while still in the room skips straight to 4.1.
+
 ### 4.1 Session setup
 
 Once both peers are on the signaling socket, before any frame runs:

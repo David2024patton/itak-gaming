@@ -40,10 +40,41 @@ func (s *Session) reader() {
 		switch e.Type {
 		case "peer_joined":
 			s.peerJoined = true
+			if !s.peerPresent {
+				s.peerPresent = true
+				s.peerPresentAt = time.Now()
+			}
+		case "hello":
+			s.peerName = e.Player
+			if !s.peerPresent {
+				s.peerPresent = true
+				s.peerPresentAt = time.Now()
+			}
+		case "ready":
+			s.peerReady = true
+			if !s.peerPresent {
+				s.peerPresent = true
+				s.peerPresentAt = time.Now()
+			}
+		case "countdown":
+			if e.EndsAt > 0 {
+				s.countdownEnds = time.UnixMilli(e.EndsAt)
+			}
 		case "peer_left":
-			s.peerGone = true
-			s.ended = true
-			s.endErr = errors.New("the other player left")
+			if s.phase == phaseRoom {
+				// Still in the waiting room: the seat simply
+				// empties and both readys reset, so whoever
+				// joins next starts the ritual fresh.
+				s.peerPresent = false
+				s.peerName = ""
+				s.peerReady = false
+				s.localReady = false
+				s.countdownEnds = time.Time{}
+			} else {
+				s.peerGone = true
+				s.ended = true
+				s.endErr = errors.New("the other player left")
+			}
 		case "lobby_closed":
 			s.peerGone = true
 			s.ended = true

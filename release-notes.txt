@@ -1,1 +1,1 @@
-The app now checks for updates whenever you come back to it, not just when it first opens.
+Online games now open a waiting room: you see who is in, both players press Ready, then a 5 second countdown starts the game.

@@ -133,7 +133,7 @@ func runPair(t *testing.T, frames int, corruptGuestAt int) (*Session, *Session, 
 	hostCore := newFakeCore()
 	guestCore := newFakeCore()
 	guestCore.corruptAt = corruptGuestAt
-	cfg := Config{Game: "Super Mario World (USA).sfc", ROMHash: "deadbeef", CoreName: "snes9x"}
+	cfg := Config{Game: "Super Mario World (USA).sfc", ROMHash: "deadbeef", CoreName: "snes9x", ReadyNow: true}
 	hostCfg := cfg
 	hostCfg.IsHost = true
 	host := NewSession(ta, hostCore, hostCfg)
@@ -195,6 +195,105 @@ func TestLockstepStaysInSync(t *testing.T) {
 	}
 	if host.Frame() != 700 || guest.Frame() != 700 {
 		t.Fatalf("frame counters: host %d guest %d", host.Frame(), guest.Frame())
+	}
+}
+
+// The waiting room: names are exchanged, the session must not
+// start until BOTH players ready up, then the shared countdown
+// runs and lockstep proceeds in sync.
+func TestRoomReadyThenLockstep(t *testing.T) {
+	ta, tb := transportPair()
+	hostCore := newFakeCore()
+	guestCore := newFakeCore()
+	base := Config{
+		Game: "Super Mario World (USA).sfc", ROMHash: "deadbeef",
+		CoreName: "snes9x", Countdown: 300 * time.Millisecond,
+	}
+	hostCfg := base
+	hostCfg.IsHost = true
+	hostCfg.PlayerName = "Host"
+	guestCfg := base
+	guestCfg.PlayerName = "Guest"
+	host := NewSession(ta, hostCore, hostCfg)
+	guest := NewSession(tb, guestCore, guestCfg)
+	ta.inject(`{"type":"peer_joined","role":"guest"}`)
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- host.Start() }()
+	go func() { errCh <- guest.Start() }()
+
+	waitUntil := func(what string, pred func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if pred() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	waitUntil("name exchange", func() bool {
+		return host.PeerName() == "Guest" && guest.PeerName() == "Host"
+	})
+	if host.RoomPhase() != "room" || guest.RoomPhase() != "room" {
+		t.Fatalf("phases: host %q guest %q", host.RoomPhase(), guest.RoomPhase())
+	}
+
+	guest.SetReady()
+	waitUntil("host sees guest ready", host.PeerReady)
+	// The host has not readied: nobody may have started.
+	select {
+	case err := <-errCh:
+		t.Fatalf("session started before both players were ready: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	host.SetReady()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("start after ready: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("countdown never released the session")
+		}
+	}
+
+	// Lockstep from frame 0, in sync.
+	stepErr := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for f := 0; f < 150; f++ {
+			if err := host.Step(uint16(f % 256)); err != nil {
+				stepErr <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for f := 0; f < 150; f++ {
+			if err := guest.Step(uint16((f * 2) % 256)); err != nil {
+				stepErr <- err
+				return
+			}
+		}
+	}()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case err := <-stepErr:
+		t.Fatalf("step: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("lockstep deadlocked after the room")
+	}
+	if !bytes.Equal(hostCore.stateBytes(), guestCore.stateBytes()) {
+		t.Fatal("final states differ after the room test")
 	}
 }
 

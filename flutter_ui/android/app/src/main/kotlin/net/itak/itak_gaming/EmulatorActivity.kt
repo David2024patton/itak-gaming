@@ -7,9 +7,17 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.KeyEvent
+import android.view.View
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import mobile.Mobile
 import java.io.File
@@ -62,8 +70,32 @@ class EmulatorActivity : Activity(), TextureListener {
     private var npServer: String = ""
     @Volatile private var npReady = false
     @Volatile private var npFailed: String? = null
+    @Volatile private var npCancelled = false
     @Volatile private var localMask = 0
     private val netplay: Boolean get() = npRole.isNotEmpty()
+
+    // ----- Waiting room overlay (online games) -----
+    // Shown over the (still black) game view until the room's
+    // ready ritual and countdown finish and frames start.
+    private var roomOverlay: FrameLayout? = null
+    private var roomPeerLine: TextView? = null
+    private var roomLocalLine: TextView? = null
+    private var roomStatusLine: TextView? = null
+    private var roomCountLine: TextView? = null
+    private var roomPanel: LinearLayout? = null
+    private var readyButton: Button? = null
+    private var myName: String = ""
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val roomTicker = object : Runnable {
+        override fun run() {
+            if (!netplay || npReady || npFailed != null || isFinishing) {
+                hideRoom()
+                return
+            }
+            updateRoom()
+            uiHandler.postDelayed(this, 200)
+        }
+    }
 
     // ----- Local multiplayer seats -----
     // Controller assignments (player name -> deviceId) come from the
@@ -198,7 +230,15 @@ class EmulatorActivity : Activity(), TextureListener {
         Log.i(TAG, "autosave = $autoSaveEnabled")
 
         glView = EmuGLView(this)
-        setContentView(glView)
+        val rootFrame = FrameLayout(this)
+        rootFrame.addView(
+            glView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        setContentView(rootFrame)
 
         val coreAsset = intent.getStringExtra(EXTRA_CORE) ?: "libsnes9x.so"
         romPath = intent.getStringExtra(EXTRA_ROM) ?: return finish()
@@ -222,10 +262,13 @@ class EmulatorActivity : Activity(), TextureListener {
         npServer = intent.getStringExtra(EXTRA_NP_SERVER) ?: ""
         if (netplay) {
             Log.i(TAG, "netplay role=$npRole lobby=$npLobby")
+            myName = currentPlayer()
+            buildRoomOverlay(rootFrame)
+            uiHandler.post(roomTicker)
             thread(name = "netplay-connect") {
                 val err = Mobile.netplayStart(
                     npServer, npLobby, npToken,
-                    java.io.File(romPath).name, npRole == "host"
+                    java.io.File(romPath).name, npRole == "host", myName
                 )
                 if (err.isEmpty()) {
                     npReady = true
@@ -247,6 +290,137 @@ class EmulatorActivity : Activity(), TextureListener {
         statsBegin()
         startAudio()
         Log.i(TAG, "onCreate done")
+    }
+
+    // ----- Waiting room UI -----
+
+    private fun roomText(text: String, size: Float, bold: Boolean = false): TextView {
+        val tv = TextView(this)
+        tv.text = text
+        tv.textSize = size
+        tv.setTextColor(Color.WHITE)
+        if (bold) tv.setTypeface(null, android.graphics.Typeface.BOLD)
+        tv.gravity = Gravity.CENTER
+        return tv
+    }
+
+    private fun buildRoomOverlay(root: FrameLayout) {
+        val overlay = FrameLayout(this)
+        overlay.setBackgroundColor(Color.argb(235, 14, 14, 24))
+        val panel = LinearLayout(this)
+        panel.orientation = LinearLayout.VERTICAL
+        panel.gravity = Gravity.CENTER
+        panel.setPadding(64, 48, 64, 48)
+        val panelParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        panelParams.gravity = Gravity.CENTER
+
+        panel.addView(roomText("Online Game", 36f, true))
+        val gameName = java.io.File(romPath).name.removeSuffix(".sfc")
+            .removeSuffix(".nes").removeSuffix(".smc")
+        val sub = roomText("$gameName  ·  Lobby $npLobby", 19f)
+        sub.setTextColor(Color.argb(180, 255, 255, 255))
+        panel.addView(sub)
+        val spacer1 = View(this)
+        panel.addView(spacer1, LinearLayout.LayoutParams(1, 36))
+
+        roomLocalLine = roomText("", 24f, true)
+        panel.addView(roomLocalLine)
+        val spacer2 = View(this)
+        panel.addView(spacer2, LinearLayout.LayoutParams(1, 14))
+        roomPeerLine = roomText("", 24f)
+        panel.addView(roomPeerLine)
+        val spacer3 = View(this)
+        panel.addView(spacer3, LinearLayout.LayoutParams(1, 30))
+
+        val btn = Button(this)
+        btn.text = "READY"
+        btn.textSize = 24f
+        btn.isFocusable = true
+        btn.setOnClickListener {
+            Mobile.netplaySetReady()
+            updateRoom()
+        }
+        readyButton = btn
+        panel.addView(btn, LinearLayout.LayoutParams(360, 96))
+        val spacer4 = View(this)
+        panel.addView(spacer4, LinearLayout.LayoutParams(1, 22))
+
+        roomStatusLine = roomText("", 18f)
+        roomStatusLine?.setTextColor(Color.argb(170, 255, 255, 255))
+        panel.addView(roomStatusLine)
+        roomPanel = panel
+        overlay.addView(panel, panelParams)
+
+        roomCountLine = roomText("", 110f, true)
+        roomCountLine?.visibility = View.GONE
+        val countParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        countParams.gravity = Gravity.CENTER
+        overlay.addView(roomCountLine, countParams)
+
+        root.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        roomOverlay = overlay
+        updateRoom()
+    }
+
+    private fun updateRoom() {
+        val phase = try { Mobile.netplayPhase() } catch (e: Exception) { "waiting" }
+        val peer = try { Mobile.netplayPeerName() } catch (e: Exception) { "" }
+        val peerReady = try { Mobile.netplayPeerReady() } catch (e: Exception) { false }
+        val localReady = try { Mobile.netplayLocalReady() } catch (e: Exception) { false }
+        val roleWord = if (npRole == "host") "Host" else "Guest"
+        roomLocalLine?.text =
+            "● $myName (You) · $roleWord" + if (localReady) " · Ready ✓" else ""
+        when (phase) {
+            "countdown" -> {
+                val n = try { Mobile.netplayCountdown().toInt() } catch (e: Exception) { 0 }
+                roomPanel?.visibility = View.GONE
+                roomCountLine?.visibility = View.VISIBLE
+                roomCountLine?.text = if (n > 0) n.toString() else "GO!"
+            }
+            "room" -> {
+                roomPeerLine?.text =
+                    "● $peer" + if (peerReady) " · Ready ✓" else " · not ready yet"
+                val btn = readyButton
+                if (btn != null) {
+                    if (localReady) {
+                        btn.text = "READY ✓"
+                        btn.isEnabled = false
+                        roomStatusLine?.text = "Waiting for $peer to ready up…"
+                    } else {
+                        btn.text = "READY"
+                        btn.isEnabled = true
+                        if (!btn.hasFocus()) btn.requestFocus()
+                        roomStatusLine?.text =
+                            if (peerReady) "$peer is ready. Your turn!" else "Both players press READY, then the game starts in 5 seconds."
+                    }
+                }
+            }
+            else -> { // waiting / connecting
+                roomPeerLine?.text = "○ Waiting for the other player to join…"
+                readyButton?.let {
+                    it.text = "READY"
+                    it.isEnabled = false
+                }
+                roomStatusLine?.text =
+                    "Your guest picks this lobby from the Online screen. BACK leaves."
+            }
+        }
+    }
+
+    private fun hideRoom() {
+        roomOverlay?.visibility = View.GONE
     }
 
     // TextureListener (from the GL renderer's first surface)
@@ -311,6 +485,7 @@ class EmulatorActivity : Activity(), TextureListener {
             val failed = npFailed
             if (!running) return
             if (failed != null) {
+                if (npCancelled || isFinishing) return
                 runOnUiThread {
                     AlertDialog.Builder(this)
                         .setTitle("Online game could not start")
@@ -861,6 +1036,13 @@ class EmulatorActivity : Activity(), TextureListener {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (netplay && !npReady) {
+                // Still in the waiting room: BACK leaves the lobby.
+                npCancelled = true
+                Mobile.netplayStop()
+                finish()
+                return true
+            }
             if (!menuOpen) showPauseMenu()
             return true
         }
@@ -899,6 +1081,7 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     override fun onDestroy() {
+        uiHandler.removeCallbacks(roomTicker)
         try {
             val im = getSystemService(android.content.Context.INPUT_SERVICE)
                 as android.hardware.input.InputManager
