@@ -25,6 +25,19 @@ static void ll_close(void* h) { if (h) dlclose(h); }
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdarg.h>
+
+// Core log sink: cores explain themselves here (load failures,
+// missing firmware, bad options) instead of failing silently.
+static void core_log_printf(int level, const char* fmt, ...) {
+    (void)level;
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "[core] ");
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
 
 // Libretro API function pointers
 typedef void (*retro_init_fn)(void);
@@ -170,6 +183,36 @@ static bool env_cb(unsigned cmd, void* data) {
         if (data) g_pixel_format = *(int*)data;
         return true;
     }
+    // cmd 3 = GET_CAN_DUPE: can the frontend show a duplicated
+    // frame (video callback with NULL data)? Yes: the bridge keeps
+    // the last frame and the renderer redraws it. Gambatte refuses
+    // to load at all without this.
+    if (cmd == 3) {
+        if (data) *(bool*)data = true;
+        return true;
+    }
+    // cmd 27 = GET_LOG_INTERFACE: hand the core a log function so
+    // its complaints land on stderr instead of vanishing.
+    if (cmd == 27) {
+        if (data) {
+            void** log_fn = (void**)data;
+            *log_fn = (void*)core_log_printf;
+        }
+        return true;
+    }
+    // cmd 9 = GET_SYSTEM_DIRECTORY, 30 = GET_CORE_ASSETS_DIRECTORY,
+    // 31 = GET_SAVE_DIRECTORY. CD cores (PS1, Sega CD) ask where the
+    // system folder is (BIOS files live there) and refuse to load
+    // without an answer. The app points ITAK_SYSTEM_DIR at its own
+    // folder; the fallback keeps headless tools working.
+    if (cmd == 9 || cmd == 30 || cmd == 31) {
+        if (data) {
+            const char* dir = getenv("ITAK_SYSTEM_DIR");
+            if (!dir || !*dir) dir = "/tmp";
+            *(const char**)data = dir;
+        }
+        return true;
+    }
     return false;
 }
 int core_get_pixel_format() { return g_pixel_format; }
@@ -218,14 +261,16 @@ CoreHandle* core_load(const char* path) {
     return h;
 }
 
-bool core_load_game(CoreHandle* h, const void* data, size_t size) {
-    // retro_game_info struct
+bool core_load_game(CoreHandle* h, const char* path, const void* data, size_t size) {
+    // retro_game_info struct. The path matters: some cores
+    // (Gambatte, PCSX ReARMed) load from the path and ignore the
+    // memory buffer entirely, so a NULL path fails their load.
     struct {
         const char* path;
         const void* data;
         size_t size;
         const char* meta;
-    } info = {NULL, data, size, NULL};
+    } info = {path, data, size, NULL};
     bool ok = h->load_game(&info);
     if (ok && h->get_av_info) {
         // retro_system_av_info: geometry then timing
@@ -353,8 +398,10 @@ func (b *Bridge) LoadGame(romPath string) error {
 	}
 	cdata := C.CBytes(data)
 	defer C.free(cdata)
+	cpath := C.CString(romPath)
+	defer C.free(unsafe.Pointer(cpath))
 
-	ok := C.core_load_game(b.handle, cdata, C.size_t(len(data)))
+	ok := C.core_load_game(b.handle, cpath, cdata, C.size_t(len(data)))
 	if !bool(ok) {
 		return fmt.Errorf("core failed to load game")
 	}

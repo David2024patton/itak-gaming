@@ -274,6 +274,16 @@ class EmulatorActivity : Activity(), TextureListener {
         val coreFile = extractCore(coreAsset)
         Log.i(TAG, "core extracted to ${coreFile.absolutePath} size=${coreFile.length()}")
         try {
+            // CD cores (PS1, Sega CD) need a system folder for the
+            // BIOS files the player supplies. /sdcard/iTaK/system
+            // sits next to the systems art folder and is reachable
+            // with any file manager.
+            val sysDir = java.io.File(
+                android.os.Environment.getExternalStorageDirectory(),
+                "iTaK/system"
+            )
+            sysDir.mkdirs()
+            Mobile.setSystemDir(sysDir.absolutePath)
             Mobile.loadCore(coreFile.absolutePath)
             Mobile.loadGame(romPath)
             Log.i(TAG, "core+game loaded")

@@ -5,12 +5,22 @@ package mobile
 
 import (
 	"encoding/binary"
+	"os"
 	"strings"
 
 	"github.com/davidpatton/itak-gaming/go_backend/internal/core"
 )
 
 var emu *core.Bridge
+
+// SetSystemDir points the bridge's system directory at a folder
+// the user controls. CD cores (PlayStation, Sega CD) look there
+// for the BIOS files the user supplies; the cores refuse to load
+// games until the folder is at least answerable. Call before
+// LoadCore.
+func SetSystemDir(path string) {
+	_ = os.Setenv("ITAK_SYSTEM_DIR", path)
+}
 
 // Joypad button IDs mirror core package constants.
 const (

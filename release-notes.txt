@@ -1,1 +1,1 @@
-Online games now survive pausing: when the other player opens their menu, the game waits and shows who paused instead of ending the session.
+Game Boy, Game Boy Advance and PlayStation games now load and play (engine fixes under the hood). CD games also get a system folder for BIOS files at /sdcard/iTaK/system.
