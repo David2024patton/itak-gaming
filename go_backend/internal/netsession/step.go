@@ -60,6 +60,8 @@ func (s *Session) reader() {
 			if e.EndsAt > 0 {
 				s.countdownEnds = time.UnixMilli(e.EndsAt)
 			}
+		case "pause":
+			s.peerPaused = e.Paused
 		case "peer_left":
 			if s.phase == phaseRoom {
 				// Still in the waiting room: the seat simply
@@ -253,7 +255,14 @@ func (s *Session) Step(local uint16) error {
 		_, have := s.remoteIn[f]
 		ended := s.ended
 		endErr := s.endErr
-		silent := time.Since(s.lastPeerMsg)
+		// Silence is measured from the last peer message, or
+		// from our own resume if that is later (see lastResume).
+		silentSince := s.lastPeerMsg
+		if s.lastResume.After(silentSince) {
+			silentSince = s.lastResume
+		}
+		silent := time.Since(silentSince)
+		paused := s.localPaused || s.peerPaused
 		s.mu.Unlock()
 		if have {
 			break
@@ -264,7 +273,12 @@ func (s *Session) Step(local uint16) error {
 			}
 			return errors.New("session ended")
 		}
-		if silent > peerSilenceLimit {
+		// A paused peer is stalled, not lost: wait as long as the
+		// pause lasts. (A peer that truly vanishes still ends the
+		// session through the transport error above.)
+		if !paused && silent > s.silenceLimit() {
+			dbg("SILENCE TRIP frame=%d silent=%v localPaused=%v peerPaused=%v host=%v",
+				f, silent, s.localPaused, s.peerPaused, s.cfg.IsHost)
 			return errors.New("connection lost: no word from the other player")
 		}
 		if !waitLogged && time.Since(waitStart) > 500*time.Millisecond {

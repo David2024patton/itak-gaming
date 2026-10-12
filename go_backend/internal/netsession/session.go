@@ -44,6 +44,11 @@ type Config struct {
 	// Countdown is the shared countdown once both players are
 	// ready. Zero means the default (5s).
 	Countdown time.Duration
+	// SilenceLimit is how long the peer may go quiet mid-session
+	// before the session is declared lost. Time the peer spends
+	// paused (see SetPaused) does not count. Zero means the
+	// default (15s).
+	SilenceLimit time.Duration
 }
 
 type envelope struct {
@@ -68,6 +73,8 @@ type envelope struct {
 	// waiting room
 	Player string `json:"player,omitempty"`
 	EndsAt int64  `json:"endsAt,omitempty"`
+	// pause
+	Paused bool `json:"paused,omitempty"`
 	// snapshot
 	Bytes  int    `json:"bytes,omitempty"`
 	Chunks int    `json:"chunks,omitempty"`
@@ -136,6 +143,15 @@ type Session struct {
 	peerReady     bool
 	localReady    bool
 	countdownEnds time.Time
+
+	// pause state: while either side is paused, lockstep stalls
+	// by design and the silence limit does not apply.
+	localPaused bool
+	peerPaused  bool
+	// lastResume is when this side last unpaused. The silence
+	// clock restarts there: the quiet during our own pause was
+	// our doing, and the peer needs a moment to answer anyway.
+	lastResume time.Time
 }
 
 func NewSession(t Transport, core Core, cfg Config) *Session {
@@ -155,6 +171,43 @@ func NewSession(t Transport, core Core, cfg Config) *Session {
 		lastResyncFrame: -1,
 		lastPeerMsg:     time.Now(),
 	}
+}
+
+func (s *Session) silenceLimit() time.Duration {
+	if s.cfg.SilenceLimit > 0 {
+		return s.cfg.SilenceLimit
+	}
+	return peerSilenceLimit
+}
+
+// SetPaused tells the peer this side has paused (its menu is
+// open) or resumed. While either side is paused the other side
+// waits without tripping the silence limit: a paused game is
+// stalled, not lost. The transport itself still reports a peer
+// that truly vanishes (socket close ends the session as before).
+func (s *Session) SetPaused(p bool) {
+	s.mu.Lock()
+	s.localPaused = p
+	if !p {
+		s.lastResume = time.Now()
+	}
+	s.mu.Unlock()
+	_ = s.sendEnv(envelope{Type: "pause", Paused: p})
+}
+
+// PeerPaused reports whether the other player has told us they
+// are paused.
+func (s *Session) PeerPaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peerPaused
+}
+
+// LocalPaused reports whether this side is marked paused.
+func (s *Session) LocalPaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.localPaused
 }
 
 func (s *Session) signal() {

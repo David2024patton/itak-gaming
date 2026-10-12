@@ -160,6 +160,22 @@ func NetplaySetReady() {
 	}
 }
 
+// NetplaySetPaused tells the peer this player has paused (menu
+// open) or resumed. A paused session stalls without dying.
+func NetplaySetPaused(paused bool) {
+	if npSession != nil {
+		npSession.SetPaused(paused)
+	}
+}
+
+// NetplayPeerPaused reports whether the other player is paused.
+func NetplayPeerPaused() bool {
+	if npSession != nil {
+		return npSession.PeerPaused()
+	}
+	return false
+}
+
 // NetplayStep simulates one frame with the local player's current
 // button mask, blocking while the peer's input is in flight.
 // Returns "" or the error that ended the session.

@@ -317,7 +317,31 @@ input as far as the cores are concerned; the safe default is off, and
 `session_offer` carries `"cheats": []` so any difference rejects the
 session.
 
-### 4.5 Ending a session
+### 4.5 Pausing
+
+A player who opens their menu pauses. Lockstep cannot advance
+without both players' inputs, so a pause is signaled rather than
+left to look like a dead connection:
+
+```json
+{ "type": "pause", "paused": true }
+{ "type": "pause", "paused": false }
+```
+
+While either side is paused, the waiting side does **not** apply
+the silence limit (section 4.2): a paused game is stalled, not
+lost. Three details keep this safe:
+
+- A peer that truly vanishes still ends the session: its socket
+  close (or the server's `peer_left` / `lobby_closed`) surfaces
+  immediately, pause or not.
+- The side that resumes restarts its own silence clock at the
+  resume moment. The quiet during its pause was its own doing,
+  and the peer's first post-pause input needs a round trip.
+- The waiting side shows "the other player paused" so a long
+  stall reads as a person in a menu, not a frozen game.
+
+### 4.6 Ending a session
 
 Either side may send `{"type":"session_end","reason":"quit"}` and then
 disconnect. The host disconnecting also triggers the server's

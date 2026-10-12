@@ -97,6 +97,33 @@ class EmulatorActivity : Activity(), TextureListener {
         }
     }
 
+    // "Other player paused" banner: while the peer sits in their
+    // menu the game stalls; the session survives (the engine
+    // treats a signaled pause as stalled, not lost).
+    private var pauseBanner: TextView? = null
+    private val pauseTicker = object : Runnable {
+        override fun run() {
+            if (!netplay || isFinishing) {
+                pauseBanner?.visibility = View.GONE
+                return
+            }
+            val banner = pauseBanner
+            if (banner != null) {
+                val peerPaused = npReady &&
+                    (try { Mobile.netplayPeerPaused() } catch (e: Exception) { false })
+                if (peerPaused) {
+                    val name = try { Mobile.netplayPeerName() } catch (e: Exception) { "" }
+                    banner.text = "⏸ ${if (name.isNotEmpty()) name else "The other player"} " +
+                        "paused — the game waits for them"
+                    banner.visibility = View.VISIBLE
+                } else {
+                    banner.visibility = View.GONE
+                }
+            }
+            uiHandler.postDelayed(this, 300)
+        }
+    }
+
     // ----- Local multiplayer seats -----
     // Controller assignments (player name -> deviceId) come from the
     // itak_prefs "controller_map" JSON written by the player picker.
@@ -265,6 +292,7 @@ class EmulatorActivity : Activity(), TextureListener {
             myName = currentPlayer()
             buildRoomOverlay(rootFrame)
             uiHandler.post(roomTicker)
+            uiHandler.post(pauseTicker)
             thread(name = "netplay-connect") {
                 val err = Mobile.netplayStart(
                     npServer, npLobby, npToken,
@@ -376,6 +404,23 @@ class EmulatorActivity : Activity(), TextureListener {
             )
         )
         roomOverlay = overlay
+
+        val banner = TextView(this)
+        banner.textSize = 20f
+        banner.setTextColor(Color.WHITE)
+        banner.setBackgroundColor(Color.argb(205, 20, 20, 32))
+        banner.setPadding(36, 18, 36, 18)
+        banner.gravity = Gravity.CENTER
+        banner.visibility = View.GONE
+        val bannerParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        bannerParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        bannerParams.topMargin = 28
+        root.addView(banner, bannerParams)
+        pauseBanner = banner
+
         updateRoom()
     }
 
@@ -785,6 +830,11 @@ class EmulatorActivity : Activity(), TextureListener {
         if (menuOpen) return
         menuOpen = true
         paused = true
+        // Tell the other player we paused, so their side waits
+        // instead of declaring the connection lost.
+        if (netplay) {
+            try { Mobile.netplaySetPaused(true) } catch (e: Exception) { /* ignore */ }
+        }
         // Wait until the game thread is actually parked between frames so
         // save/load calls never race an in-flight frame.
         var waited = 0
@@ -845,6 +895,9 @@ class EmulatorActivity : Activity(), TextureListener {
     private fun resumeFromMenu() {
         menuOpen = false
         paused = false
+        if (netplay) {
+            try { Mobile.netplaySetPaused(false) } catch (e: Exception) { /* ignore */ }
+        }
         try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
     }
 
@@ -1087,6 +1140,7 @@ class EmulatorActivity : Activity(), TextureListener {
 
     override fun onDestroy() {
         uiHandler.removeCallbacks(roomTicker)
+        uiHandler.removeCallbacks(pauseTicker)
         try {
             val im = getSystemService(android.content.Context.INPUT_SERVICE)
                 as android.hardware.input.InputManager

@@ -309,3 +309,113 @@ func TestDesyncHealsViaSnapshot(t *testing.T) {
 		t.Fatalf("frame counters diverged: host %d guest %d", host.Frame(), guest.Frame())
 	}
 }
+
+// A paused player must not kill the session: while the guest is
+// paused far longer than the silence limit, the host waits it
+// out without erroring; once the guest resumes, lockstep runs
+// on in sync (a hash check at frame 300 compares clean).
+func TestPauseSurvivesSilence(t *testing.T) {
+	ta, tb := transportPair()
+	hostCore := newFakeCore()
+	guestCore := newFakeCore()
+	cfg := Config{
+		Game: "Super Mario World (USA).sfc", ROMHash: "deadbeef",
+		CoreName: "snes9x", ReadyNow: true,
+		Countdown:    100 * time.Millisecond,
+		SilenceLimit: 300 * time.Millisecond,
+	}
+	hostCfg := cfg
+	hostCfg.IsHost = true
+	host := NewSession(ta, hostCore, hostCfg)
+	guest := NewSession(tb, guestCore, cfg)
+	ta.inject(`{"type":"peer_joined","role":"guest"}`)
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- host.Start() }()
+	go func() { errCh <- guest.Start() }()
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("start: %v", err)
+		}
+	}
+
+	const total = 400
+	const pauseAt = 100
+	errs := make(chan error, 2)
+	go func() {
+		for f := 0; f < total; f++ {
+			if err := host.Step(uint16(f % 256)); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- nil
+	}()
+	go func() {
+		for f := 0; f < total; f++ {
+			if f == pauseAt {
+				guest.SetPaused(true)
+				time.Sleep(1200 * time.Millisecond) // 4x the limit
+				guest.SetPaused(false)
+			}
+			if err := guest.Step(uint16((f * 2) % 256)); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- nil
+	}()
+
+	// The host must learn about the pause...
+	deadline := time.Now().Add(3 * time.Second)
+	for !host.PeerPaused() {
+		if time.Now().After(deadline) {
+			t.Fatal("host never saw the guest pause")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// ...and mid-pause, with the silence limit long past, neither
+	// side may have ended.
+	time.Sleep(500 * time.Millisecond)
+	select {
+	case err := <-errs:
+		t.Fatalf("a side ended during the pause: %v", err)
+	default:
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 2; i++ {
+			if err := <-errs; err != nil {
+				t.Errorf("step after resume: %v", err)
+			}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("lockstep did not finish after the pause")
+	}
+	if host.Desyncs() != 0 || guest.Desyncs() != 0 {
+		t.Fatalf("desyncs after pause: host %d guest %d",
+			host.Desyncs(), guest.Desyncs())
+	}
+	if !bytes.Equal(hostCore.stateBytes(), guestCore.stateBytes()) {
+		hb, gb := hostCore.stateBytes(), guestCore.stateBytes()
+		for i := range hb {
+			if hb[i] != gb[i] {
+				t.Logf("first diff at byte %d: host %d guest %d", i, hb[i], gb[i])
+				break
+			}
+		}
+		t.Logf("frames: host %d guest %d, core frames host %d guest %d, desyncs %d/%d",
+			host.Frame(), guest.Frame(), hostCore.frames, guestCore.frames,
+			host.Desyncs(), guest.Desyncs())
+		t.Fatal("final states differ after pause/resume")
+	}
+	if host.Frame() != total || guest.Frame() != total {
+		t.Fatalf("frame counters: host %d guest %d",
+			host.Frame(), guest.Frame())
+	}
+}

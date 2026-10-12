@@ -82,6 +82,8 @@ func main() {
 	pressFor := flag.Int("press-for", 12, "frames to hold Start")
 	name := flag.String("name", "", "player name for the waiting room (default TestHost/TestGuest)")
 	readyDelay := flag.Int("ready-delay", -1, "seconds before pressing Ready in the room; -1 readies instantly")
+	pauseAt := flag.Int("pause-at", -1, "frame at which to signal a pause (as a player opening their menu would)")
+	pauseSecs := flag.Int("pause-secs", 20, "how long the -pause-at pause lasts")
 	flag.Parse()
 	if *name == "" {
 		if *asHost {
@@ -196,6 +198,14 @@ joined:
 	fmt.Println("session started, stepping", *frames, "frames")
 	const btnStart = uint16(1) << 3
 	for f := 0; f < *frames; f++ {
+		if f == *pauseAt {
+			fmt.Printf("pausing for %ds at frame %d (menu open)\n",
+				*pauseSecs, f)
+			sess.SetPaused(true)
+			time.Sleep(time.Duration(*pauseSecs) * time.Second)
+			sess.SetPaused(false)
+			fmt.Println("resumed from pause")
+		}
 		var mask uint16
 		if f >= *startAt && f < *startAt+*pressFor {
 			mask = btnStart

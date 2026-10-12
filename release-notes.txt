@@ -1,1 +1,1 @@
-Settings list now scrolls so every option fits on the TV screen, including the new Logs screen.
+Online games now survive pausing: when the other player opens their menu, the game waits and shows who paused instead of ending the session.
