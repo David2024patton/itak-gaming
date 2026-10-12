@@ -60,6 +60,20 @@ system installer. The first update on a box asks the user to allow
 installs from iTaK Gaming once (Android's per-app setting); after
 that, each update is one press on the installer's Update button.
 
+### Auto-build from GitHub
+
+Pushing to the repo's main branch is all it takes to ship: a
+cron job on the server (every 5 minutes, `~/itak-autobuild.sh`
+wrapper around `tools/autobuild-server.sh`) watches main. When a
+push raises the pubspec version above the published one, it
+syncs the sources, rebinds the Go AAR if `go_backend` changed,
+builds the APK with the server toolchain, and publishes it as
+above, taking the update notes from the repo-root
+`release-notes.txt`. Pushes without a version bump (docs, fixes
+not meant to ship yet) are noted and skipped. Failed builds keep
+the old published version and retry at most every 30 minutes.
+Log: `~/itak-autobuild.log` on the server.
+
 ## Checks
 
 - `GET /healthz` returns `{"lobbies":0,"status":"ok"}` on both the
