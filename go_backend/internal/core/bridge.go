@@ -2,8 +2,25 @@ package core
 
 /*
 #cgo CFLAGS: -I.
-#cgo LDFLAGS: -ldl
+#cgo !windows LDFLAGS: -ldl
+#ifndef _WIN32
 #include <dlfcn.h>
+#endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+// Dynamic library loader, per platform: dlopen on unix/Android,
+// LoadLibrary on Windows. The rest of the bridge only calls these.
+#ifdef _WIN32
+static void* ll_open(const char* path) { return (void*)LoadLibraryA(path); }
+static void* ll_sym(void* h, const char* name) { return (void*)GetProcAddress((HMODULE)h, name); }
+static void ll_close(void* h) { if (h) FreeLibrary((HMODULE)h); }
+#else
+static void* ll_open(const char* path) { return dlopen(path, RTLD_NOW); }
+static void* ll_sym(void* h, const char* name) { return dlsym(h, name); }
+static void ll_close(void* h) { if (h) dlclose(h); }
+#endif
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -159,37 +176,37 @@ int core_get_pixel_format() { return g_pixel_format; }
 
 CoreHandle* core_load(const char* path) {
     CoreHandle* h = calloc(1, sizeof(CoreHandle));
-    h->handle = dlopen(path, RTLD_NOW);
+    h->handle = ll_open(path);
     if (!h->handle) {
         free(h);
         return NULL;
     }
-    h->init = (retro_init_fn)dlsym(h->handle, "retro_init");
-    h->deinit = (retro_deinit_fn)dlsym(h->handle, "retro_deinit");
-    h->load_game = (retro_load_game_fn)dlsym(h->handle, "retro_load_game");
-    h->run = (retro_run_fn)dlsym(h->handle, "retro_run");
-    h->serialize_size = (retro_serialize_size_fn)dlsym(h->handle, "retro_serialize_size");
-    h->serialize = (retro_serialize_fn)dlsym(h->handle, "retro_serialize");
-    h->unserialize = (retro_unserialize_fn)dlsym(h->handle, "retro_unserialize");
-    h->get_av_info = (retro_get_system_av_info_fn)dlsym(h->handle, "retro_get_system_av_info");
+    h->init = (retro_init_fn)ll_sym(h->handle, "retro_init");
+    h->deinit = (retro_deinit_fn)ll_sym(h->handle, "retro_deinit");
+    h->load_game = (retro_load_game_fn)ll_sym(h->handle, "retro_load_game");
+    h->run = (retro_run_fn)ll_sym(h->handle, "retro_run");
+    h->serialize_size = (retro_serialize_size_fn)ll_sym(h->handle, "retro_serialize_size");
+    h->serialize = (retro_serialize_fn)ll_sym(h->handle, "retro_serialize");
+    h->unserialize = (retro_unserialize_fn)ll_sym(h->handle, "retro_unserialize");
+    h->get_av_info = (retro_get_system_av_info_fn)ll_sym(h->handle, "retro_get_system_av_info");
     // Cheats are optional: a core without these exports simply has none.
-    h->cheat_reset = (retro_cheat_reset_fn)dlsym(h->handle, "retro_cheat_reset");
-    h->cheat_set = (retro_cheat_set_fn)dlsym(h->handle, "retro_cheat_set");
+    h->cheat_reset = (retro_cheat_reset_fn)ll_sym(h->handle, "retro_cheat_reset");
+    h->cheat_set = (retro_cheat_set_fn)ll_sym(h->handle, "retro_cheat_set");
     h->aspect_ratio = 0;
     h->fps = 60.0;
     h->sample_rate = 32000.0;
 
     if (!h->init || !h->load_game || !h->run) {
-        dlclose(h->handle);
+        ll_close(h->handle);
         free(h);
         return NULL;
     }
 
-    retro_set_environment_fn set_env = (retro_set_environment_fn)dlsym(h->handle, "retro_set_environment");
-    retro_set_video_refresh_fn set_video = (retro_set_video_refresh_fn)dlsym(h->handle, "retro_set_video_refresh");
-    retro_set_audio_sample_batch_fn set_audio = (retro_set_audio_sample_batch_fn)dlsym(h->handle, "retro_set_audio_sample_batch");
-    retro_set_input_poll_fn set_poll = (retro_set_input_poll_fn)dlsym(h->handle, "retro_set_input_poll");
-    retro_set_input_state_fn set_state = (retro_set_input_state_fn)dlsym(h->handle, "retro_set_input_state");
+    retro_set_environment_fn set_env = (retro_set_environment_fn)ll_sym(h->handle, "retro_set_environment");
+    retro_set_video_refresh_fn set_video = (retro_set_video_refresh_fn)ll_sym(h->handle, "retro_set_video_refresh");
+    retro_set_audio_sample_batch_fn set_audio = (retro_set_audio_sample_batch_fn)ll_sym(h->handle, "retro_set_audio_sample_batch");
+    retro_set_input_poll_fn set_poll = (retro_set_input_poll_fn)ll_sym(h->handle, "retro_set_input_poll");
+    retro_set_input_state_fn set_state = (retro_set_input_state_fn)ll_sym(h->handle, "retro_set_input_state");
 
     if (set_env) set_env(env_cb);
     if (set_video) set_video(video_refresh_cb);
@@ -246,7 +263,7 @@ void core_run(CoreHandle* h) {
 
 void core_unload(CoreHandle* h) {
     if (h->deinit) h->deinit();
-    if (h->handle) dlclose(h->handle);
+    if (h->handle) ll_close(h->handle);
     free(h);
     if (video_buffer) {
         free(video_buffer);
