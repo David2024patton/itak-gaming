@@ -399,7 +399,8 @@ class SystemSelectScreen extends StatefulWidget {
   State<SystemSelectScreen> createState() => _SystemSelectScreenState();
 }
 
-class _SystemSelectScreenState extends State<SystemSelectScreen> {
+class _SystemSelectScreenState extends State<SystemSelectScreen>
+    with WidgetsBindingObserver {
   static const _channel = MethodChannel('net.itak/emu');
   int _systemIndex = 1; // SNES default
   int _tabIndex = 0; // tab row: 0 Home, 1 Leaderboard, 2 Online, 3 Settings
@@ -414,6 +415,29 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
   final ScrollController _gridScroll = ScrollController();
 
   bool _locked(SystemInfo sys) => sys.requires64 && !gIs64Bit;
+
+  bool _updateBusy = false;
+
+  Future<void> _checkForUpdate() async {
+    if (_updateBusy || !mounted) return;
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    _updateBusy = true;
+    try {
+      final check = await AppUpdate.check();
+      if (check == null || !mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true) return;
+      if (check.available != null) {
+        await showAppUpdateDialog(context, check, manual: false);
+      }
+    } finally {
+      _updateBusy = false;
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkForUpdate();
+  }
 
   String _versionName = '';
 
@@ -441,17 +465,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     _loadControllerMap();
     _loadSystemImages();
     _countGames();
-    // Self-update: check the server once per launch and offer the
-    // new build if there is one (quiet when there is not).
-    Future.delayed(const Duration(seconds: 4), () async {
-      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
-      final check = await AppUpdate.check();
-      if (check == null || !mounted) return;
-      if (ModalRoute.of(context)?.isCurrent != true) return;
-      if (check.available != null) {
-        showAppUpdateDialog(context, check, manual: false);
-      }
-    });
+    // Self-update: check the server at launch and again whenever
+    // the app comes back to the front (TV apps stay open for
+    // days; an update published meanwhile should still appear).
+    WidgetsBinding.instance.addObserver(this);
+    Future.delayed(const Duration(seconds: 4), _checkForUpdate);
     // Native side calls this when a gamepad connects: ask who picked
     // it up by jumping to the players row with a banner.
     _channel.setMethodCallHandler((call) async {
@@ -1130,6 +1148,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _bannerTimer?.cancel();
     _channel.setMethodCallHandler(null);
     _gridScroll.dispose();
