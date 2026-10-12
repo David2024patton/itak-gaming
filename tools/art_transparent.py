@@ -132,11 +132,33 @@ def cut_background(img):
                 px[x, y] = (p[0], p[1], p[2], 0)
                 removed += 1
     frac = removed / (w * h)
-    # Feather: semi-transparent ring where removed meets kept.
-    alpha = img.split()[3]
-    bbox = alpha.getbbox()
-    if bbox:
-        img = img.crop(bbox)
+    # Trim to the real content. Cropping to the alpha bbox is not
+    # enough: studio backdrops are gradients, so regions the flood
+    # never reached stay opaque and keep the box huge, which makes
+    # the console render tiny under contain-fit. Instead, bound the
+    # pixels that actually differ from the background color (whether
+    # or not the flood reached them) and crop there, with a margin.
+    content = None
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a > 8 and dist((r, g, b), bg) > 46:
+                if content is None:
+                    content = [x, y, x, y]
+                else:
+                    content[0] = min(content[0], x)
+                    content[1] = min(content[1], y)
+                    content[2] = max(content[2], x)
+                    content[3] = max(content[3], y)
+    if content is not None:
+        margin = 14
+        box = (
+            max(0, content[0] - margin),
+            max(0, content[1] - margin),
+            min(w, content[2] + margin + 1),
+            min(h, content[3] + margin + 1),
+        )
+        img = img.crop(box)
     return img, frac
 
 

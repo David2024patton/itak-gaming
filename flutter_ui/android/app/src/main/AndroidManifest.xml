@@ -9,6 +9,7 @@
         android:label="iTaK Gaming"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:banner="@drawable/banner"
         android:requestLegacyExternalStorage="true">
         <activity
             android:name=".MainActivity"

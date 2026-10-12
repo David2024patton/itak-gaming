@@ -1131,28 +1131,29 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
   GlobalKey _cardKey(int index) =>
       _cardKeys.putIfAbsent(index, () => GlobalKey());
 
-  // Scroll so the focused card is fully on screen, using its real
-  // laid-out position (formula offsets broke under layout variance).
+  // The systems grid shows exactly two full rows (one page of 6) and
+  // never a cut card: the layout sizes cards to fit two rows exactly,
+  // and moving the selector snaps the scroll position to the page the
+  // selection lives on. _rowStride is set by the grid's LayoutBuilder.
+  double? _rowStride;
+
   void _scrollSystemsTo(int index) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _cardKeys[index]?.currentContext;
-      if (ctx != null) {
-        Scrollable.ensureVisible(
-          ctx,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-          alignment: 0.32,
-        );
-      } else if (_gridScroll.hasClients) {
-        final row = index ~/ 3;
-        const rowStride = 416.0;
-        final target = (24 + row * rowStride - 150).clamp(
-          0.0,
-          _gridScroll.position.maxScrollExtent,
-        );
+      if (!_gridScroll.hasClients) return;
+      final position = _gridScroll.position;
+      final stride = _rowStride;
+      if (stride == null || stride <= 0) return;
+      // Page p starts at row 2p; its scroll offset is 2p row strides,
+      // which the exact-fit layout makes equal to maxScrollExtent on
+      // the last page, so pages land perfectly every time.
+      final target = ((index ~/ 6) * 2 * stride).clamp(
+        0.0,
+        position.maxScrollExtent,
+      );
+      if ((position.pixels - target).abs() > 1) {
         _gridScroll.animateTo(
           target,
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
@@ -1396,7 +1397,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                             colors: [Color(0xFF2B2B45), Color(0xFF14141F)],
                           ),
                         ),
-                        padding: const EdgeInsets.all(14),
+                        padding: const EdgeInsets.all(6),
                         child: SizedBox.expand(child: art),
                       ),
                       if (locked)
@@ -1415,7 +1416,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                 ),
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [sys.color.withOpacity(0.85), sys.color],
@@ -1643,22 +1644,41 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                   ),
                   const SizedBox(height: 18),
                   Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 40),
-                      child: GridView.builder(
-                        controller: _gridScroll,
-                        cacheExtent: 900,
-                        padding: const EdgeInsets.fromLTRB(30, 24, 30, 48),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          crossAxisSpacing: 22,
-                          mainAxisSpacing: 22,
-                          childAspectRatio: 1.52,
-                        ),
-                        itemCount: kSystems.length,
-                        itemBuilder: (context, index) => _systemCard(index),
-                      ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        // Exactly two full rows on screen, sized from
+                        // the real space: card height is whatever
+                        // remains after the grid's top/bottom padding
+                        // (16 each) and the one gap between the rows.
+                        final gridW = constraints.maxWidth - 80;
+                        final cardW = (gridW - 60 - 44) / 3;
+                        final cardH =
+                            (constraints.maxHeight - 16 - 16 - 22) / 2;
+                        final aspect =
+                            cardH > 40 ? cardW / cardH : 1.52;
+                        _rowStride = cardH + 22;
+                        return Padding(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 40),
+                          child: GridView.builder(
+                            controller: _gridScroll,
+                            physics:
+                                const NeverScrollableScrollPhysics(),
+                            padding:
+                                const EdgeInsets.fromLTRB(30, 16, 30, 16),
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              crossAxisSpacing: 22,
+                              mainAxisSpacing: 22,
+                              childAspectRatio: aspect,
+                            ),
+                            itemCount: kSystems.length,
+                            itemBuilder: (context, index) =>
+                                _systemCard(index),
+                          ),
+                        );
+                      },
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -2325,21 +2345,54 @@ class _GameGridScreenState extends State<GameGridScreen> {
                                       fontSize: 22, color: Colors.grey),
                                 ),
                               )
-                            : GridView.builder(
-                                padding:
-                                    const EdgeInsets.fromLTRB(28, 18, 28, 44),
-                                gridDelegate:
-                                    const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 4,
-                                  crossAxisSpacing: 20,
-                                  mainAxisSpacing: 22,
-                                  childAspectRatio: 0.92,
-                                ),
-                                itemCount: visible.length,
-                                itemBuilder: (context, index) =>
-                                    _tile(index, visible),
+                            : LayoutBuilder(
+                                builder: (context, constraints) {
+                                  // Whole rows only: pick the largest
+                                  // row count whose tiles stay near
+                                  // their natural shape, then size the
+                                  // tiles so exactly that many rows
+                                  // fill the screen. Combined with zero
+                                  // vertical grid padding, the focus
+                                  // auto-scroll always settles on a row
+                                  // boundary, so no tile is ever cut.
+                                  final tileW = (constraints.maxWidth -
+                                          28 -
+                                          28 -
+                                          3 * 20) /
+                                      4;
+                                  var rows = 1;
+                                  for (var r = 6; r >= 1; r--) {
+                                    final th = (constraints.maxHeight -
+                                            (r - 1) * 22) /
+                                        r;
+                                    if (th >= tileW / 1.30) {
+                                      rows = r;
+                                      break;
+                                    }
+                                  }
+                                  final tileH = (constraints.maxHeight -
+                                          (rows - 1) * 22) /
+                                      rows;
+                                  final aspect =
+                                      tileH > 40 ? tileW / tileH : 0.92;
+                                  return GridView.builder(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        28, 0, 28, 0),
+                                    gridDelegate:
+                                        SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: 4,
+                                      crossAxisSpacing: 20,
+                                      mainAxisSpacing: 22,
+                                      childAspectRatio: aspect,
+                                    ),
+                                    itemCount: visible.length,
+                                    itemBuilder: (context, index) =>
+                                        _tile(index, visible),
+                                  );
+                                },
                               ),
                   ),
+                  const SizedBox(height: 12),
                 ],
               ),
       ),
