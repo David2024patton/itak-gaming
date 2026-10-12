@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -312,14 +313,19 @@ class SystemSelectScreen extends StatefulWidget {
 }
 
 class _SystemSelectScreenState extends State<SystemSelectScreen> {
+  static const _channel = MethodChannel('net.itak/emu');
   int _systemIndex = 1; // SNES default
   int _playerIndex = 0;
+  int _topIndex = 1; // top bar: 0 = Leaderboard, 1 = Settings
   int _zone = _zoneSystems;
   List<String> _players = [];
   String _currentPlayer = '';
+  String? _banner;
+  Timer? _bannerTimer;
   final Map<String, File?> _systemImages = {};
   final Map<String, int> _gameCounts = {};
   final FocusNode _focusNode = FocusNode();
+  final ScrollController _playersScroll = ScrollController();
 
   @override
   void initState() {
@@ -327,6 +333,22 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     _loadPlayers();
     _loadSystemImages();
     _countGames();
+    // Native side calls this when a gamepad connects: ask who picked
+    // it up by jumping to the players row with a banner.
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'controllerConnected' && mounted) {
+        final name = (call.arguments as Map?)?['name']?.toString() ?? 'Controller';
+        setState(() {
+          _zone = _zonePlayers;
+          _banner = '$name connected. Who is playing? Pick your name.';
+        });
+        _bannerTimer?.cancel();
+        _bannerTimer = Timer(const Duration(seconds: 7), () {
+          if (mounted) setState(() => _banner = null);
+        });
+      }
+      return null;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
     });
@@ -388,8 +410,96 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     setState(() {
       _playerIndex = index;
       _currentPlayer = _players[index];
+      _banner = null;
     });
     await Prefs.set('current_player', _currentPlayer);
+  }
+
+  // Player tiles after the real players: Add, then Manage.
+  bool _isAddTile(int index) => index == _players.length;
+  bool _isManageTile(int index) => index == _players.length + 1;
+  int get _tileCount => _players.length + 2;
+
+  void _scrollPlayersTo(int index) {
+    if (!_playersScroll.hasClients) return;
+    final target = (index * 190.0 - 300).clamp(
+      0.0,
+      _playersScroll.position.maxScrollExtent,
+    );
+    _playersScroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  Future<void> _removePlayer(String name) async {
+    if (_players.length <= 1) return;
+    final players = _players.where((p) => p != name).toList();
+    await Prefs.set('players', players.join('\n'));
+    var cur = _currentPlayer;
+    if (cur == name) {
+      cur = players.first;
+      await Prefs.set('current_player', cur);
+    }
+    if (!mounted) return;
+    setState(() {
+      _players = players;
+      _currentPlayer = cur;
+      _playerIndex = players.indexOf(cur);
+    });
+  }
+
+  Future<void> _managePlayers() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Manage players'),
+        content: SizedBox(
+          width: 420,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final p in _players)
+                ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor:
+                        kPlayerColors[p.hashCode.abs() % kPlayerColors.length],
+                    child: Text(p[0].toUpperCase()),
+                  ),
+                  title: Text(p),
+                  subtitle: p == _currentPlayer
+                      ? const Text('Playing now')
+                      : null,
+                  trailing: _players.length > 1
+                      ? TextButton(
+                          onPressed: () async {
+                            Navigator.pop(ctx);
+                            await _removePlayer(p);
+                          },
+                          child: const Text(
+                            'Remove',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
+                        )
+                      : null,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _selectPlayer(_players.indexOf(p));
+                  },
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+    _focusNode.requestFocus();
   }
 
   Future<void> _addPlayer() async {
@@ -428,6 +538,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
 
   @override
   void dispose() {
+    _bannerTimer?.cancel();
+    _channel.setMethodCallHandler(null);
+    _playersScroll.dispose();
     _focusNode.dispose();
     super.dispose();
   }
@@ -446,9 +559,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
       setState(() => _zone = (_zone - 1).clamp(0, 2));
     } else if (key == LogicalKeyboardKey.arrowLeft) {
       setState(() {
-        if (_zone == _zonePlayers) {
-          final count = _players.length + 1;
-          _playerIndex = (_playerIndex - 1 + count) % count;
+        if (_zone == _zoneSettings) {
+          _topIndex = 0;
+        } else if (_zone == _zonePlayers) {
+          _playerIndex = (_playerIndex - 1 + _tileCount) % _tileCount;
+          _scrollPlayersTo(_playerIndex);
         } else if (_zone == _zoneSystems) {
           // From a grid column edge, step up a row (3 across).
           _systemIndex = (_systemIndex - 1 + kSystems.length) % kSystems.length;
@@ -456,19 +571,27 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
       });
     } else if (key == LogicalKeyboardKey.arrowRight) {
       setState(() {
-        if (_zone == _zonePlayers) {
-          final count = _players.length + 1;
-          _playerIndex = (_playerIndex + 1) % count;
+        if (_zone == _zoneSettings) {
+          _topIndex = 1;
+        } else if (_zone == _zonePlayers) {
+          _playerIndex = (_playerIndex + 1) % _tileCount;
+          _scrollPlayersTo(_playerIndex);
         } else if (_zone == _zoneSystems) {
           _systemIndex = (_systemIndex + 1) % kSystems.length;
         }
       });
     } else if (_isSelect(event)) {
       if (_zone == _zoneSettings) {
-        _openSettings();
+        if (_topIndex == 0) {
+          _openLeaderboard();
+        } else {
+          _openSettings();
+        }
       } else if (_zone == _zonePlayers) {
-        if (_playerIndex >= _players.length) {
+        if (_isAddTile(_playerIndex)) {
           _addPlayer();
+        } else if (_isManageTile(_playerIndex)) {
+          _managePlayers();
         } else {
           _selectPlayer(_playerIndex);
         }
@@ -492,11 +615,20 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     ).then((_) => _focusNode.requestFocus());
   }
 
+  void _openLeaderboard() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+    ).then((_) => _focusNode.requestFocus());
+  }
+
   Widget _playerChip(int index) {
-    final isAdd = index >= _players.length;
+    final isAdd = _isAddTile(index);
+    final isManage = _isManageTile(index);
+    final isTile = isAdd || isManage;
     final focused = _zone == _zonePlayers && _playerIndex == index;
-    final isCurrent = !isAdd && _players[index] == _currentPlayer;
-    final color = isAdd
+    final isCurrent = !isTile && _players[index] == _currentPlayer;
+    final color = isTile
         ? const Color(0xFF424242)
         : kPlayerColors[index % kPlayerColors.length];
     return GestureDetector(
@@ -507,6 +639,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
         });
         if (isAdd) {
           _addPlayer();
+        } else if (isManage) {
+          _managePlayers();
         } else {
           _selectPlayer(index);
         }
@@ -533,18 +667,25 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
             CircleAvatar(
               radius: 18,
               backgroundColor: color,
-              child: Text(
-                isAdd ? '+' : _players[index][0].toUpperCase(),
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
+              child: isManage
+                  ? const Icon(Icons.manage_accounts,
+                      size: 19, color: Colors.white)
+                  : Text(
+                      isAdd ? '+' : _players[index][0].toUpperCase(),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
             ),
             const SizedBox(width: 9),
             Text(
-              isAdd ? 'Add player' : _players[index],
+              isAdd
+                  ? 'Add player'
+                  : isManage
+                      ? 'Manage'
+                      : _players[index],
               style: TextStyle(
                 fontSize: 19,
                 fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
@@ -665,6 +806,38 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
       child: Icon(Icons.videogame_asset, size: 84, color: sys.color),
     );
   }
+
+  Widget _topChip({
+    required IconData icon,
+    required String label,
+    required bool focused,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: focused ? Colors.white : Colors.white24,
+            width: focused ? 3 : 2,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 22),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(fontSize: 19)),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settingsFocused = _zone == _zoneSettings;
@@ -748,52 +921,68 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                           ),
                         ),
                         const Spacer(),
-                        GestureDetector(
+                        _topChip(
+                          icon: Icons.emoji_events,
+                          label: 'Leaderboard',
+                          focused: settingsFocused && _topIndex == 0,
                           onTap: () {
-                            setState(() => _zone = _zoneSettings);
+                            setState(() {
+                              _zone = _zoneSettings;
+                              _topIndex = 0;
+                            });
+                            _openLeaderboard();
+                          },
+                        ),
+                        const SizedBox(width: 12),
+                        _topChip(
+                          icon: Icons.settings,
+                          label: 'Settings',
+                          focused: settingsFocused && _topIndex == 1,
+                          onTap: () {
+                            setState(() {
+                              _zone = _zoneSettings;
+                              _topIndex = 1;
+                            });
                             _openSettings();
                           },
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 140),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 18, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1E1E2E),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                color: settingsFocused
-                                    ? Colors.white
-                                    : Colors.white24,
-                                width: settingsFocused ? 3 : 2,
-                              ),
-                            ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.settings, size: 22),
-                                SizedBox(width: 8),
-                                Text('Settings',
-                                    style: TextStyle(fontSize: 19)),
-                              ],
-                            ),
-                          ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 14),
+                  if (_banner != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        _banner!,
+                        style: const TextStyle(
+                          fontSize: 19,
+                          color: Color(0xFF00E676),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
+                      const SizedBox(width: 40),
                       const Text(
                         "Who's playing?",
                         style: TextStyle(fontSize: 20, color: Colors.white70),
                       ),
-                      const SizedBox(width: 16),
-                      ...List.generate(
-                        _players.length + 1,
-                        (index) => _playerChip(index),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 56,
+                          child: ListView.builder(
+                            controller: _playersScroll,
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _tileCount,
+                            itemBuilder: (context, index) =>
+                                _playerChip(index),
+                          ),
+                        ),
                       ),
+                      const SizedBox(width: 24),
                     ],
                   ),
                   const SizedBox(height: 18),
@@ -848,10 +1037,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _row = 0;
   int _filter = 0;
   int _display = 0;
+  bool _swapAB = false;
   bool _autoArt = true;
   final FocusNode _focusNode = FocusNode();
 
-  static const int _rowCount = 4; // Picture, Display, Auto art, Back
+  static const int _rowCount = 5; // Picture, Display, Swap, Auto art, Back
 
   @override
   void initState() {
@@ -865,11 +1055,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _load() async {
     final f = await Prefs.getInt('filter_mode');
     final d = await Prefs.getInt('display_mode');
+    final sw = await Prefs.getInt('swap_ab');
     final a = await Prefs.get('art_autofetch');
     if (!mounted) return;
     setState(() {
       _filter = (f ?? 0).clamp(0, kFilterNames.length - 1);
       _display = (d ?? 0).clamp(0, kDisplayNames.length - 1);
+      _swapAB = (sw ?? 0) != 0;
       _autoArt = a != '0';
     });
   }
@@ -890,6 +1082,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() => _display = v);
       Prefs.setInt('display_mode', v);
     } else if (_row == 2) {
+      setState(() => _swapAB = !_swapAB);
+      Prefs.setInt('swap_ab', _swapAB ? 1 : 0);
+    } else if (_row == 3) {
       setState(() => _autoArt = !_autoArt);
       Prefs.set('art_autofetch', _autoArt ? '1' : '0');
     }
@@ -909,7 +1104,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 3) {
+      if (_row == 4) {
         Navigator.pop(context);
       } else {
         _adjust(1);
@@ -1011,6 +1206,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   _settingRow(
                     index: 2,
+                    label: 'Swap A and B buttons',
+                    value: _swapAB ? 'On' : 'Off',
+                    hint: 'Trade the two main buttons if a controller feels backwards',
+                  ),
+                  _settingRow(
+                    index: 3,
                     label: 'Download box art',
                     value: _autoArt ? 'On' : 'Off',
                     hint: 'Fetches cover art automatically when a new game shows up',
@@ -1027,8 +1228,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 3 ? Colors.white : Colors.white12,
-                          width: _row == 3 ? 3 : 1,
+                              _row == 4 ? Colors.white : Colors.white12,
+                          width: _row == 4 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
@@ -1425,6 +1626,263 @@ class _GameGridScreenState extends State<GameGridScreen> {
                   ),
                 ],
               ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Leaderboard: per-player play stats written by EmulatorActivity into
+// files/stats/<player>.json and read back through the channel.
+// ---------------------------------------------------------------------------
+
+class _GameStat {
+  final String rom;
+  final int plays;
+  final int seconds;
+  final int last;
+  const _GameStat(this.rom, this.plays, this.seconds, this.last);
+  String get name {
+    var n = rom.split('/').last;
+    final dot = n.lastIndexOf('.');
+    if (dot > 0) n = n.substring(0, dot);
+    return n;
+  }
+}
+
+class _PlayerStat {
+  final String name;
+  final List<_GameStat> games;
+  const _PlayerStat(this.name, this.games);
+  int get totalSeconds => games.fold(0, (a, g) => a + g.seconds);
+  int get totalPlays => games.fold(0, (a, g) => a + g.plays);
+  _GameStat? get favorite => games.isEmpty
+      ? null
+      : games.reduce((a, b) => a.seconds >= b.seconds ? a : b);
+  _GameStat? get mostRecent => games.isEmpty
+      ? null
+      : games.reduce((a, b) => a.last >= b.last ? a : b);
+}
+
+String _fmtDuration(int seconds) {
+  if (seconds >= 3600) {
+    final h = seconds ~/ 3600;
+    final m = (seconds % 3600) ~/ 60;
+    return '${h}h ${m}m';
+  }
+  if (seconds >= 60) return '${seconds ~/ 60}m';
+  return '${seconds}s';
+}
+
+class LeaderboardScreen extends StatefulWidget {
+  const LeaderboardScreen({super.key});
+
+  @override
+  State<LeaderboardScreen> createState() => _LeaderboardScreenState();
+}
+
+class _LeaderboardScreenState extends State<LeaderboardScreen> {
+  static const _channel = MethodChannel('net.itak/emu');
+  List<_PlayerStat> _players = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    var players = <_PlayerStat>[];
+    try {
+      final raw =
+          await _channel.invokeMethod<String>('getLeaderboard') ?? '[]';
+      final list = jsonDecode(raw) as List<dynamic>;
+      for (final entry in list) {
+        final map = entry as Map<String, dynamic>;
+        final gamesMap =
+            (map['games'] as Map<String, dynamic>? ?? <String, dynamic>{});
+        final games = gamesMap.entries.map((e) {
+          final g = e.value as Map<String, dynamic>;
+          return _GameStat(
+            e.key,
+            (g['plays'] as num? ?? 0).toInt(),
+            (g['seconds'] as num? ?? 0).toInt(),
+            (g['last'] as num? ?? 0).toInt(),
+          );
+        }).toList();
+        players.add(_PlayerStat(map['name']?.toString() ?? 'Player', games));
+      }
+    } catch (_) {
+      players = [];
+    }
+    players.sort((a, b) => b.totalSeconds.compareTo(a.totalSeconds));
+    if (!mounted) return;
+    setState(() {
+      _players = players;
+      _loading = false;
+    });
+  }
+
+  List<_GameStat> get _topGames {
+    final byRom = <String, _GameStat>{};
+    for (final p in _players) {
+      for (final g in p.games) {
+        final cur = byRom[g.rom];
+        byRom[g.rom] = cur == null
+            ? g
+            : _GameStat(g.rom, cur.plays + g.plays,
+                cur.seconds + g.seconds, cur.last > g.last ? cur.last : g.last);
+      }
+    }
+    final all = byRom.values.toList()
+      ..sort((a, b) => b.seconds.compareTo(a.seconds));
+    return all.take(5).toList();
+  }
+
+  Widget _playerCard(int rank, _PlayerStat p) {
+    final fav = p.favorite;
+    final recent = p.mostRecent;
+    final medalColor = rank == 1
+        ? const Color(0xFFFFD54F)
+        : rank == 2
+            ? const Color(0xFFB0BEC5)
+            : rank == 3
+                ? const Color(0xFFBCAAA4)
+                : const Color(0xFF424242);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B1B28),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 24,
+            backgroundColor: medalColor,
+            child: Text(
+              '$rank',
+              style: const TextStyle(
+                fontSize: 21,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          CircleAvatar(
+            radius: 20,
+            backgroundColor:
+                kPlayerColors[p.name.hashCode.abs() % kPlayerColors.length],
+            child: Text(
+              p.name.isEmpty ? '?' : p.name[0].toUpperCase(),
+              style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(p.name,
+                    style: const TextStyle(
+                        fontSize: 23, fontWeight: FontWeight.bold)),
+                Text(
+                  'Time played: ${_fmtDuration(p.totalSeconds)} · '
+                  'Games: ${p.games.length} · Launches: ${p.totalPlays}',
+                  style:
+                      const TextStyle(fontSize: 16, color: Colors.white70),
+                ),
+                if (fav != null)
+                  Text(
+                    'Favorite: ${fav.name} (${_fmtDuration(fav.seconds)})',
+                    style:
+                        const TextStyle(fontSize: 16, color: Colors.white54),
+                  ),
+                if (recent != null)
+                  Text(
+                    'Last played: ${recent.name}',
+                    style:
+                        const TextStyle(fontSize: 16, color: Colors.white54),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Leaderboard'),
+        backgroundColor: Colors.transparent,
+      ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF2A1152), Color(0xFF140B2E), Color(0xFF0A1A33)],
+          ),
+        ),
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _players.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Text(
+                        'No play time logged yet.\nStats start counting as soon as someone plays.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 21, color: Colors.grey),
+                      ),
+                    ),
+                  )
+                : Center(
+                    child: SizedBox(
+                      width: 900,
+                      child: ListView(
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                        children: [
+                          for (var i = 0; i < _players.length; i++)
+                            _playerCard(i + 1, _players[i]),
+                          const SizedBox(height: 14),
+                          const Text(
+                            'Top games (everyone)',
+                            style: TextStyle(
+                                fontSize: 21, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 6),
+                          for (final g in _topGames)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(g.name,
+                                        style: const TextStyle(fontSize: 18)),
+                                  ),
+                                  Text(
+                                    '${_fmtDuration(g.seconds)} · ${g.plays} plays',
+                                    style: const TextStyle(
+                                        fontSize: 17, color: Colors.white70),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
       ),
     );
   }

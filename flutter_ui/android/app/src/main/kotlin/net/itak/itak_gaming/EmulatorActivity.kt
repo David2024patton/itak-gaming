@@ -51,6 +51,8 @@ class EmulatorActivity : Activity(), TextureListener {
         val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
         FilterSettings.mode = prefs.getInt("filter_mode", 0)
         FilterSettings.displayMode = prefs.getInt("display_mode", 0)
+        swapAB = prefs.getInt("swap_ab", 0) != 0
+        Log.i(TAG, "swap_ab = $swapAB")
 
         glView = EmuGLView(this)
         setContentView(glView)
@@ -74,6 +76,7 @@ class EmulatorActivity : Activity(), TextureListener {
         // time). Applied before the first frame runs.
         loadCheatDb()
         if (enabledCheats.isNotEmpty()) applyEnabledCheats()
+        statsBegin()
         startAudio()
         Log.i(TAG, "onCreate done")
     }
@@ -246,6 +249,71 @@ class EmulatorActivity : Activity(), TextureListener {
 
     /** Saves written before player profiles lived here: saves/<game>.sav */
     private fun legacySaveFile(): File = File(filesDir, "saves/${romBase()}.sav")
+
+    // ---------------------------------------------------------------
+    // Play stats for the leaderboard: per player, per game: launches,
+    // seconds played, last-played time. files/stats/<player>.json
+    // ---------------------------------------------------------------
+    private var swapAB = false
+    private var statsArmed = false
+    private var sessionStartMs = 0L
+    private var statsPlayer = ""
+    private var statsObj: org.json.JSONObject? = null
+
+    private fun statsFile(player: String): File {
+        val dir = File(filesDir, "stats")
+        if (!dir.exists()) dir.mkdirs()
+        val safe = player.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return File(dir, "$safe.json")
+    }
+
+    private fun statsBegin() {
+        try {
+            statsPlayer = currentPlayer()
+            val f = statsFile(statsPlayer)
+            val obj = if (f.exists()) {
+                org.json.JSONObject(f.readText())
+            } else {
+                org.json.JSONObject()
+            }
+            obj.put("name", statsPlayer)
+            if (!obj.has("games")) obj.put("games", org.json.JSONObject())
+            val games = obj.getJSONObject("games")
+            val g = if (games.has(romPath)) {
+                games.getJSONObject(romPath)
+            } else {
+                org.json.JSONObject()
+            }
+            g.put("plays", g.optInt("plays", 0) + 1)
+            if (!g.has("seconds")) g.put("seconds", 0)
+            g.put("last", System.currentTimeMillis())
+            games.put(romPath, g)
+            f.writeText(obj.toString())
+            statsObj = obj
+            sessionStartMs = System.currentTimeMillis()
+            statsArmed = true
+            Log.i(TAG, "stats: play #${g.getInt("plays")} of $romPath for $statsPlayer")
+        } catch (e: Exception) {
+            Log.w(TAG, "stats begin failed", e)
+        }
+    }
+
+    private fun statsEnd() {
+        if (!statsArmed) return
+        statsArmed = false
+        try {
+            val obj = statsObj ?: return
+            val secs = ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
+            val games = obj.getJSONObject("games")
+            val g = games.getJSONObject(romPath)
+            g.put("seconds", g.optInt("seconds", 0) + secs)
+            g.put("last", System.currentTimeMillis())
+            statsFile(statsPlayer).writeText(obj.toString())
+            Log.i(TAG, "stats: +${secs}s for $statsPlayer")
+        } catch (e: Exception) {
+            Log.w(TAG, "stats end failed", e)
+        }
+    }
 
     private fun showPauseMenu() {
         if (menuOpen) return
@@ -476,6 +544,7 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     override fun onDestroy() {
+        statsEnd()
         running = false
         gameThread?.join(1000)
         audioTrack?.stop()
@@ -486,6 +555,20 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private fun mapButton(keyCode: Int): Long? {
+        val raw = mapButtonRaw(keyCode) ?: return null
+        // Settings option: swap the two action buttons everywhere
+        // (controller face buttons and the remote's center/mic pair).
+        if (swapAB) {
+            return when (raw) {
+                Mobile.ButtonA -> Mobile.ButtonB
+                Mobile.ButtonB -> Mobile.ButtonA
+                else -> raw
+            }
+        }
+        return raw
+    }
+
+    private fun mapButtonRaw(keyCode: Int): Long? {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> Mobile.ButtonUp
             KeyEvent.KEYCODE_DPAD_DOWN -> Mobile.ButtonDown

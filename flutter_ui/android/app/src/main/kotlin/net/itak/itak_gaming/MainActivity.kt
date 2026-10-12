@@ -2,16 +2,50 @@ package net.itak.itak_gaming
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.input.InputManager
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.InputDevice
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
 
+    private var channel: MethodChannel? = null
+    private var lastControllerPromptMs = 0L
+
+    // When a gamepad shows up, ask the UI who picked it up. The TV
+    // remote is not a gamepad source, so it never triggers this.
+    private val deviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) {
+            val dev = InputDevice.getDevice(deviceId) ?: return
+            val gamepad = dev.sources and InputDevice.SOURCE_GAMEPAD != 0 ||
+                dev.sources and InputDevice.SOURCE_JOYSTICK != 0
+            if (!gamepad) return
+            val now = System.currentTimeMillis()
+            if (now - lastControllerPromptMs < 4000) return
+            lastControllerPromptMs = now
+            channel?.invokeMethod("controllerConnected", mapOf("name" to dev.name))
+        }
+
+        override fun onInputDeviceRemoved(deviceId: Int) {}
+        override fun onInputDeviceChanged(deviceId: Int) {}
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val im = getSystemService(Context.INPUT_SERVICE) as InputManager
+        im.registerInputDeviceListener(deviceListener, Handler(Looper.getMainLooper()))
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "net.itak/emu")
-            .setMethodCallHandler { call, result ->
+        val ch = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "net.itak/emu")
+        channel = ch
+        ch.setMethodCallHandler { call, result ->
                 when (call.method) {
                     // SharedPreferences bridge (itak_prefs), shared with
                     // EmulatorActivity: player list and current player.
@@ -51,6 +85,20 @@ class MainActivity : FlutterActivity() {
                         } else {
                             result.error("BAD_ARGS", "key and value required", null)
                         }
+                    }
+                    // Leaderboard: hand Dart the raw per-player stat
+                    // files (files/stats/*.json) as one JSON array.
+                    "getLeaderboard" -> {
+                        val dir = File(filesDir, "stats")
+                        val parts = mutableListOf<String>()
+                        dir.listFiles { f -> f.name.endsWith(".json") }
+                            ?.sortedBy { it.name }
+                            ?.forEach { f ->
+                                try {
+                                    parts.add(f.readText())
+                                } catch (e: Exception) { /* skip bad file */ }
+                            }
+                        result.success("[" + parts.joinToString(",") + "]")
                     }
                     "launch" -> {
                         val core = call.argument<String>("core") ?: "libsnes9x.so"
