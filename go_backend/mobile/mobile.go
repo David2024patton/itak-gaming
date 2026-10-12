@@ -35,6 +35,7 @@ func LoadCore(path string) error {
 		return err
 	}
 	emu = b
+	noteLoadedCore(path)
 	return nil
 }
 
@@ -43,7 +44,11 @@ func LoadGame(path string) error {
 	if emu == nil {
 		return errNoCore
 	}
-	return emu.LoadGame(path)
+	if err := emu.LoadGame(path); err != nil {
+		return err
+	}
+	noteLoadedGame(path)
+	return nil
 }
 
 var errNoCore = &simpleError{"no core loaded"}

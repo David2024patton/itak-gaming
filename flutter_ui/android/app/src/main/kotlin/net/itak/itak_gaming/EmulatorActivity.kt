@@ -27,6 +27,10 @@ class EmulatorActivity : Activity(), TextureListener {
     companion object {
         const val EXTRA_CORE = "core"
         const val EXTRA_ROM = "rom"
+        const val EXTRA_NP_ROLE = "np_role"
+        const val EXTRA_NP_LOBBY = "np_lobby"
+        const val EXTRA_NP_TOKEN = "np_token"
+        const val EXTRA_NP_SERVER = "np_server"
         private const val TAG = "iTaKEmu"
     }
 
@@ -41,6 +45,21 @@ class EmulatorActivity : Activity(), TextureListener {
     private var gameThread: Thread? = null
     private var romPath: String = ""
     private var menuOpen = false
+
+    // ----- Netplay (online session) -----
+    // Set from intent extras when this game was launched from the
+    // Online screen. While a session runs, the game thread steps the
+    // lockstep engine with localMask instead of running the core
+    // solo; local saves and cheats are disabled (they would desync
+    // the pair instantly).
+    private var npRole: String = ""
+    private var npLobby: String = ""
+    private var npToken: String = ""
+    private var npServer: String = ""
+    @Volatile private var npReady = false
+    @Volatile private var npFailed: String? = null
+    @Volatile private var localMask = 0
+    private val netplay: Boolean get() = npRole.isNotEmpty()
 
     // ----- Local multiplayer seats -----
     // Controller assignments (player name -> deviceId) come from the
@@ -192,10 +211,34 @@ class EmulatorActivity : Activity(), TextureListener {
             finish()
             return
         }
+        // Netplay launch? The Online screen passes role/lobby/token.
+        npRole = intent.getStringExtra(EXTRA_NP_ROLE) ?: ""
+        npLobby = intent.getStringExtra(EXTRA_NP_LOBBY) ?: ""
+        npToken = intent.getStringExtra(EXTRA_NP_TOKEN) ?: ""
+        npServer = intent.getStringExtra(EXTRA_NP_SERVER) ?: ""
+        if (netplay) {
+            Log.i(TAG, "netplay role=$npRole lobby=$npLobby")
+            thread(name = "netplay-connect") {
+                val err = Mobile.netplayStart(
+                    npServer, npLobby, npToken,
+                    java.io.File(romPath).name, npRole == "host"
+                )
+                if (err.isEmpty()) {
+                    npReady = true
+                    Log.i(TAG, "netplay session ready")
+                } else {
+                    npFailed = err
+                    Log.w(TAG, "netplay start failed: $err")
+                }
+            }
+        }
         // Cheats for this game (bundled list + the codes left on last
-        // time). Applied before the first frame runs.
-        loadCheatDb()
-        if (enabledCheats.isNotEmpty()) applyEnabledCheats()
+        // time). Applied before the first frame runs. Never in an
+        // online session: both sides must run the identical game.
+        if (!netplay) {
+            loadCheatDb()
+            if (enabledCheats.isNotEmpty()) applyEnabledCheats()
+        }
         setupSeats()
         statsBegin()
         startAudio()
@@ -254,6 +297,29 @@ class EmulatorActivity : Activity(), TextureListener {
         var tRun = 0L
         Log.i(TAG, "gameLoop start fps=$fps")
 
+        // Online session: hold the game until the handshake finishes
+        // (the guest may still be joining). Failure ends the game
+        // with a message instead of a frozen black screen.
+        if (netplay) {
+            while (running && !npReady && npFailed == null) {
+                Thread.sleep(50)
+            }
+            val failed = npFailed
+            if (!running) return
+            if (failed != null) {
+                runOnUiThread {
+                    AlertDialog.Builder(this)
+                        .setTitle("Online game could not start")
+                        .setMessage(failed)
+                        .setPositiveButton("OK") { _, _ -> finish() }
+                        .setOnDismissListener { finish() }
+                        .show()
+                }
+                return
+            }
+            Log.i(TAG, "netplay: stepping frames")
+        }
+
         // Audio thread: pulls PCM from the backend and feeds the track.
         // Non-blocking writes can accept only part of a chunk; the rest
         // stays in `pending` for the next pass. Dropping the remainder
@@ -302,7 +368,24 @@ class EmulatorActivity : Activity(), TextureListener {
             }
             pauseAck = false
             val start = System.nanoTime()
-            Mobile.runFrame()
+            if (netplay) {
+                val err = Mobile.netplayStep(localMask.toLong())
+                if (err.isNotEmpty()) {
+                    Log.w(TAG, "netplay ended: $err")
+                    running = false
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("Online game ended")
+                            .setMessage(err)
+                            .setPositiveButton("OK") { _, _ -> finish() }
+                            .setOnDismissListener { finish() }
+                            .show()
+                    }
+                    break
+                }
+            } else {
+                Mobile.runFrame()
+            }
             val elapsed = (System.nanoTime() - start) / 1_000_000
             tRun += elapsed
             frameCount++
@@ -319,7 +402,7 @@ class EmulatorActivity : Activity(), TextureListener {
             // progress survives even if nobody remembers to save. Runs
             // here on the game thread, between frames, never racing
             // the core.
-            if (autoSaveEnabled &&
+            if (autoSaveEnabled && !netplay &&
                 System.currentTimeMillis() - lastAutoSaveMs > 60_000) {
                 lastAutoSaveMs = System.currentTimeMillis()
                 try {
@@ -544,7 +627,7 @@ class EmulatorActivity : Activity(), TextureListener {
 
     // Save right now, from a parked game (pause menu showing).
     private fun autoSaveNow() {
-        if (!autoSaveEnabled) return
+        if (!autoSaveEnabled || netplay) return
         try {
             val data = Mobile.saveState()
             if (data != null && data.isNotEmpty()) {
@@ -624,6 +707,11 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private fun showCheats() {
+        if (netplay) {
+            Toast.makeText(this, "Cheats are off in an online game", Toast.LENGTH_SHORT).show()
+            resumeFromMenu()
+            return
+        }
         if (cheatDb.isEmpty()) {
             Toast.makeText(this, "No cheats for this game yet", Toast.LENGTH_LONG).show()
             resumeFromMenu()
@@ -656,6 +744,10 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private fun doSave() {
+        if (netplay) {
+            Toast.makeText(this, "Saving is off in an online game", Toast.LENGTH_SHORT).show()
+            return
+        }
         val data = Mobile.saveState()
         if (data == null || data.isEmpty()) {
             Toast.makeText(this, "Save failed", Toast.LENGTH_SHORT).show()
@@ -667,6 +759,10 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private fun doLoad() {
+        if (netplay) {
+            Toast.makeText(this, "Loading is off in an online game", Toast.LENGTH_SHORT).show()
+            return
+        }
         // Prefer this player's slot; fall back to a pre-profiles save.
         var f = saveFile()
         if (!f.exists() && legacySaveFile().exists()) f = legacySaveFile()
@@ -707,6 +803,13 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         val btn = mapButton(keyCode)
         if (btn != null) {
+            if (netplay) {
+                // In an online game every local device plays the
+                // local player; the engine feeds the mask to the
+                // right slot on both boxes.
+                localMask = localMask or (1 shl btn.toInt())
+                return true
+            }
             val slot = slotFor(event)
             if (slot != null) {
                 Mobile.setButton(slot.toLong(), btn, true)
@@ -719,6 +822,10 @@ class EmulatorActivity : Activity(), TextureListener {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         val btn = mapButton(keyCode)
         if (btn != null) {
+            if (netplay) {
+                localMask = localMask and (1 shl btn.toInt()).inv()
+                return true
+            }
             val slot = slotFor(event)
             if (slot != null) {
                 Mobile.setButton(slot.toLong(), btn, false)
@@ -734,6 +841,9 @@ class EmulatorActivity : Activity(), TextureListener {
                 as android.hardware.input.InputManager
             im.unregisterInputDeviceListener(seatDeviceListener)
         } catch (e: Exception) { /* already gone */ }
+        if (netplay) {
+            try { Mobile.netplayStop() } catch (e: Exception) { /* already gone */ }
+        }
         statsEnd()
         running = false
         gameThread?.join(1000)

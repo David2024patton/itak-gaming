@@ -189,6 +189,19 @@ class MainActivity : FlutterActivity() {
                             val intent = Intent(this, EmulatorActivity::class.java)
                             intent.putExtra(EmulatorActivity.EXTRA_CORE, core)
                             intent.putExtra(EmulatorActivity.EXTRA_ROM, rom)
+                            // Optional netplay session (Online screen).
+                            call.argument<String>("npRole")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_ROLE, it)
+                            }
+                            call.argument<String>("npLobby")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_LOBBY, it)
+                            }
+                            call.argument<String>("npToken")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_TOKEN, it)
+                            }
+                            call.argument<String>("npServer")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_SERVER, it)
+                            }
                             startActivity(intent)
                             result.success(true)
                         }

@@ -1744,6 +1744,40 @@ const List<String> kDisplayNames = ['Smooth 60', 'Steady 30'];
 
 const String kServerBase = 'http://192.168.0.235:8790';
 
+/// One game installed on this box, found by scanning the ROM
+/// folders. Used by the Online screen to host or join a session:
+/// both players must own the identical ROM file.
+class LocalGame {
+  final SystemInfo system;
+  final File file;
+  const LocalGame(this.system, this.file);
+
+  String get fileName => file.path.split('/').last;
+
+  String get display {
+    final dot = fileName.lastIndexOf('.');
+    return dot > 0 ? fileName.substring(0, dot) : fileName;
+  }
+}
+
+Future<List<LocalGame>> scanLocalGames() async {
+  final out = <LocalGame>[];
+  for (final sys in kSystems) {
+    if (sys.requires64 && !gIs64Bit) continue;
+    final dir = Directory('/sdcard/ROMs/${sys.dir}');
+    if (await dir.exists()) {
+      await for (final e in dir.list()) {
+        if (e is File &&
+            sys.exts.any((x) => e.path.toLowerCase().endsWith(x))) {
+          out.add(LocalGame(sys, e));
+        }
+      }
+    }
+  }
+  out.sort((a, b) => a.display.compareTo(b.display));
+  return out;
+}
+
 class OnlineScreen extends StatefulWidget {
   const OnlineScreen({super.key});
 
@@ -1752,6 +1786,7 @@ class OnlineScreen extends StatefulWidget {
 }
 
 class _OnlineScreenState extends State<OnlineScreen> {
+  static const _channel = MethodChannel('net.itak/emu');
   final FocusNode _focusNode = FocusNode();
   List<dynamic> _lobbies = [];
   String _status = 'Connecting to the lobby server...';
@@ -1830,29 +1865,113 @@ class _OnlineScreenState extends State<OnlineScreen> {
     return (p == null || p.isEmpty) ? 'Player 1' : p;
   }
 
+  Future<LocalGame?> _pickGame(List<LocalGame> games) {
+    return showDialog<LocalGame>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: const Text('Pick the game to host'),
+        content: SizedBox(
+          width: 560,
+          height: 380,
+          child: ListView.builder(
+            itemCount: games.length,
+            itemBuilder: (_, i) {
+              final g = games[i];
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Material(
+                    color: const Color(0xFF1B1B28),
+                    child: InkWell(
+                      autofocus: i == 0,
+                      onTap: () => Navigator.pop(ctx, g),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(g.display,
+                                  style: const TextStyle(
+                                      fontSize: 19,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                            Text(g.system.name,
+                                style: const TextStyle(
+                                    fontSize: 15, color: Colors.white60)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(fontSize: 17)),
+          ),
+        ],
+      ),
+    ).then((v) {
+      _focusNode.requestFocus();
+      return v;
+    });
+  }
+
+  Future<void> _launchOnline(LocalGame game,
+      {required String role,
+      required String lobbyId,
+      required String token}) async {
+    await PlayStats.record(game.file.path);
+    await _channel.invokeMethod('launch', {
+      'core': game.system.core,
+      'rom': game.file.path,
+      'npRole': role,
+      'npLobby': lobbyId,
+      'npToken': token,
+      'npServer': kServerBase,
+    });
+  }
+
   Future<void> _createLobby() async {
     final player = await _playerName();
     if (!mounted) return;
-    final name = await showTvKeyboard(context,
-        title: 'Lobby name', initial: "$player's lobby");
-    if (name == null || name.trim().isEmpty || !mounted) return;
-    final game = await showTvKeyboard(context,
-        title: 'Game', initial: 'Super Mario World (USA)');
-    if (game == null || game.trim().isEmpty || !mounted) return;
+    final games = await scanLocalGames();
+    if (!mounted) return;
+    if (games.isEmpty) {
+      _showMessage('No games on this box',
+          'There are no games to host. Add games first, then come back.');
+      return;
+    }
+    final game = await _pickGame(games);
+    if (game == null || !mounted) return;
     final password = await showTvKeyboard(context,
         title: 'Password (blank = open to anyone)', initial: '');
     if (password == null || !mounted) return;
     try {
-      await _api('POST', '/lobbies', {
-        'name': name.trim(),
-        'game': game.trim(),
+      final data = await _api('POST', '/lobbies', {
+        'name': "$player's lobby",
+        'game': game.fileName,
         'hostPlayer': player,
         'password': password,
       });
       if (!mounted) return;
-      setState(() => _status = 'Lobby "${name.trim()}" is open. '
-          'It stays up for 10 minutes, tell your friend to join.');
-      _refresh();
+      final lobbyId = (data['id'] ?? data['lobby']?['id'] ?? '').toString();
+      final token = (data['hostToken'] ?? '').toString();
+      if (lobbyId.isEmpty || token.isEmpty) {
+        _showMessage('Could not create the lobby',
+            'The server did not send a lobby id. Try again.');
+        return;
+      }
+      await _launchOnline(game,
+          role: 'host', lobbyId: lobbyId, token: token);
     } catch (e) {
       _showMessage('Could not create the lobby', '$e');
     }
@@ -1869,14 +1988,33 @@ class _OnlineScreenState extends State<OnlineScreen> {
       password = pw;
     }
     try {
-      await _api('POST', '/lobbies/${lobby['id']}/join', {
+      final data = await _api('POST', '/lobbies/${lobby['id']}/join', {
         'player': player,
         'password': password,
       });
-      _showMessage('You are in!',
-          'You joined "${lobby['name']}". When the host starts the '
-              'game, it begins on this box.');
-      _refresh();
+      if (!mounted) return;
+      final token = (data['guestToken'] ?? '').toString();
+      if (token.isEmpty) {
+        _showMessage('Could not join', 'The server did not send a token.');
+        return;
+      }
+      final games = await scanLocalGames();
+      LocalGame? match;
+      for (final g in games) {
+        if (g.fileName == lobby['game']) {
+          match = g;
+          break;
+        }
+      }
+      if (!mounted) return;
+      if (match == null) {
+        _showMessage('You do not have this game',
+            '"${lobby['game']}" is not on this box. Both players need '
+                'the same game file to play together.');
+        return;
+      }
+      await _launchOnline(match,
+          role: 'guest', lobbyId: lobby['id'].toString(), token: token);
     } catch (e) {
       _showMessage('Could not join', '$e');
     }

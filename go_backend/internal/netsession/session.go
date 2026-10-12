@@ -164,7 +164,7 @@ func (s *Session) Start() error {
 
 func (s *Session) startHost() error {
 	// Wait for the guest to show up on the socket.
-	if err := s.waitFor(func() bool { return s.peerJoined || s.ended }, 120*time.Second); err != nil {
+	if err := s.waitFor(func() bool { return s.peerJoined || s.ended }, 600*time.Second); err != nil {
 		return err
 	}
 	if err := s.checkEnded(); err != nil {
