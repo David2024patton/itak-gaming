@@ -42,6 +42,124 @@ class EmulatorActivity : Activity(), TextureListener {
     private var romPath: String = ""
     private var menuOpen = false
 
+    // ----- Local multiplayer seats -----
+    // Controller assignments (player name -> deviceId) come from the
+    // itak_prefs "controller_map" JSON written by the player picker.
+    // Rules: an assigned pad drives only its owner's seat; seat 0
+    // belongs to the current player and stays reserved for their pad
+    // even while it is disconnected (nobody can steal the position);
+    // seat 1 exists only for a second local player with an assigned,
+    // connected pad (drop-in). An unassigned pad may fill seat 0 only
+    // when the current player has no pad assigned at all. The TV
+    // remote is menu/backup control for seat 0 unless the owner's pad
+    // is connected and holding the seat.
+    private var seatPlayers: List<String> = emptyList()
+    private var seatCurrent: String = ""
+    private val assignedPadByPlayer = mutableMapOf<String, Int>()
+    private val padSeats = mutableMapOf<Int, Int>() // deviceId -> slot
+    private val connectedPads = mutableSetOf<Int>()
+    private var fallbackPad: Int? = null
+
+    private val seatDeviceListener = object : android.hardware.input.InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) {
+            if (isGamepadDevice(deviceId)) {
+                connectedPads.add(deviceId)
+                refreshSeats()
+            }
+        }
+        override fun onInputDeviceRemoved(deviceId: Int) {
+            connectedPads.remove(deviceId)
+            if (fallbackPad == deviceId) fallbackPad = null
+            refreshSeats()
+        }
+        override fun onInputDeviceChanged(deviceId: Int) {}
+    }
+
+    private fun isGamepadDevice(deviceId: Int): Boolean {
+        val dev = android.view.InputDevice.getDevice(deviceId) ?: return false
+        return dev.sources and android.view.InputDevice.SOURCE_GAMEPAD != 0 ||
+            dev.sources and android.view.InputDevice.SOURCE_JOYSTICK != 0
+    }
+
+    private fun setupSeats() {
+        val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
+        seatPlayers = (prefs.getString("players", "") ?: "")
+            .split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+        seatCurrent = currentPlayer()
+        assignedPadByPlayer.clear()
+        val mapJson = prefs.getString("controller_map", "") ?: ""
+        if (mapJson.isNotEmpty()) {
+            try {
+                val obj = org.json.JSONObject(mapJson)
+                for (key in obj.keys()) {
+                    val entry = obj.optJSONObject(key) ?: continue
+                    val id = entry.optInt("id", -1)
+                    if (id >= 0) assignedPadByPlayer[key] = id
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "controller_map parse failed", e)
+            }
+        }
+        connectedPads.clear()
+        for (id in android.view.InputDevice.getDeviceIds()) {
+            if (isGamepadDevice(id)) connectedPads.add(id)
+        }
+        refreshSeats()
+        val im = getSystemService(android.content.Context.INPUT_SERVICE)
+            as android.hardware.input.InputManager
+        im.registerInputDeviceListener(
+            seatDeviceListener,
+            android.os.Handler(android.os.Looper.getMainLooper()),
+        )
+    }
+
+    private fun refreshSeats() {
+        padSeats.clear()
+        assignedPadByPlayer[seatCurrent]?.let { padSeats[it] = 0 }
+        for (p in seatPlayers) {
+            if (p == seatCurrent) continue
+            val dev = assignedPadByPlayer[p] ?: continue
+            // Player 2 is local only, and only when their pad is
+            // actually connected (active).
+            if (dev in connectedPads) {
+                padSeats[dev] = 1
+            }
+            break
+        }
+        if (assignedPadByPlayer[seatCurrent] == null && fallbackPad != null) {
+            padSeats.putIfAbsent(fallbackPad!!, 0)
+        }
+        Log.i(TAG, "seats: pads=$padSeats connected=$connectedPads current=$seatCurrent")
+    }
+
+    // Which player slot an event drives, or null to ignore it.
+    private fun slotFor(event: KeyEvent): Int? {
+        val dev = event.device
+        val gamepad = dev != null &&
+            (dev.sources and android.view.InputDevice.SOURCE_GAMEPAD != 0 ||
+                dev.sources and android.view.InputDevice.SOURCE_JOYSTICK != 0)
+        val ownerPad = assignedPadByPlayer[seatCurrent]
+        if (!gamepad) {
+            // Remote / keyboard: seat 0 backup, unless the owner's own
+            // pad is connected and holding the seat.
+            return if (ownerPad != null && ownerPad in connectedPads) null else 0
+        }
+        val id = event.deviceId
+        padSeats[id]?.let { return it }
+        if (ownerPad == null) {
+            // No pad assigned to player 1: the first pad to play
+            // fills seat 0 for this session; later pads get no seat.
+            if (fallbackPad == null) {
+                fallbackPad = id
+                padSeats[id] = 0
+                return 0
+            }
+            return null
+        }
+        // Player 1's seat is reserved for their assigned pad.
+        return null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -76,6 +194,7 @@ class EmulatorActivity : Activity(), TextureListener {
         // time). Applied before the first frame runs.
         loadCheatDb()
         if (enabledCheats.isNotEmpty()) applyEnabledCheats()
+        setupSeats()
         statsBegin()
         startAudio()
         Log.i(TAG, "onCreate done")
@@ -528,7 +647,10 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         val btn = mapButton(keyCode)
         if (btn != null) {
-            Mobile.setButton(0, btn, true)
+            val slot = slotFor(event)
+            if (slot != null) {
+                Mobile.setButton(slot.toLong(), btn, true)
+            }
             return true
         }
         return super.onKeyDown(keyCode, event)
@@ -537,13 +659,21 @@ class EmulatorActivity : Activity(), TextureListener {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         val btn = mapButton(keyCode)
         if (btn != null) {
-            Mobile.setButton(0, btn, false)
+            val slot = slotFor(event)
+            if (slot != null) {
+                Mobile.setButton(slot.toLong(), btn, false)
+            }
             return true
         }
         return super.onKeyUp(keyCode, event)
     }
 
     override fun onDestroy() {
+        try {
+            val im = getSystemService(android.content.Context.INPUT_SERVICE)
+                as android.hardware.input.InputManager
+            im.unregisterInputDeviceListener(seatDeviceListener)
+        } catch (e: Exception) { /* already gone */ }
         statsEnd()
         running = false
         gameThread?.join(1000)
