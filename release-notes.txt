@@ -1,1 +1,1 @@
-Online games now open a waiting room: you see who is in, both players press Ready, then a 5 second countdown starts the game.
+Fixed the online waiting room layout so all the text fits on screen.

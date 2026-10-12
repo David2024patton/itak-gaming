@@ -301,6 +301,10 @@ class EmulatorActivity : Activity(), TextureListener {
         tv.setTextColor(Color.WHITE)
         if (bold) tv.setTypeface(null, android.graphics.Typeface.BOLD)
         tv.gravity = Gravity.CENTER
+        tv.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
         return tv
     }
 
@@ -311,9 +315,10 @@ class EmulatorActivity : Activity(), TextureListener {
         panel.orientation = LinearLayout.VERTICAL
         panel.gravity = Gravity.CENTER
         panel.setPadding(64, 48, 64, 48)
+        // Fixed panel width: WRAP_CONTENT let long single lines
+        // push the panel off-center and clip (build 35 bug).
         val panelParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
+            920, FrameLayout.LayoutParams.WRAP_CONTENT
         )
         panelParams.gravity = Gravity.CENTER
 
@@ -414,7 +419,7 @@ class EmulatorActivity : Activity(), TextureListener {
                     it.isEnabled = false
                 }
                 roomStatusLine?.text =
-                    "Your guest picks this lobby from the Online screen. BACK leaves."
+                    "Guests pick this lobby on the Online screen. BACK leaves."
             }
         }
     }
