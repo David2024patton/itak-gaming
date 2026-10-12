@@ -9,6 +9,8 @@ state, or a frame of gameplay.
 
 Full design: [PROTOCOL.md](PROTOCOL.md).
 
+The same binary also runs a **global leaderboard**: apps report their players' cumulative play stats (`POST /stats/report`) and the server aggregates them across every device into player, game, and recent-activity boards (`GET /leaderboard/{players,games,recent}`), persisted to `./stats.json` (flag `-statsfile` / env `ITAK_STATS_FILE`). See PROTOCOL.md section 6.
+
 ## Run it
 
 ```sh

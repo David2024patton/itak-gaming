@@ -20,26 +20,49 @@ import (
 
 	"github.com/davidpatton/itak-gaming/netplay/internal/lobby"
 	"github.com/davidpatton/itak-gaming/netplay/internal/server"
+	"github.com/davidpatton/itak-gaming/netplay/internal/stats"
 )
+
+// defaultStatsFile is where the global leaderboard persists: the
+// ITAK_STATS_FILE environment variable wins, else a file next to
+// wherever the server runs.
+func defaultStatsFile() string {
+	if p := os.Getenv("ITAK_STATS_FILE"); p != "" {
+		return p
+	}
+	return "./stats.json"
+}
 
 func main() {
 	addr := flag.String("addr", ":8790", "listen address (host:port)")
 	sweepInterval := flag.Duration("sweep", 15*time.Second, "lobby reaper interval")
+	statsFile := flag.String("statsfile", defaultStatsFile(), "path to the global leaderboard stats file")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "lobbyserver ", log.LstdFlags)
 	store := lobby.NewMemoryStore()
 	srv := server.New(store, logger)
 
+	// Global leaderboard: same binary, same port. Apps report their
+	// players' cumulative stats; the rankings are served from memory
+	// and persisted to the stats file in the background.
+	statsStore := stats.Open(*statsFile, logger)
+	statsHandler := stats.NewHandler(statsStore, logger)
+
 	// Reaper: expired lobbies are collected in the background so the
 	// request path never pays for cleanup.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go reapLoop(ctx, store, *sweepInterval, logger)
+	go statsStore.SaveLoop(ctx, 10*time.Second)
+
+	mux := http.NewServeMux()
+	statsHandler.Register(mux)
+	mux.Handle("/", srv.Handler())
 
 	httpServer := &http.Server{
 		Addr:              *addr,
-		Handler:           srv.Handler(),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

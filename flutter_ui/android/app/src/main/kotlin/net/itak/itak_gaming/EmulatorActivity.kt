@@ -171,6 +171,8 @@ class EmulatorActivity : Activity(), TextureListener {
         FilterSettings.displayMode = prefs.getInt("display_mode", 0)
         swapAB = prefs.getInt("swap_ab", 0) != 0
         Log.i(TAG, "swap_ab = $swapAB")
+        autoSaveEnabled = prefs.getString("autosave", "1") != "0"
+        Log.i(TAG, "autosave = $autoSaveEnabled")
 
         glView = EmuGLView(this)
         setContentView(glView)
@@ -313,6 +315,23 @@ class EmulatorActivity : Activity(), TextureListener {
                 Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
                 tRun = 0
             }
+            // Auto-save once a minute into the player's save slot, so
+            // progress survives even if nobody remembers to save. Runs
+            // here on the game thread, between frames, never racing
+            // the core.
+            if (autoSaveEnabled &&
+                System.currentTimeMillis() - lastAutoSaveMs > 60_000) {
+                lastAutoSaveMs = System.currentTimeMillis()
+                try {
+                    val data = Mobile.saveState()
+                    if (data != null && data.isNotEmpty()) {
+                        saveFile().writeBytes(data)
+                        Log.i(TAG, "auto-saved ${data.size} bytes")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "auto-save failed", e)
+                }
+            }
             // Deadline pacing: carry the fractional part of the frame
             // interval so the long-run rate is exactly the core's fps.
             // A plain sleep(frameMs) truncated 16.64ms to 16ms and only
@@ -374,6 +393,8 @@ class EmulatorActivity : Activity(), TextureListener {
     // seconds played, last-played time. files/stats/<player>.json
     // ---------------------------------------------------------------
     private var swapAB = false
+    private var autoSaveEnabled = true
+    @Volatile private var lastAutoSaveMs = System.currentTimeMillis()
     private var statsArmed = false
     private var sessionStartMs = 0L
     private var statsPlayer = ""
@@ -477,7 +498,12 @@ class EmulatorActivity : Activity(), TextureListener {
                     }
                     4 -> cycleFilter()
                     5 -> toggleDisplay()
-                    6 -> finish()
+                    6 -> {
+                        // Exit asks for confirmation first; the game
+                        // stays parked while the prompt is open.
+                        keepPaused = true
+                        window.decorView.postDelayed({ confirmExit() }, 200)
+                    }
                 }
             }
             .setOnDismissListener {
@@ -494,6 +520,40 @@ class EmulatorActivity : Activity(), TextureListener {
         menuOpen = false
         paused = false
         try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
+    }
+
+    // Exit asks first, so a stray press cannot end a game by
+    // accident. Confirming auto-saves (when enabled) on the way out.
+    private fun confirmExit() {
+        AlertDialog.Builder(this)
+            .setTitle("Exit game?")
+            .setMessage(
+                if (autoSaveEnabled)
+                    "Your game auto-saves on the way out, so you can pick up right where you left off."
+                else
+                    "Anything you have not saved will be lost."
+            )
+            .setPositiveButton("Exit") { _, _ ->
+                autoSaveNow()
+                finish()
+            }
+            .setNegativeButton("Keep playing", null)
+            .setOnDismissListener { if (!isFinishing) resumeFromMenu() }
+            .show()
+    }
+
+    // Save right now, from a parked game (pause menu showing).
+    private fun autoSaveNow() {
+        if (!autoSaveEnabled) return
+        try {
+            val data = Mobile.saveState()
+            if (data != null && data.isNotEmpty()) {
+                saveFile().writeBytes(data)
+                Log.i(TAG, "auto-saved on exit (${data.size} bytes)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "exit auto-save failed", e)
+        }
     }
 
     // ---------------------------------------------------------------

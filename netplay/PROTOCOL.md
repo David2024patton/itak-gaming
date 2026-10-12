@@ -326,3 +326,72 @@ to the local player.
 - **Exposure**: the lobby server is a rendezvous point, safe to run on
   a public VPS or at home behind a tunnel/reverse proxy. Game traffic
   on the direct channel is peer-to-peer and never touches it.
+
+---
+
+## 6. Global leaderboard
+
+Lobbies are ephemeral; the leaderboard is not. The same server
+binary keeps a **global leaderboard** of play stats covering every
+copy of the app that reports in, alongside the local leaderboard
+each box shows for its own household.
+
+Each client tracks cumulative totals per player per game locally
+(plays, seconds played, last played). When it syncs, it POSTs one
+report per (player, game) pair it holds:
+
+### `POST /stats/report`
+
+```json
+{ "deviceId": "opaque per-install id", "player": "David",
+  "game": "Super Mario World (USA).sfc", "plays": 14,
+  "seconds": 3720, "lastPlayed": 1791772800000 }
+```
+
+- `deviceId` is an opaque identifier the client generates once per
+  install. It scopes the report so two boxes can never overwrite
+  each other's totals for the same player and game. It is stored
+  but never displayed.
+- `player` (required, max 40 characters) and `game` (required, max
+  120 characters) are display strings; control characters are
+  stripped server-side.
+- `plays` and `seconds` are **cumulative totals** for that triple,
+  never deltas, and must be >= 0; values are clamped to 10^9.
+- `lastPlayed` is unix time in milliseconds.
+- **204** on success; **400** on a malformed, oversized (> 16 KB),
+  or invalid body; **429** over the rate limit (300 reports per
+  minute per device).
+
+**Replace-if-greater rule:** a report replaces the stored totals
+for its (deviceId, player, game) triple only when both its plays
+and its seconds are >= the stored values. Since clients always send
+full cumulative totals, a lower report can only be a stale echo
+from an older sync, so it is ignored (the POST still returns 204 —
+from the client's side, syncing succeeded).
+
+### Read endpoints
+
+| endpoint                  | returns (top 50)                              |
+|---------------------------|-----------------------------------------------|
+| `GET /leaderboard/players` | `[{player, seconds, plays, games}]`         |
+| `GET /leaderboard/games`   | `[{game, seconds, plays, players}]`         |
+| `GET /leaderboard/recent`  | `[{player, game, lastPlayed, seconds}]`     |
+
+**Aggregation rules:**
+
+- The **players** board sums a name's totals across **all
+  devices**: player identity for display is the name alone, so
+  David on the TV box and David on a second box are one row.
+  `games` is that player's distinct game count.
+- The **games** board sums a title across all players and devices;
+  `players` is its distinct player-name count.
+- **Recent** has one row per stored (device, player, game) triple,
+  newest `lastPlayed` first.
+- Players and games sort by seconds descending, with plays then
+  name/title as deterministic tie-breaks.
+
+**Storage:** in memory, persisted to a JSON file (the `-statsfile`
+flag, else `ITAK_STATS_FILE`, else `./stats.json`) written
+atomically (temp file + rename) at most every 10 s when changed,
+and once more at shutdown. At most 20,000 triples are kept;
+inserts beyond the cap evict the least recently played entry.

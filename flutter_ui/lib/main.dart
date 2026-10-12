@@ -388,7 +388,7 @@ const List<Color> kPlayerColors = [
 ];
 
 // Zones on the home screen, top to bottom.
-const int _zoneSettings = 0;
+const int _zoneTabs = 0;
 const int _zonePlayers = 1;
 const int _zoneSystems = 2;
 
@@ -402,7 +402,7 @@ class SystemSelectScreen extends StatefulWidget {
 class _SystemSelectScreenState extends State<SystemSelectScreen> {
   static const _channel = MethodChannel('net.itak/emu');
   int _systemIndex = 1; // SNES default
-  int _topIndex = 1; // top bar: 0 = Leaderboard, 1 = Settings
+  int _tabIndex = 0; // tab row: 0 Home, 1 Leaderboard, 2 Online, 3 Settings
   int _zone = _zoneSystems;
   List<String> _players = [];
   String _currentPlayer = '';
@@ -584,7 +584,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
       context: context,
       barrierColor: Colors.black.withOpacity(0.8),
       builder: (ctx) => AlertDialog(
-        backgroundColor: _dialogBg,
+        backgroundColor: const Color(0xFF262640),
         title: Text(title),
         content: Text(body, style: const TextStyle(fontSize: 17)),
         actions: [
@@ -1131,22 +1131,29 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
   GlobalKey _cardKey(int index) =>
       _cardKeys.putIfAbsent(index, () => GlobalKey());
 
-  // The systems grid shows exactly two full rows (one page of 6) and
-  // never a cut card: the layout sizes cards to fit two rows exactly,
-  // and moving the selector snaps the scroll position to the page the
-  // selection lives on. _rowStride is set by the grid's LayoutBuilder.
+  // The systems grid shows exactly two full rows at a time (8
+  // systems, four across) and never a cut card: cards are sized to
+  // fit two rows exactly, and the view scrolls in whole-row steps so
+  // every resting offset sits on a row boundary. _rowStride is set
+  // by the grid's LayoutBuilder.
   double? _rowStride;
 
   void _scrollSystemsTo(int index) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_gridScroll.hasClients) return;
-      final position = _gridScroll.position;
       final stride = _rowStride;
       if (stride == null || stride <= 0) return;
-      // Page p starts at row 2p; its scroll offset is 2p row strides,
-      // which the exact-fit layout makes equal to maxScrollExtent on
-      // the last page, so pages land perfectly every time.
-      final target = ((index ~/ 6) * 2 * stride).clamp(
+      final position = _gridScroll.position;
+      final row = index ~/ 4;
+      final firstRow = (position.pixels / stride).round();
+      int? targetRow;
+      if (row < firstRow) {
+        targetRow = row;
+      } else if (row > firstRow + 1) {
+        targetRow = row - 1;
+      }
+      if (targetRow == null) return;
+      final target = (targetRow * stride).clamp(
         0.0,
         position.maxScrollExtent,
       );
@@ -1168,32 +1175,32 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowDown) {
       setState(() {
-        if (_zone == _zoneSettings) {
+        if (_zone == _zoneTabs) {
           _zone = _zonePlayers;
         } else if (_zone == _zonePlayers) {
           _zone = _zoneSystems;
-        } else if (_systemIndex + 3 < kSystems.length) {
-          _systemIndex += 3;
+        } else if (_systemIndex + 4 < kSystems.length) {
+          _systemIndex += 4;
           _scrollSystemsTo(_systemIndex);
         }
       });
     } else if (key == LogicalKeyboardKey.arrowUp) {
       setState(() {
         if (_zone == _zoneSystems) {
-          if (_systemIndex >= 3) {
-            _systemIndex -= 3;
+          if (_systemIndex >= 4) {
+            _systemIndex -= 4;
             _scrollSystemsTo(_systemIndex);
           } else {
             _zone = _zonePlayers;
           }
         } else if (_zone == _zonePlayers) {
-          _zone = _zoneSettings;
+          _zone = _zoneTabs;
         }
       });
     } else if (key == LogicalKeyboardKey.arrowLeft) {
       setState(() {
-        if (_zone == _zoneSettings) {
-          _topIndex = 0;
+        if (_zone == _zoneTabs) {
+          _tabIndex = (_tabIndex + 3) % 4;
         } else if (_zone == _zoneSystems && _systemIndex > 0) {
           _systemIndex -= 1;
           _scrollSystemsTo(_systemIndex);
@@ -1202,8 +1209,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
       });
     } else if (key == LogicalKeyboardKey.arrowRight) {
       setState(() {
-        if (_zone == _zoneSettings) {
-          _topIndex = 1;
+        if (_zone == _zoneTabs) {
+          _tabIndex = (_tabIndex + 1) % 4;
         } else if (_zone == _zoneSystems &&
             _systemIndex < kSystems.length - 1) {
           _systemIndex += 1;
@@ -1211,12 +1218,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
         }
       });
     } else if (_isSelect(event)) {
-      if (_zone == _zoneSettings) {
-        if (_topIndex == 0) {
-          _openLeaderboard();
-        } else {
-          _openSettings();
-        }
+      if (_zone == _zoneTabs) {
+        _activateTab(_tabIndex);
       } else if (_zone == _zonePlayers) {
         _openPlayerPicker();
       } else {
@@ -1255,6 +1258,32 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     ).then((_) => _focusNode.requestFocus());
   }
 
+  void _openOnline() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const OnlineScreen()),
+    ).then((_) => _focusNode.requestFocus());
+  }
+
+  // What selecting a top tab does: Home drops focus into the
+  // systems grid; the rest open their screens.
+  void _activateTab(int index) {
+    switch (index) {
+      case 0:
+        setState(() => _zone = _zoneSystems);
+        break;
+      case 1:
+        _openLeaderboard();
+        break;
+      case 2:
+        _openOnline();
+        break;
+      case 3:
+        _openSettings();
+        break;
+    }
+  }
+
   // One chip: the current player. Selecting it opens the player
   // list, where you switch players and assign controllers.
   Widget _currentPlayerChip() {
@@ -1268,7 +1297,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E2E),
           borderRadius: BorderRadius.circular(999),
@@ -1280,8 +1309,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            PlayerAvatar(name: name, size: 38),
-            const SizedBox(width: 10),
+            PlayerAvatar(name: name, size: 32),
+            const SizedBox(width: 8),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1292,14 +1321,14 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                     Text(
                       name,
                       style: const TextStyle(
-                        fontSize: 20,
+                        fontSize: 17,
                         fontWeight: FontWeight.bold,
                         color: Colors.white,
                       ),
                     ),
-                    const SizedBox(width: 7),
+                    const SizedBox(width: 6),
                     const Icon(Icons.check_circle,
-                        size: 19, color: Color(0xFF00E676)),
+                        size: 16, color: Color(0xFF00E676)),
                   ],
                 ),
                 Text(
@@ -1307,7 +1336,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                       ? 'Tap to switch player'
                       : 'Pad: $padName · tap to switch',
                   style:
-                      const TextStyle(fontSize: 12.5, color: Colors.white54),
+                      const TextStyle(fontSize: 11.5, color: Colors.white54),
                 ),
               ],
             ),
@@ -1363,7 +1392,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
             key: _cardKey(index),
             decoration: BoxDecoration(
               color: const Color(0xFF1B1B28),
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(24),
               border: Border.all(
                 color: focused ? Colors.white : Colors.white12,
                 width: focused ? 3.5 : 1,
@@ -1397,9 +1426,27 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                             colors: [Color(0xFF2B2B45), Color(0xFF14141F)],
                           ),
                         ),
-                        padding: const EdgeInsets.all(6),
+                        padding: const EdgeInsets.all(14),
                         child: SizedBox.expand(child: art),
                       ),
+                      if (count != null)
+                        Positioned(
+                          top: 10,
+                          left: 12,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 9, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.55),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              count == 0 ? 'No games' : '$count games',
+                              style: const TextStyle(
+                                  fontSize: 12.5, color: Colors.white),
+                            ),
+                          ),
+                        ),
                       if (locked)
                         const Positioned(
                           top: 10,
@@ -1414,50 +1461,21 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                     ],
                   ),
                 ),
+                // Slim name bar, same style as the game tiles: the
+                // console picture gets the rest of the card.
                 Container(
+                  color: const Color(0xFF14141E),
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [sys.color.withOpacity(0.85), sys.color],
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  child: Text(
+                    sys.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
                     ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        sys.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 21,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              locked
-                                  ? 'Needs a 64-bit device'
-                                  : sys.tagline,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 13.5, color: Colors.white70),
-                            ),
-                          ),
-                          if (count != null)
-                            Text(
-                              count == 0 ? 'No games' : '$count games',
-                              style: const TextStyle(
-                                  fontSize: 14.5, color: Colors.white),
-                            ),
-                        ],
-                      ),
-                    ],
                   ),
                 ),
               ],
@@ -1474,31 +1492,59 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
     );
   }
 
-  Widget _topChip({
-    required IconData icon,
-    required String label,
-    required bool focused,
-    required VoidCallback onTap,
-  }) {
+  // One item in the top tab row. Home is the section this screen
+  // shows (green, underlined); the others open their screens.
+  Widget _tabItem(int index, IconData icon, String label) {
+    final focused = _zone == _zoneTabs && _tabIndex == index;
+    final current = index == 0;
+    final color = current ? const Color(0xFF00E676) : Colors.white;
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {
+        setState(() {
+          _zone = _zoneTabs;
+          _tabIndex = index;
+        });
+        _activateTab(index);
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E2E),
-          borderRadius: BorderRadius.circular(999),
+          color: focused ? const Color(0xFF2A2A3E) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: focused ? Colors.white : Colors.white24,
-            width: focused ? 3 : 2,
+            color: focused ? Colors.white : Colors.transparent,
+            width: 2.5,
           ),
         ),
-        child: Row(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 22),
-            const SizedBox(width: 8),
-            Text(label, style: const TextStyle(fontSize: 19)),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 21, color: color),
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight:
+                        current ? FontWeight.bold : FontWeight.normal,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            Container(
+              height: 3,
+              width: 46,
+              decoration: BoxDecoration(
+                color: current ? const Color(0xFF00E676) : Colors.transparent,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
           ],
         ),
       ),
@@ -1507,7 +1553,6 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final settingsFocused = _zone == _zoneSettings;
     return Scaffold(
       body: KeyboardListener(
         focusNode: _focusNode,
@@ -1565,14 +1610,37 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
               ),
               Column(
                 children: [
+                  // Tab row at the very top: Home, Leaderboard,
+                  // Online, Settings.
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(58, 26, 58, 0),
+                    padding: const EdgeInsets.fromLTRB(40, 12, 40, 0),
+                    child: Row(
+                      children: [
+                        _tabItem(0, Icons.home, 'Home'),
+                        const SizedBox(width: 6),
+                        _tabItem(1, Icons.emoji_events, 'Leaderboard'),
+                        const SizedBox(width: 6),
+                        _tabItem(2, Icons.public, 'Online'),
+                        const SizedBox(width: 6),
+                        _tabItem(3, Icons.settings, 'Settings'),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    height: 1,
+                    margin: const EdgeInsets.only(top: 4),
+                    color: Colors.white10,
+                  ),
+                  // Title row: brand on the left, the player chip at
+                  // the far right.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(58, 14, 58, 0),
                     child: Row(
                       children: [
                         const Text(
                           'iTaK',
                           style: TextStyle(
-                            fontSize: 46,
+                            fontSize: 42,
                             fontWeight: FontWeight.w800,
                             color: Colors.white,
                             letterSpacing: 1.0,
@@ -1581,42 +1649,18 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                         const Text(
                           ' Gaming',
                           style: TextStyle(
-                            fontSize: 46,
+                            fontSize: 42,
                             fontWeight: FontWeight.w800,
                             color: Color(0xFF00E676),
                             letterSpacing: 1.0,
                           ),
                         ),
                         const Spacer(),
-                        _topChip(
-                          icon: Icons.emoji_events,
-                          label: 'Leaderboard',
-                          focused: settingsFocused && _topIndex == 0,
-                          onTap: () {
-                            setState(() {
-                              _zone = _zoneSettings;
-                              _topIndex = 0;
-                            });
-                            _openLeaderboard();
-                          },
-                        ),
-                        const SizedBox(width: 12),
-                        _topChip(
-                          icon: Icons.settings,
-                          label: 'Settings',
-                          focused: settingsFocused && _topIndex == 1,
-                          onTap: () {
-                            setState(() {
-                              _zone = _zoneSettings;
-                              _topIndex = 1;
-                            });
-                            _openSettings();
-                          },
-                        ),
+                        _currentPlayerChip(),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 12),
                   if (_banner != null)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
@@ -1629,33 +1673,21 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                         ),
                       ),
                     ),
-                  Row(
-                    children: [
-                      const SizedBox(width: 58),
-                      const Text(
-                        "Who's playing?",
-                        style: TextStyle(fontSize: 20, color: Colors.white70),
-                      ),
-                      const SizedBox(width: 16),
-                      _currentPlayerChip(),
-                      const Spacer(),
-                      const SizedBox(width: 34),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 14),
                   Expanded(
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        // Exactly two full rows on screen, sized from
-                        // the real space: card height is whatever
-                        // remains after the grid's top/bottom padding
-                        // (16 each) and the one gap between the rows.
+                        // Exactly two full rows on screen (4 across,
+                        // 8 systems), sized from the real space: card
+                        // height is whatever remains after the grid's
+                        // top/bottom padding (16 each) and the one gap
+                        // between the rows.
                         final gridW = constraints.maxWidth - 80;
-                        final cardW = (gridW - 60 - 44) / 3;
+                        final cardW = (gridW - 60 - 3 * 22) / 4;
                         final cardH =
                             (constraints.maxHeight - 16 - 16 - 22) / 2;
                         final aspect =
-                            cardH > 40 ? cardW / cardH : 1.52;
+                            cardH > 40 ? cardW / cardH : 1.0;
                         _rowStride = cardH + 22;
                         return Padding(
                           padding:
@@ -1668,7 +1700,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
                                 const EdgeInsets.fromLTRB(30, 16, 30, 16),
                             gridDelegate:
                                 SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
+                              crossAxisCount: 4,
                               crossAxisSpacing: 22,
                               mainAxisSpacing: 22,
                               childAspectRatio: aspect,
@@ -1704,6 +1736,354 @@ class _SystemSelectScreenState extends State<SystemSelectScreen> {
 const List<String> kFilterNames = ['Sharp', 'Smooth', 'Pixel Perfect'];
 const List<String> kDisplayNames = ['Smooth 60', 'Steady 30'];
 
+// ---------------------------------------------------------------------------
+// Online play: browse, create, and join lobbies on the iTaK lobby
+// server. One box hosts, the other joins; the server introduces the
+// two and relays for them. Game sessions run over the same link.
+// ---------------------------------------------------------------------------
+
+const String kServerBase = 'http://192.168.0.235:8790';
+
+class OnlineScreen extends StatefulWidget {
+  const OnlineScreen({super.key});
+
+  @override
+  State<OnlineScreen> createState() => _OnlineScreenState();
+}
+
+class _OnlineScreenState extends State<OnlineScreen> {
+  final FocusNode _focusNode = FocusNode();
+  List<dynamic> _lobbies = [];
+  String _status = 'Connecting to the lobby server...';
+  bool _online = false;
+  // Focus rows: 0 = Create, 1 = Refresh, 2.. = lobbies, last = Back.
+  int _sel = 0;
+  Timer? _ticker;
+
+  int get _itemCount => _lobbies.length + 3;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _ticker =
+        Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<dynamic> _api(String method, String path,
+      [Map<String, dynamic>? body]) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 6);
+    try {
+      final uri = Uri.parse('$kServerBase$path');
+      final req = method == 'POST'
+          ? await client.postUrl(uri)
+          : await client.getUrl(uri);
+      if (body != null) {
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode(body));
+      }
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final text = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode >= 400) {
+        throw Exception(text.isEmpty ? 'Error ${resp.statusCode}' : text);
+      }
+      return text.isEmpty ? null : jsonDecode(text);
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final data = await _api('GET', '/lobbies');
+      if (!mounted) return;
+      setState(() {
+        _online = true;
+        _lobbies = (data['lobbies'] as List?) ?? [];
+        _status = _lobbies.isEmpty
+            ? 'Server online. No open lobbies right now: create one and tell a friend to join.'
+            : 'Server online. Pick a lobby to join, or create your own.';
+        if (_sel >= _itemCount) _sel = _itemCount - 1;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _online = false;
+        _status = 'Cannot reach the lobby server. It may be offline.';
+      });
+    }
+  }
+
+  Future<String> _playerName() async {
+    final p = await Prefs.get('current_player');
+    return (p == null || p.isEmpty) ? 'Player 1' : p;
+  }
+
+  Future<void> _createLobby() async {
+    final player = await _playerName();
+    if (!mounted) return;
+    final name = await showTvKeyboard(context,
+        title: 'Lobby name', initial: "$player's lobby");
+    if (name == null || name.trim().isEmpty || !mounted) return;
+    final game = await showTvKeyboard(context,
+        title: 'Game', initial: 'Super Mario World (USA)');
+    if (game == null || game.trim().isEmpty || !mounted) return;
+    final password = await showTvKeyboard(context,
+        title: 'Password (blank = open to anyone)', initial: '');
+    if (password == null || !mounted) return;
+    try {
+      await _api('POST', '/lobbies', {
+        'name': name.trim(),
+        'game': game.trim(),
+        'hostPlayer': player,
+        'password': password,
+      });
+      if (!mounted) return;
+      setState(() => _status = 'Lobby "${name.trim()}" is open. '
+          'It stays up for 10 minutes, tell your friend to join.');
+      _refresh();
+    } catch (e) {
+      _showMessage('Could not create the lobby', '$e');
+    }
+  }
+
+  Future<void> _joinLobby(Map<String, dynamic> lobby) async {
+    final player = await _playerName();
+    if (!mounted) return;
+    var password = '';
+    if (lobby['locked'] == true) {
+      final pw = await showTvKeyboard(context,
+          title: 'Lobby password', initial: '');
+      if (pw == null || !mounted) return;
+      password = pw;
+    }
+    try {
+      await _api('POST', '/lobbies/${lobby['id']}/join', {
+        'player': player,
+        'password': password,
+      });
+      _showMessage('You are in!',
+          'You joined "${lobby['name']}". When the host starts the '
+              'game, it begins on this box.');
+      _refresh();
+    } catch (e) {
+      _showMessage('Could not join', '$e');
+    }
+  }
+
+  void _showMessage(String title, String body) {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: Text(title),
+        content: Text(body, style: const TextStyle(fontSize: 17)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK', style: TextStyle(fontSize: 17)),
+          ),
+        ],
+      ),
+    ).then((_) => _focusNode.requestFocus());
+  }
+
+  void _activate() {
+    if (_sel == 0) {
+      _createLobby();
+    } else if (_sel == 1) {
+      _refresh();
+    } else if (_sel == _itemCount - 1) {
+      Navigator.pop(context);
+    } else {
+      _joinLobby(_lobbies[_sel - 2] as Map<String, dynamic>);
+    }
+  }
+
+  void _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return;
+    if (ModalRoute.of(context)?.isCurrent == false) return;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      setState(() => _sel = (_sel - 1 + _itemCount) % _itemCount);
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      setState(() => _sel = (_sel + 1) % _itemCount);
+    } else if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      _activate();
+    } else if (key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.gameButtonB ||
+        key == LogicalKeyboardKey.browserBack) {
+      Navigator.pop(context);
+    }
+  }
+
+  Widget _actionButton(int index, IconData icon, String label) {
+    final focused = _sel == index;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _sel = index);
+        _activate();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: focused ? Colors.white : Colors.white24,
+            width: focused ? 3 : 1.5,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 20),
+            const SizedBox(width: 9),
+            Text(label, style: const TextStyle(fontSize: 18)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _lobbyRow(int index, Map<String, dynamic> lobby) {
+    final focused = _sel == index;
+    final locked = lobby['locked'] == true;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _sel = index);
+        _joinLobby(lobby);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1B1B28),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: focused ? Colors.white : Colors.white12,
+            width: focused ? 3 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(locked ? Icons.lock : Icons.public,
+                color:
+                    locked ? Colors.amber : const Color(0xFF00E676)),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${lobby['name']}',
+                      style: const TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.bold)),
+                  Text('${lobby['game']}',
+                      style: const TextStyle(
+                          fontSize: 15, color: Colors.white70)),
+                ],
+              ),
+            ),
+            Text(
+              'Host: ${lobby['hostPlayer']}  ·  '
+              '${lobby['players']}/${lobby['maxPlayers']} players',
+              style: const TextStyle(fontSize: 15, color: Colors.white70),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: KeyboardListener(
+        focusNode: _focusNode,
+        onKeyEvent: _onKey,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF2A1152), Color(0xFF140B2E), Color(0xFF0A1A33)],
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(58, 30, 58, 26),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Online Play',
+                    style:
+                        TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Icon(Icons.circle,
+                        size: 13,
+                        color: _online
+                            ? const Color(0xFF00E676)
+                            : Colors.redAccent),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(_status,
+                          style: const TextStyle(
+                              fontSize: 16.5, color: Colors.white70)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    _actionButton(0, Icons.add_circle, 'Create lobby'),
+                    const SizedBox(width: 14),
+                    _actionButton(1, Icons.refresh, 'Refresh'),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Expanded(
+                  child: _lobbies.isEmpty
+                      ? const Center(
+                          child: Text('No open lobbies',
+                              style: TextStyle(
+                                  fontSize: 19, color: Colors.white54)),
+                        )
+                      : ListView.builder(
+                          itemCount: _lobbies.length,
+                          itemBuilder: (_, i) => _lobbyRow(
+                              i + 2, _lobbies[i] as Map<String, dynamic>),
+                        ),
+                ),
+                const SizedBox(height: 8),
+                _actionButton(_itemCount - 1, Icons.arrow_back, 'Back'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -1717,9 +2097,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _display = 0;
   bool _swapAB = false;
   bool _autoArt = true;
+  bool _autoSave = true;
   final FocusNode _focusNode = FocusNode();
 
-  static const int _rowCount = 5; // Picture, Display, Swap, Auto art, Back
+  static const int _rowCount = 6; // Picture, Display, Swap, Auto art, Auto-save, Back
 
   @override
   void initState() {
@@ -1735,12 +2116,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final d = await Prefs.getInt('display_mode');
     final sw = await Prefs.getInt('swap_ab');
     final a = await Prefs.get('art_autofetch');
+    final asv = await Prefs.get('autosave');
     if (!mounted) return;
     setState(() {
       _filter = (f ?? 0).clamp(0, kFilterNames.length - 1);
       _display = (d ?? 0).clamp(0, kDisplayNames.length - 1);
       _swapAB = (sw ?? 0) != 0;
       _autoArt = a != '0';
+      _autoSave = asv != '0';
     });
   }
 
@@ -1765,6 +2148,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (_row == 3) {
       setState(() => _autoArt = !_autoArt);
       Prefs.set('art_autofetch', _autoArt ? '1' : '0');
+    } else if (_row == 4) {
+      setState(() => _autoSave = !_autoSave);
+      Prefs.set('autosave', _autoSave ? '1' : '0');
     }
   }
 
@@ -1782,7 +2168,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 4) {
+      if (_row == 5) {
         Navigator.pop(context);
       } else {
         _adjust(1);
@@ -1894,6 +2280,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: _autoArt ? 'On' : 'Off',
                     hint: 'Fetches cover art automatically when a new game shows up',
                   ),
+                  _settingRow(
+                    index: 4,
+                    label: 'Auto-save',
+                    value: _autoSave ? 'On' : 'Off',
+                    hint: 'Saves your game every minute and when you exit, so you never lose progress',
+                  ),
                   GestureDetector(
                     onTap: () => Navigator.pop(context),
                     child: AnimatedContainer(
@@ -1906,8 +2298,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 4 ? Colors.white : Colors.white12,
-                          width: _row == 4 ? 3 : 1,
+                              _row == 5 ? Colors.white : Colors.white12,
+                          width: _row == 5 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
@@ -2324,6 +2716,9 @@ class _GameGridScreenState extends State<GameGridScreen> {
                       ],
                     ),
                   ),
+                  // Breathing room so the focused tile (which scales
+                  // up) never runs into the search bar above it.
+                  const SizedBox(height: 14),
                   Expanded(
                     child: _games.isEmpty
                         ? Center(
