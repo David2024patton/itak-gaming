@@ -4,29 +4,29 @@ package core
 type System string
 
 const (
-	SystemNES      System = "nes"
-	SystemSNES     System = "snes"
-	SystemGenesis  System = "genesis"
-	SystemGameBoy  System = "gameboy"
-	SystemGBC      System = "gbc"
-	SystemGBA      System = "gba"
-	SystemPS1      System = "ps1"
-	SystemSegaCD   System = "segacd"
-	SystemN64      System = "n64"
+	SystemNES       System = "nes"
+	SystemSNES      System = "snes"
+	SystemGenesis   System = "genesis"
+	SystemGameBoy   System = "gameboy"
+	SystemGBC       System = "gbc"
+	SystemGBA       System = "gba"
+	SystemPS1       System = "ps1"
+	SystemSegaCD    System = "segacd"
+	SystemN64       System = "n64"
 	SystemDreamcast System = "dreamcast"
-	SystemPSP      System = "psp"
-	SystemDS       System = "ds"
-	SystemSaturn   System = "saturn"
-	SystemWii      System = "wii"
+	SystemPSP       System = "psp"
+	SystemDS        System = "ds"
+	SystemSaturn    System = "saturn"
+	SystemWii       System = "wii"
 )
 
 // CoreInfo describes an emulator core
 type CoreInfo struct {
-	System   System
-	Name     string // e.g. "Snes9x"
-	Library  string // e.g. "libsnes9x.so"
+	System     System
+	Name       string   // e.g. "Snes9x"
+	Library    string   // e.g. "libsnes9x.so"
 	Extensions []string // e.g. [".sfc", ".smc"]
-	Bitness  int    // 32 or 64 (minimum required)
+	Bitness    int      // 32 or 64 (minimum required)
 }
 
 // SupportedCores lists all cores by platform
