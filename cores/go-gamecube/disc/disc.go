@@ -337,6 +337,18 @@ func (img *Image) Files() ([]FileEntry, error) {
 	return out, nil
 }
 
+// ReadAt copies disc bytes starting at byte offset off
+// into dst and returns how many bytes were copied (fewer
+// at the end of the image, zero beyond it). It serves the
+// DI drive model in the system package, which reads raw
+// sectors anywhere on the disc.
+func (img *Image) ReadAt(off uint32, dst []byte) int {
+	if off >= uint32(len(img.data)) {
+		return 0
+	}
+	return copy(dst, img.data[off:])
+}
+
 // Extract returns the bytes of the FST file at path (with
 // or without a leading slash).
 func (img *Image) Extract(path string) ([]byte, error) {
