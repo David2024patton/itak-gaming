@@ -224,6 +224,18 @@ func (c *Controller) SetButtons(mask uint32) { c.buttons = mask & 0xFFFF }
 // right stick X/Y, then left stick X/Y.
 func (c *Controller) SetAnalog(rx, ry, lx, ly uint8) { c.rx, c.ry, c.lx, c.ly = rx, ry, lx, ly }
 
+// SetAnalogMode forces the pad's analog mode from the host side.
+// Guest software normally enters analog mode through the config
+// sequence (the 44h LED command); a frontend that always presents
+// an analog pad sets it here instead. Poll responses then carry
+// the 73h ID and the stick bytes, and the digital buttons still
+// read normally.
+func (c *Controller) SetAnalogMode(b bool) { c.analogMode = b }
+
+// AnalogMode reports whether the pad answers polls as an analog
+// pad (73h) or a digital pad (41h).
+func (c *Controller) AnalogMode() bool { return c.analogMode }
+
 // CardImage returns the live 128 KB card image. Mutations made by the
 // card protocol are visible to the caller and vice versa.
 func (c *Controller) CardImage() []byte { return c.card }
