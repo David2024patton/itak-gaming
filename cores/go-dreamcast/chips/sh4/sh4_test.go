@@ -813,23 +813,88 @@ func TestIllegalAndPrivileged(t *testing.T) {
 }
 
 func TestInterruptModel(t *testing.T) {
-	c, _ := newTestCPU()
-	c.VBR = 0xA0001000
+	park := func(c *CPU, mem *testMem) {
+		// NOP sled at the parked PC so a non-accepting Step just
+		// advances one instruction.
+		for i := 0; i < 8; i++ {
+			mem.Write16((codeBase+0x40+uint32(2*i))&0x1FFFFFFF, 0x0009)
+		}
+		c.VBR = 0xA0001000
+		c.PC = codeBase + 0x40
+	}
+
+	// IMASK gates acceptance: the post-boot SR has IMASK 15, so a
+	// level 6 request latches as pending but is not taken.
+	c, mem := newTestCPU()
+	park(c, mem)
+	c.RaiseInterrupt(0x320, 6)
+	c.Step()
+	if c.PC != codeBase+0x42 || c.INTEVT == 0x320 {
+		t.Errorf("masked interrupt taken: PC=%#x INTEVT=%#x", c.PC, c.INTEVT)
+	}
+	if code, level, valid := c.PendingInterrupt(); !valid || code != 0x320 || level != 6 {
+		t.Errorf("pending = (%#x, %d, %v), want (0x320, 6, true)", code, level, valid)
+	}
+	// The request survives a serialize round trip.
+	c2, _ := newTestCPU()
+	if !c2.Deserialize(c.Serialize()) {
+		t.Fatal("Deserialize of the pending state failed")
+	}
+	if code, level, valid := c2.PendingInterrupt(); !valid || code != 0x320 || level != 6 {
+		t.Errorf("restored pending = (%#x, %d, %v), want (0x320, 6, true)", code, level, valid)
+	}
+	// Drop IMASK to 3 and the request is accepted at the next
+	// instruction boundary.
 	c.PC = codeBase + 0x40
-	c.RaiseInterrupt(0x123)
-	if c.INTEVT != 0x123 {
-		t.Errorf("INTEVT=%#x, want 0x123", c.INTEVT)
+	c.SR = 0x40000030 // MD set, IMASK 3
+	c.Step()
+	if c.INTEVT != 0x320 {
+		t.Errorf("INTEVT=%#x, want 0x320", c.INTEVT)
 	}
 	if c.PC != 0xA0001000+0x600 || c.SPC != codeBase+0x40 {
 		t.Errorf("interrupt vector: PC=%#x SPC=%#x", c.PC, c.SPC)
 	}
-	// With BL set the interrupt is recorded but not taken.
-	c, _ = newTestCPU()
-	c.SR |= srBL
+	if _, _, valid := c.PendingInterrupt(); valid {
+		t.Error("pending request still latched after acceptance")
+	}
+	if c.SR&srBL == 0 {
+		t.Error("BL not set on interrupt entry")
+	}
+
+	// BL blocks acceptance even at level 15 with IMASK 0, until it
+	// clears.
+	c, mem = newTestCPU()
+	park(c, mem)
+	c.SR = 0x40000000 | srBL
+	c.RaiseInterrupt(0x200, 15)
+	c.Step()
+	if c.PC != codeBase+0x42 || c.INTEVT == 0x200 {
+		t.Errorf("BL-blocked interrupt taken: PC=%#x INTEVT=%#x", c.PC, c.INTEVT)
+	}
+	c.SR &^= srBL
 	c.PC = codeBase + 0x40
-	c.RaiseInterrupt(0x200)
-	if c.INTEVT != 0x200 || c.PC != codeBase+0x40 {
-		t.Errorf("blocked interrupt: INTEVT=%#x PC=%#x", c.INTEVT, c.PC)
+	c.Step()
+	if c.INTEVT != 0x200 || c.PC != 0xA0001000+0x600 {
+		t.Errorf("unblocked interrupt: PC=%#x INTEVT=%#x", c.PC, c.INTEVT)
+	}
+
+	// Withdrawal drops a latched request before acceptance.
+	c, mem = newTestCPU()
+	park(c, mem)
+	c.SR = 0x40000000
+	c.RaiseInterrupt(0x320, 6)
+	c.WithdrawInterrupt()
+	c.Step()
+	if c.PC != codeBase+0x42 || c.INTEVT == 0x320 {
+		t.Errorf("withdrawn interrupt taken: PC=%#x INTEVT=%#x", c.PC, c.INTEVT)
+	}
+
+	// A lower level request does not displace a latched higher one.
+	c, _ = newTestCPU()
+	c.RaiseInterrupt(0x320, 6)
+	c.RaiseInterrupt(0x3A0, 2)
+	if code, level, _ := c.PendingInterrupt(); code != 0x320 || level != 6 {
+		t.Errorf("pending after lower raise = (%#x, %d), want (0x320, 6)", code, level)
 	}
 }
 
