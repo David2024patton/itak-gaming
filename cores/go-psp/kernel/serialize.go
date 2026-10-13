@@ -15,11 +15,16 @@ import (
 // bytes.
 
 const kernelStateMagic = "PSPK"
-const kernelStateVersion = 2
+
+// kernelStateVersion 3 (PSP-4) appends the sceAudio block
+// (channels, mixer position, output ring, routing modes) after
+// the file descriptor block. Version 2 blobs are rejected.
+const kernelStateVersion = 3
 
 type stateWriter struct{ buf []byte }
 
 func (w *stateWriter) u8(v uint8)   { w.buf = append(w.buf, v) }
+func (w *stateWriter) i16(v int16)  { w.u32(uint32(uint16(v))) }
 func (w *stateWriter) u32(v uint32) { w.buf = binary.LittleEndian.AppendUint32(w.buf, v) }
 func (w *stateWriter) i32(v int32)  { w.u32(uint32(v)) }
 func (w *stateWriter) u64(v uint64) { w.buf = binary.LittleEndian.AppendUint64(w.buf, v) }
@@ -296,6 +301,33 @@ func (k *Kernel) Serialize() []byte {
 		w.i32(int32(f.dirIdx))
 		w.str(f.dirPath)
 	}
+
+	// sceAudio block (version 3).
+	w.u64(k.audioMixed)
+	w.u32(uint32(len(k.audioOut)))
+	for _, s := range k.audioOut {
+		w.i16(s)
+	}
+	w.i32(k.audioRoutingMode)
+	w.i32(k.audioRoutingVolMode)
+	for i := range k.audioChans {
+		c := &k.audioChans[i]
+		w.boolean(c.reserved)
+		w.u32(c.sampleCount)
+		w.u32(c.format)
+		w.i32(c.leftVol)
+		w.i32(c.rightVol)
+		w.u32(c.addr)
+		w.u32(c.remaining)
+		var waiterUID uint32
+		if c.waiter != nil {
+			waiterUID = c.waiter.uid
+		}
+		w.u32(waiterUID)
+		w.u32(c.waitAddr)
+		w.i32(c.waitLeftVol)
+		w.i32(c.waitRightVol)
+	}
 	return w.buf
 }
 
@@ -523,6 +555,37 @@ func (k *Kernel) Deserialize(data []byte) error {
 		f.dirIdx = int(r.i32())
 		f.dirPath = r.str()
 		k.fds[id] = f
+	}
+
+	// sceAudio block (version 3).
+	k.audioMixed = r.u64()
+	if n := int(r.u32()); n > 0 {
+		k.audioOut = make([]int16, n)
+		for i := range k.audioOut {
+			k.audioOut[i] = int16(uint16(r.u32()))
+		}
+	} else {
+		k.audioOut = nil
+	}
+	k.audioRoutingMode = r.i32()
+	k.audioRoutingVolMode = r.i32()
+	for i := range k.audioChans {
+		c := &k.audioChans[i]
+		c.reserved = r.boolean()
+		c.sampleCount = r.u32()
+		c.format = r.u32()
+		c.leftVol = r.i32()
+		c.rightVol = r.i32()
+		c.addr = r.u32()
+		c.remaining = r.u32()
+		waiterUID := r.u32()
+		c.waitAddr = r.u32()
+		c.waitLeftVol = r.i32()
+		c.waitRightVol = r.i32()
+		c.waiter = nil
+		if waiterUID != 0 {
+			c.waiter = k.threads[waiterUID]
+		}
 	}
 	if r.err != nil {
 		return r.err
