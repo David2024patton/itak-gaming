@@ -1,1 +1,1 @@
-Game Boy, Game Boy Advance and PlayStation games now load and play (engine fixes under the hood). CD games also get a system folder for BIOS files at /sdcard/iTaK/system.
+Leaderboard fixed for the remote: UP reaches the top bar (Back, Local, Global) and DOWN browses the board. Local/Global moved into the top bar. Board rows are smaller so more players fit on screen. Players now add a middle initial, a last initial, and a home state, and the boards show them. Online and lobby screens cleaned up. The little underline under the home tabs is gone.
