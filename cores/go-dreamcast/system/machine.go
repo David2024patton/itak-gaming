@@ -1,24 +1,34 @@
 // Package system wires the Dreamcast parts into a running machine:
 // the SH-4 CPU from chips/sh4, the physical bus, a GD-ROM image
-// from the gd package, the Holly interrupt controller, and the
-// PowerVR2 from the pvr package (DC-2).
+// from the gd package, the Holly interrupt controller, the
+// PowerVR2 from the pvr package (DC-2), and, since DC-3, the
+// AICA sound block with its ARM7 CPU, the Maple controller bus,
+// and the G2 DMA controller.
 //
 // Timing model: the CPU charges one cycle per instruction and a
 // frame is a fixed budget of FrameCycles (200 MHz divided by 60).
 // RunFrame advances the CPU in scanline-sized chunks and steps
 // the SPG between chunks, so vblank and hblank interrupts are
-// delivered at line accuracy inside the frame. The framebuffer
-// is the PVR display output (FB_R_SOF1 presented per FB_R_CTRL),
-// composed at the end of each RunFrame. The pad state is stored
-// but not yet delivered to a game: the Maple bus that carries it
-// arrives in DC-3.
+// delivered at line accuracy inside the frame. The AICA advances
+// in the same chunk rhythm from an exact rational accumulator:
+// AICA master cycles = SH-4 cycles * 225792 / 2000000 (the
+// 22.5792 MHz AICA master against the 200 MHz SH-4 clock). The
+// framebuffer is the PVR display output (FB_R_SOF1 presented per
+// FB_R_CTRL), composed at the end of each RunFrame. Controller
+// state set with SetButtons is delivered to games over the Maple
+// bus on port 0.
 package system
 
 import (
+	"encoding/binary"
+
+	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/aica"
 	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/chips/sh4"
+	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/g2dma"
 	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/gd"
 	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/holly"
+	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/maple"
 	"github.com/davidpatton/itak-gaming/cores/go-dreamcast/pvr"
 )
 
@@ -58,9 +68,39 @@ type PadState struct {
 }
 
 // stateVersion is byte 0 of a serialized machine state. Version
-// 2 (DC-2) appends the Holly controller state and the variable
-// length PVR state after the DC-1 sections.
-const stateVersion = 0x02
+// 3 (DC-3) appends the AICA state (including the ARM7 CPU), the
+// Maple state (including the VMU images), the G2 DMA state, and
+// a small machine tail (the AICA clock accumulator remainder
+// and the Maple vblank trigger edge state) after the DC-2
+// sections.
+const stateVersion = 0x03
+
+// machineTailSize is the size of the trailing machine block:
+// the AICA clock accumulator remainder (u64) and the Maple
+// vblank trigger edge flag (u64, 0 or 1). Both steer future
+// stepping, so both are part of the state.
+const machineTailSize = 16
+
+// aicaHolly adapts the Holly controller to the AICA's external
+// interrupt sink (the AICA raises ISTEXT bit 1).
+type aicaHolly struct{ h *holly.Controller }
+
+func (s aicaHolly) RaiseExternal(bits uint32) { s.h.Raise(holly.BankExternal, bits) }
+func (s aicaHolly) ClearExternal(bits uint32) { s.h.ClearExternal(bits) }
+
+// mapleHolly adapts the Holly controller to the Maple event sink
+// (Maple DMA completion raises the ISTNRM Maple DMA done event).
+type mapleHolly struct{ h *holly.Controller }
+
+func (s mapleHolly) RaiseNormal(bits uint32) { s.h.Raise(holly.BankNormal, bits) }
+func (s mapleHolly) ClearNormal(bits uint32) {
+	s.h.Write32(0x005F6900, bits)
+}
+
+// g2Holly adapts the Holly controller to the G2 DMA event sink.
+type g2Holly struct{ h *holly.Controller }
+
+func (s g2Holly) RaiseNormal(bits uint32) { s.h.Raise(holly.BankNormal, bits) }
 
 // Machine is one powered-on Dreamcast.
 type Machine struct {
@@ -69,22 +109,47 @@ type Machine struct {
 	Disc  *gd.Image
 	PVR   *pvr.PVR
 	Holly *holly.Controller
+	AICA  *aica.AICA
+	Maple *maple.Maple
+	G2DMA *g2dma.Controller
 
 	framebuffer []uint32
 	pad         PadState
 	discPath    string
+
+	// aicaAcc is the numerator remainder of the SH-4 to AICA
+	// master cycle conversion (denominator 2000000).
+	aicaAcc uint64
+	// vblankOut tracks the previous Holly vblank-out bit so the
+	// Maple hardware trigger fires once per vblank-out edge.
+	vblankOut bool
 }
 
 // New builds a machine (bus plus CPU) and resets the CPU. The
 // Holly controller presents interrupts to the CPU; the PVR owns
 // its register window, its two FIFO ports, and the shared VRAM.
+// The AICA owns its register window, its RTC window, and the
+// shared AICA RAM slice (which stays bus-owned for DMA and state
+// serialization). The Maple controller and the G2 DMA controller
+// own their register windows.
 func New() *Machine {
 	b := bus.New()
 	cpu := sh4.New(b)
 	h := holly.New(cpu)
 	p := pvr.New(b.VRAM, h)
+	snd := aica.New(b.AICARAM, aicaHolly{h})
+	mp := maple.New(b, mapleHolly{h})
+	g2 := g2dma.New(b, snd, g2Holly{h})
+	// Attach order is priority order: the TA FIFO range spans
+	// 0x00500000 to 0x00600000, which contains the Holly, Maple,
+	// G2, and PVR register windows, so every register device
+	// must attach before the two FIFO ports.
 	b.Attach(0x005F6900, 0x005F6940, h, false)
 	b.Attach(0x005F8000, 0x005FA000, p, false)
+	b.Attach(0x005F6C00, 0x005F6D00, mp, false)
+	b.Attach(0x005F7800, 0x005F7900, g2, false)
+	b.Attach(0x00700000, 0x00708000, snd, false)
+	b.Attach(0x00710000, 0x0071000C, snd, false)
 	b.Attach(0x00500000, 0x00600000, p.TAPort(), true)
 	b.Attach(0x00600000, 0x00601000, p.YUVPort(), true)
 	m := &Machine{
@@ -92,8 +157,14 @@ func New() *Machine {
 		CPU:         cpu,
 		PVR:         p,
 		Holly:       h,
+		AICA:        snd,
+		Maple:       mp,
+		G2DMA:       g2,
 		framebuffer: make([]uint32, Width*Height),
 		pad:         PadState{JoyX: 128, JoyY: 128},
+	}
+	for port := 0; port < 4; port++ {
+		mp.SetPad(port, maple.PadState{JoyX: 128, JoyY: 128})
 	}
 	m.CPU.Reset()
 	return m
@@ -136,8 +207,11 @@ func (m *Machine) SetPC(va uint32) { m.CPU.PC = va }
 // RunFrame runs one frame of CPU time. The CPU advances in
 // scanline-sized chunks with the SPG stepped between chunks, so
 // SPG interrupts pend and are accepted inside the frame at line
-// accuracy. At the end of the frame the PVR display output is
-// composed into the framebuffer.
+// accuracy. The AICA advances in the same chunk rhythm by the
+// exact clock ratio. A rising edge of the vblank-out event fires
+// the Maple hardware trigger for tables programmed with
+// SB_MDTSEL = 1. At the end of the frame the PVR display output
+// is composed into the framebuffer.
 func (m *Machine) RunFrame() {
 	remaining := FrameCycles
 	for remaining > 0 {
@@ -147,10 +221,41 @@ func (m *Machine) RunFrame() {
 		}
 		m.CPU.Run(chunk)
 		m.PVR.Advance(chunk)
+		m.advanceAICA(chunk)
+		m.pollMapleTrigger()
 		remaining -= chunk
 	}
 	m.PVR.Present(m.framebuffer, Width, Height)
 }
+
+// advanceAICA converts a span of SH-4 cycles to AICA master
+// cycles with the exact ratio 225792/2000000 and steps the sound
+// block, carrying the remainder so long runs drift by zero.
+func (m *Machine) advanceAICA(sh4Cycles int) {
+	m.aicaAcc += uint64(sh4Cycles) * 225792
+	master := int(m.aicaAcc / 2000000)
+	m.aicaAcc %= 2000000
+	if master > 0 {
+		m.AICA.AdvanceMaster(master)
+	}
+}
+
+// pollMapleTrigger fires the Maple vblank-triggered transfer
+// once per vblank-out event edge.
+func (m *Machine) pollMapleTrigger() {
+	out := m.Holly.Status(holly.BankNormal)&(1<<holly.EvtVBlankOut) != 0
+	if out && !m.vblankOut {
+		m.Maple.OnVblankOut()
+	}
+	m.vblankOut = out
+}
+
+// AudioBuffer drains the stereo samples the AICA produced since
+// the last call, at AudioSampleRate.
+func (m *Machine) AudioBuffer() [][2]int16 { return m.AICA.AudioBuffer() }
+
+// AudioSampleRate is the AICA output sample rate.
+func (m *Machine) AudioSampleRate() int { return aica.AudioSampleRate() }
 
 // Framebuffer returns the 640 by 480 XRGB8888 frame, composed
 // from the PVR display framebuffer at the end of RunFrame. Before
@@ -158,20 +263,32 @@ func (m *Machine) RunFrame() {
 // machine's own buffer.
 func (m *Machine) Framebuffer() []uint32 { return m.framebuffer }
 
-// SetButtons records the current controller state. DC-3 delivers
-// it to games over the Maple bus; this slice only stores it.
-func (m *Machine) SetButtons(p PadState) { m.pad = p }
+// SetButtons records the current controller state and feeds it
+// to the Maple controller on port 0.
+func (m *Machine) SetButtons(p PadState) {
+	m.pad = p
+	m.Maple.SetPad(0, maple.PadState{
+		Buttons:  p.Mask,
+		TriggerL: p.TriggerL,
+		TriggerR: p.TriggerR,
+		JoyX:     p.JoyX,
+		JoyY:     p.JoyY,
+	})
+}
 
 // Buttons returns the last controller state set with SetButtons.
 func (m *Machine) Buttons() PadState { return m.pad }
 
 // fixedStateSize is the byte size of every section of a machine
-// state except the trailing PVR section, whose length depends on
-// the TA scene it holds.
+// state except the PVR section, whose length depends on the TA
+// scene it holds. The AICA, Maple, and G2 DMA blocks are fixed
+// size and sit after the PVR section.
 func (m *Machine) fixedStateSize() int {
 	return 1 + sh4.SerializeSize +
 		len(m.Bus.RAM) + len(m.Bus.VRAM) + len(m.Bus.Flash) + len(m.Bus.AICARAM) +
-		holly.SerializeSize
+		holly.SerializeSize +
+		aica.SerializeSize + maple.SerializeSize + g2dma.SerializeSize +
+		machineTailSize
 }
 
 // StateSize is the exact byte size of a serialized machine state
@@ -182,7 +299,7 @@ func (m *Machine) StateSize() int {
 
 // Serialize captures the whole machine state. Layout:
 //
-//	byte 0        version (0x02)
+//	byte 0        version (0x03)
 //	bytes 1..     CPU state (sh4.SerializeSize bytes)
 //	then          main RAM   (len(Bus.RAM) bytes)
 //	then          VRAM       (len(Bus.VRAM) bytes)
@@ -190,6 +307,10 @@ func (m *Machine) StateSize() int {
 //	then          AICA RAM   (len(Bus.AICARAM) bytes)
 //	then          Holly state (holly.SerializeSize bytes)
 //	then          PVR state (variable length, see pvr.Serialize)
+//	then          AICA state (aica.SerializeSize bytes, with ARM)
+//	then          Maple state (maple.SerializeSize bytes)
+//	then          G2 DMA state (g2dma.SerializeSize bytes)
+//	then          machine tail (machineTailSize bytes)
 //
 // The register stub storage of the remaining stub ranges is not
 // part of the state: those registers have no behaviour yet, so
@@ -210,7 +331,19 @@ func (m *Machine) Serialize() []byte {
 	off += len(m.Bus.AICARAM)
 	copy(out[off:], m.Holly.Serialize())
 	off += holly.SerializeSize
+	pvrLen := m.PVR.SerializeSize()
 	copy(out[off:], m.PVR.Serialize())
+	off += pvrLen
+	m.AICA.Serialize(out[off:])
+	off += aica.SerializeSize
+	m.Maple.Serialize(out[off:])
+	off += maple.SerializeSize
+	m.G2DMA.Serialize(out[off:])
+	off += g2dma.SerializeSize
+	binary.LittleEndian.PutUint64(out[off:], m.aicaAcc)
+	if m.vblankOut {
+		binary.LittleEndian.PutUint64(out[off+8:], 1)
+	}
 	return out
 }
 
@@ -224,8 +357,11 @@ func (m *Machine) Deserialize(b []byte) bool {
 	if len(b) < fixed || b[0] != stateVersion {
 		return false
 	}
-	tail := b[fixed:]
-	if pvr.SerializedSize(tail) != len(tail) {
+	head := 1 + sh4.SerializeSize +
+		len(m.Bus.RAM) + len(m.Bus.VRAM) + len(m.Bus.Flash) + len(m.Bus.AICARAM) +
+		holly.SerializeSize
+	pvrLen := len(b) - fixed
+	if pvr.SerializedSize(b[head:head+pvrLen]) != pvrLen {
 		return false
 	}
 	off := 1
@@ -245,5 +381,23 @@ func (m *Machine) Deserialize(b []byte) bool {
 		return false
 	}
 	off += holly.SerializeSize
-	return m.PVR.Deserialize(b[off:])
+	if !m.PVR.Deserialize(b[off : off+pvrLen]) {
+		return false
+	}
+	off += pvrLen
+	if !m.AICA.Deserialize(b[off : off+aica.SerializeSize]) {
+		return false
+	}
+	off += aica.SerializeSize
+	if !m.Maple.Deserialize(b[off : off+maple.SerializeSize]) {
+		return false
+	}
+	off += maple.SerializeSize
+	if !m.G2DMA.Deserialize(b[off : off+g2dma.SerializeSize]) {
+		return false
+	}
+	off += g2dma.SerializeSize
+	m.aicaAcc = binary.LittleEndian.Uint64(b[off:])
+	m.vblankOut = binary.LittleEndian.Uint64(b[off+8:]) != 0
+	return true
 }
