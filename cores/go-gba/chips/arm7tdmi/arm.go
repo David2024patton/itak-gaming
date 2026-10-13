@@ -65,7 +65,14 @@ func (c *CPU) execARM(instr uint32) int {
 		return 3
 
 	case (instr>>24)&0xF == 0xF:
-		// Software interrupt.
+		// Software interrupt: the system hook (BIOS HLE) gets
+		// first refusal with the raw 24-bit comment field;
+		// unhandled calls take the real exception.
+		if c.SWIHook != nil {
+			if n, ok := c.SWIHook(c, instr&0xFFFFFF); ok {
+				return n
+			}
+		}
 		return c.exception(0x08, ModeSVC, addr+4)
 	}
 
