@@ -181,6 +181,7 @@ type Session struct {
 	watchMaxPair      int // highest frame holding both seats' inputs
 	watchGoneHost     bool
 	watchGoneGuest    bool
+	watchNeedSync     bool // a fresh snapshot is owed (match ended)
 	lastWatchSync     time.Time
 	lastWatchStep     time.Time // last frame delivered or snapshot applied
 
@@ -212,6 +213,18 @@ type Session struct {
 	// capped. Guarded by mu like the rest.
 	signalQueue []SignalMessage
 	signalSeq   int // seq of the most recent entry, 0 when empty
+
+	// match end and seat assignment (matchend.go, seats.go):
+	// the most recent match_end's reason and whether the UI
+	// has yet to collect it, plus the queue of seat calls the
+	// host referee has made. Guarded by mu like the rest.
+	matchEndReason string
+	matchEndSet    bool
+	seatAssigns    []SeatAssign
+
+	// started reports whether Start has launched the reader;
+	// StartNextMatch refuses to run without it.
+	started bool
 
 	// pause state: while either side is paused, lockstep stalls
 	// by design and the silence limit does not apply.
@@ -345,7 +358,35 @@ func (s *Session) helloEnv() envelope {
 // the session setup handshake (section 4.1), returning once both
 // sides are ready to step frames from 0.
 func (s *Session) Start() error {
+	s.mu.Lock()
+	s.started = true
+	s.mu.Unlock()
 	go s.reader()
+	return s.beginMatch()
+}
+
+// StartNextMatch runs the room and the setup handshake again on
+// a session a match_end already returned to the room
+// (PROTOCOL.md section 4.9): the socket, the reader, and the
+// room membership all survive a match, so the next one needs
+// no new connection, just the same ritual as the first. It
+// refuses to run while a match is live or the session is over.
+func (s *Session) StartNextMatch() error {
+	if s.watch {
+		return errors.New("a spectator has no match to start")
+	}
+	s.mu.Lock()
+	ready := s.started && s.phase == phaseRoom && !s.ended
+	s.mu.Unlock()
+	if !ready {
+		return errors.New("the session is not waiting in the room")
+	}
+	return s.beginMatch()
+}
+
+// beginMatch is the shared body of Start and StartNextMatch:
+// the waiting room ritual, then the setup handshake.
+func (s *Session) beginMatch() error {
 	if err := s.roomPhase(); err != nil {
 		return err
 	}
