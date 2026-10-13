@@ -245,7 +245,7 @@ const List<SystemInfo> kSystems = [
     name: 'Sega Genesis',
     tagline: 'Genesis · 1989',
     color: Color(0xFF1565C0),
-    core: 'libgenesis_plus_gx.so',
+    core: 'libgo_genesis.so',
     dir: 'Genesis',
     exts: ['.md', '.gen', '.bin'],
     thumbRepo: 'Sega_-_Mega_Drive_-_Genesis',
