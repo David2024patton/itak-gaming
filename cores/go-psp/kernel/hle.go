@@ -130,6 +130,41 @@ func buildRegistry() map[modNid]syscallEntry {
 	reg("scePower", 0xFDB5BFE9, "scePowerGetCpuClockFrequencyInt", hlePowerGetCpuClock)
 	reg("scePower", 0xEFD3C963, "scePowerTick", hlePowerTick)
 
+	// sceAudio (PSP-4; handlers in hle_audio.go, engine in
+	// audio.go). The sceAudioOutput2 and sceAudioSRCCh families
+	// are deliberately NOT registered: they share one hardware
+	// channel whose documented behavior includes arbitrary
+	// input sample rates with conversion and a two-descriptor
+	// queue, so they stay on the unknown-NID path (see README).
+	const au = "sceAudio"
+	reg(au, 0x80F1F7E0, "sceAudioInit", hleAudioInit)
+	reg(au, 0x210567F7, "sceAudioEnd", hleAudioEnd)
+	reg(au, 0xA2BEAA6C, "sceAudioSetFrequency", hleAudioSetFrequency)
+	reg(au, 0x927AC32B, "sceAudioSetVolumeOffset", hleNoopSuccess)
+	reg(au, 0x8C1009B2, "sceAudioOutput", hleAudioOutput)
+	reg(au, 0x136CAF51, "sceAudioOutputBlocking", hleAudioOutputBlocking)
+	reg(au, 0xE2D56B2D, "sceAudioOutputPanned", hleAudioOutputPanned)
+	reg(au, 0x13F592BC, "sceAudioOutputPannedBlocking", hleAudioOutputPannedBlocking)
+	reg(au, 0x5EC81C55, "sceAudioChReserve", hleAudioChReserve)
+	reg(au, 0x6FC46853, "sceAudioChRelease", hleAudioChRelease)
+	reg(au, 0xE9D97901, "sceAudioGetChannelRestLen", hleAudioGetChannelRestLen)
+	reg(au, 0xB011922F, "sceAudioGetChannelRestLength", hleAudioGetChannelRestLength)
+	reg(au, 0xCB2E439E, "sceAudioSetChannelDataLen", hleAudioSetChannelDataLen)
+	reg(au, 0x95FD0C2D, "sceAudioChangeChannelConfig", hleAudioChangeChannelConfig)
+	reg(au, 0xB7E1D8E7, "sceAudioChangeChannelVolume", hleAudioChangeChannelVolume)
+	reg(au, 0x41EFADE7, "sceAudioOneshotOutput", hleAudioOneshotOutput)
+	reg(au, 0x7DE61688, "sceAudioInputInit", hleAudioInputInit)
+	reg(au, 0xE926D3FB, "sceAudioInputInitEx", hleAudioInputInit)
+	reg(au, 0x6D4BEC68, "sceAudioInput", hleAudioInput)
+	reg(au, 0x086E5895, "sceAudioInputBlocking", hleAudioInput)
+	reg(au, 0xA708C6A6, "sceAudioGetInputLength", hleAudioGetInputLength)
+	reg(au, 0xA633048E, "sceAudioPollInputEnd", hleNoopSuccess)
+	reg(au, 0x87B2E651, "sceAudioWaitInputEnd", hleNoopSuccess)
+	reg(au, 0x36FD8AA9, "sceAudioRoutingSetMode", hleAudioRoutingSetMode)
+	reg(au, 0x39240E7D, "sceAudioRoutingGetMode", hleAudioRoutingGetMode)
+	reg(au, 0xBB548475, "sceAudioRoutingSetVolumeMode", hleAudioRoutingSetVolumeMode)
+	reg(au, 0x28235C56, "sceAudioRoutingGetVolumeMode", hleAudioRoutingGetVolumeMode)
+
 	// sceRtc
 	reg("sceRtc", 0x3F7AD767, "sceRtcGetCurrentTick", hleRtcGetCurrentTick)
 
