@@ -27,6 +27,11 @@
 //     from the saturated quotient, truncated to 32 bits. The divide by
 //     zero remainder follows the documented partial behaviour instead:
 //     the dividend shifted right 29 places, arithmetic.
+//   - Since SAT-2 the VDP1 frame buffer storage holds both 256 KiB
+//     banks. The CPU window at 0x05C80000 maps the current draw bank
+//     only, matching the hardware rule that the display bank is not
+//     CPU accessible. SetVDP1DrawBank selects the mapped bank; the
+//     system flips it when the VDP1 swaps banks at a frame change.
 package bus
 
 import "math"
@@ -226,6 +231,7 @@ type Bus struct {
 	scspRegs []byte
 	vdp1VRAM []byte
 	vdp1FB   []byte
+	vdp1Draw int
 	vdp1Regs [128]byte
 	vdp2VRAM []byte
 	vdp2CRAM []byte
@@ -246,7 +252,7 @@ func New() *Bus {
 		soundRAM: make([]byte, 512<<10),
 		scspRegs: make([]byte, 4<<10),
 		vdp1VRAM: make([]byte, 512<<10),
-		vdp1FB:   make([]byte, 256<<10),
+		vdp1FB:   make([]byte, 512<<10),
 		vdp2VRAM: make([]byte, 512<<10),
 		vdp2CRAM: make([]byte, 4<<10),
 	}
@@ -271,6 +277,47 @@ func (b *Bus) WorkRAMHigh() []byte { return b.workHigh }
 // BackupRAM returns the 32 KiB logical backup data store. This is the
 // packed data, not the odd byte window layout seen on the bus.
 func (b *Bus) BackupRAM() []byte { return b.backup }
+
+// VDP1VRAM returns the 512 KiB VDP1 VRAM backing store. The vdp1
+// package wraps this slice; writes through the slice are visible
+// through the bus and the other way around.
+func (b *Bus) VDP1VRAM() []byte { return b.vdp1VRAM }
+
+// VDP1Framebuffer returns the full VDP1 frame buffer storage: two
+// 256 KiB banks, bank 0 first. The CPU window maps only the draw
+// bank (see SetVDP1DrawBank); this accessor exists for the vdp1
+// package and for save states.
+func (b *Bus) VDP1Framebuffer() []byte { return b.vdp1FB }
+
+// SetVDP1DrawBank selects which frame buffer bank the CPU window at
+// 0x05C80000 maps: 0 or 1. Other values are ignored. The vdp1
+// package owns the bank state; the system calls this after a frame
+// change so CPU accesses follow the swap.
+func (b *Bus) SetVDP1DrawBank(bank int) {
+	if bank == 0 || bank == 1 {
+		b.vdp1Draw = bank
+	}
+}
+
+// VDP1DrawBank reports the bank the CPU frame buffer window maps.
+func (b *Bus) VDP1DrawBank() int { return b.vdp1Draw }
+
+// VDP1Registers returns the 128 byte VDP1 register page backing.
+func (b *Bus) VDP1Registers() []byte { return b.vdp1Regs[:] }
+
+// VDP2VRAM returns the 512 KiB VDP2 VRAM backing store.
+func (b *Bus) VDP2VRAM() []byte { return b.vdp2VRAM }
+
+// VDP2CRAM returns the 4 KiB VDP2 color RAM backing store. The raw
+// bytes live here; the vdp2 package applies the CRAM mode address
+// rules on its read path.
+func (b *Bus) VDP2CRAM() []byte { return b.vdp2CRAM }
+
+// VDP2Registers returns the 512 byte VDP2 register page backing.
+func (b *Bus) VDP2Registers() []byte { return b.vdp2Regs[:] }
+
+// SCURegisters returns the 256 byte SCU register page backing.
+func (b *Bus) SCURegisters() []byte { return b.scuRegs[:] }
 
 // CaptureEvent reports whether the given CPU has a pending FRT
 // capture flag raised by a 16 bit write to the other CPU MINIT or
@@ -392,7 +439,7 @@ func (b *Bus) read8At(masked uint32) uint8 {
 	case masked < 0x05C80000:
 		return b.vdp1VRAM[masked-0x05C00000]
 	case masked < 0x05D00000:
-		return b.vdp1FB[(masked-0x05C80000)&0x3FFFF]
+		return b.vdp1FB[b.vdp1Draw*0x40000+int((masked-0x05C80000)&0x3FFFF)]
 	case masked < 0x05D80000:
 		return b.vdp1Regs[(masked-0x05D00000)&0x7F]
 	case masked < 0x05E00000:
@@ -458,7 +505,7 @@ func (b *Bus) write8At(masked uint32, v uint8) {
 	case masked < 0x05C80000:
 		b.vdp1VRAM[masked-0x05C00000] = v
 	case masked < 0x05D00000:
-		b.vdp1FB[(masked-0x05C80000)&0x3FFFF] = v
+		b.vdp1FB[b.vdp1Draw*0x40000+int((masked-0x05C80000)&0x3FFFF)] = v
 	case masked < 0x05D80000:
 		b.vdp1Regs[(masked-0x05D00000)&0x7F] = v
 	case masked < 0x05E00000:
