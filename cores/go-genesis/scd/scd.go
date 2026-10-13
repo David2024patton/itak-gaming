@@ -97,6 +97,15 @@ type Unit struct {
 	cdcDest   [4]byte
 	sectorBuf [2048]byte
 	dataPtr   int // CDC data port stream position in sectorBuf
+
+	// SCD-4 BIOS state (bios.go): the backup RAM store, the jump
+	// table RAM overlay for sub addresses 0x5EE0 to 0x5F3F, and
+	// the BIOS service state block. The overlay starts as a copy
+	// of the stub image jump table region and software can patch
+	// the level and usercall entries through the sub bus.
+	bram        [BRAMSize]byte
+	jumpOverlay [jumpTableSize]byte
+	bios        biosState
 }
 
 // NewUnit builds a unit with the given disc attached. The disc may
@@ -114,6 +123,7 @@ func NewUnit(d *Disc) *Unit {
 	u.pcm = NewPCM(u.pcmWave[:])
 	u.cdd = NewCDD(d)
 	u.refreshCDDResponse()
+	u.initBIOSState()
 	return u
 }
 
@@ -242,7 +252,12 @@ func (u *Unit) Read8(addr uint32) uint8 {
 	addr &= 0xFFFFFF
 	switch {
 	case addr < 0x020000:
-		// Boot stub window.
+		// Boot stub window. The jump table range is served from
+		// the per unit RAM overlay so software can patch the
+		// level and usercall entries.
+		if addr >= JumpTableBase && addr < JumpTableBase+jumpTableSize {
+			return u.jumpOverlay[addr-JumpTableBase]
+		}
 		if int(addr) < len(u.stub) {
 			return u.stub[addr]
 		}
@@ -277,7 +292,11 @@ func (u *Unit) Write8(addr uint32, v uint8) {
 	addr &= 0xFFFFFF
 	switch {
 	case addr < 0x020000:
-		// Boot stub window: writes ignored.
+		// Boot stub window: writes ignored, except the jump
+		// table range, which lands in the RAM overlay.
+		if addr >= JumpTableBase && addr < JumpTableBase+jumpTableSize {
+			u.jumpOverlay[addr-JumpTableBase] = v
+		}
 	case addr < 0x0A0000:
 		u.prgRAM[addr-0x020000] = v
 	case addr >= 0x200000 && addr < 0x240000:
@@ -929,12 +948,19 @@ func (u *Unit) RenderAudio(n int) []int16 {
 // Save states
 // ---------------------------------------------------------------------------
 
+// legacySerializeSize is the SCD-1..3 serialized size of a Unit.
+// Deserialize still accepts it: the backup RAM loads zeroed
+// (unformatted) and the BIOS state loads at its defaults.
+const legacySerializeSize = 0x80000 + 0x40000 + 0x10000 + 2048 + 256
+
 // SerializeSize returns the exact serialized size of a Unit:
 // PRG-RAM (0x80000) + Word RAM (0x40000) + PCM wave RAM (0x10000)
 // + the CDC sector buffer (2048) + a fixed 256 byte register and
-// state block. The disc pointer is not part of the state.
+// state block + the SCD-4 tail: the backup RAM store (BRAMSize
+// bytes) and the BIOS state block (BIOSStateSize bytes). The
+// disc pointer is not part of the state.
 func (u *Unit) SerializeSize() int {
-	return 0x80000 + 0x40000 + 0x10000 + 2048 + 256
+	return legacySerializeSize + BRAMSize + BIOSStateSize
 }
 
 // The 256 byte register and state block at the tail of a serialized
@@ -1061,13 +1087,22 @@ func (u *Unit) Serialize(buf []byte) error {
 	}
 	ext += 3
 	u.asic.serializeState(blk[ext : ext+ASICStateSize])
+	off += 256
+	copy(buf[off:off+BRAMSize], u.bram[:])
+	off += BRAMSize
+	u.serializeBIOSState(buf[off : off+BIOSStateSize])
 	return nil
 }
 
 // Deserialize restores state written by Serialize. It restores
 // everything except the disc pointer, which the caller keeps.
+// Both the current size and the legacy SCD-1..3 size
+// (legacySerializeSize) are accepted: a legacy state leaves the
+// backup RAM zeroed (unformatted) and the BIOS state at its
+// defaults, with the jump table overlay taken from the stub
+// image.
 func (u *Unit) Deserialize(buf []byte) error {
-	if len(buf) < u.SerializeSize() {
+	if len(buf) < legacySerializeSize {
 		return errors.New("scd: state buffer too small")
 	}
 	if u.stub == nil {
@@ -1128,5 +1163,16 @@ func (u *Unit) Deserialize(buf []byte) error {
 	u.cdcIRQ = blk[ext+2]&0x01 != 0
 	ext += 3
 	u.asic.deserializeState(blk[ext : ext+ASICStateSize])
+	off += 256
+	if len(buf) >= u.SerializeSize() {
+		copy(u.bram[:], buf[off:off+BRAMSize])
+		off += BRAMSize
+		u.deserializeBIOSState(buf[off : off+BIOSStateSize])
+	} else {
+		for i := range u.bram {
+			u.bram[i] = 0
+		}
+		u.initBIOSState()
+	}
 	return nil
 }
