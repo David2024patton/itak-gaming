@@ -12,10 +12,10 @@
 //	            (WAITCNT at 0x204 included; no register has
 //	            behavior yet, and wait states are not timed)
 //	0x05000000  Palette RAM, 1 KB, mirrored over its slot
-//	0x06000000  VRAM, 96 KB, in a 128 KB window: the window
-//	            offset is masked with 0x17FFF, so the top
-//	            32 KB of the window mirrors the 32 KB below
-//	            it, and the window repeats over the slot
+//	0x06000000  VRAM, 96 KB, in a 128 KB window: the top
+//	            32 KB of the window (offsets 0x18000 and up)
+//	            mirrors the 32 KB below it (0x10000..0x17FFF),
+//	            and the window repeats over the slot
 //	0x07000000  OAM, 1 KB, mirrored over its slot
 //	0x08000000  GamePak ROM, wait state 0 window (32 MB)
 //	0x0A000000  GamePak ROM, wait state 1 window (32 MB)
@@ -93,9 +93,42 @@ type Bus struct {
 	IORead  func(off uint32, size int) (uint32, bool)
 	IOWrite func(off uint32, size int, val uint32) bool
 
+	// SaveRead and SaveWrite, when set by the system, give
+	// a cartridge save device first claim on its windows:
+	// the byte window at the top of the map (0x0E, where
+	// flash parts live) and the EEPROM window inside the
+	// ROM slot (top byte 0x0D). The hook returns true to
+	// claim the access; false lets the normal path run
+	// (an EEPROM window offset outside the active range
+	// still reads the ROM, and the SRAM window still
+	// serves plain battery RAM). The hooks are consulted
+	// before the SRAM fast path and the backing stores,
+	// so a claimed write never reaches the SRAM store or
+	// the read only ROM path. Nil hooks keep the plain
+	// GBA-1 behaviour.
+	SaveRead  func(addr uint32, size int) (uint32, bool)
+	SaveWrite func(addr uint32, size int, val uint32) bool
+
+	// SRAMMask narrows the SRAM window index. Zero (the
+	// default) keeps the GBA-1 behaviour: the whole 64 KB
+	// store window. The system sets 0x7FFF for cartridges
+	// with a 32 KB battery SRAM (and for signature-less
+	// cartridges, whose window acts as plain SRAM), so
+	// the upper half of the window mirrors the lower half
+	// the way the real 32 KB part does.
+	SRAMMask uint32
+
 	// last is the open bus value: the last value a read
 	// or fetch drove onto the bus.
 	last uint32
+}
+
+// sramMask is the effective SRAM window index mask.
+func (b *Bus) sramMask() uint32 {
+	if b.SRAMMask != 0 {
+		return b.SRAMMask
+	}
+	return SRAMSize - 1
 }
 
 // Bus must satisfy the CPU's memory interface.
@@ -147,10 +180,20 @@ func (b *Bus) decode(addr uint32) (store []byte, off uint32, readOnly, isROM, ok
 		return b.Palette[:], addr & (PaletteSize - 1), false, false, true
 	case top == 0x06:
 		// The 128 KB window with the upper 32 KB mirrored:
-		// masking with 0x17FFF does both at once, since
 		// window offsets 0x18000..0x1FFFF fold back onto
-		// 0x10000..0x17FFF and higher windows repeat.
-		return b.VRAM[:], addr & 0x17FFF, false, false, true
+		// 0x10000..0x17FFF, and the window repeats over the
+		// slot. (A plain mask cannot express this: it would
+		// have to keep bit 15 for offsets below 0x18000 and
+		// drop it above, which is exactly the fold below.
+		// GBA-4 history: a 0x17FFF mask here dropped bit 15
+		// everywhere, sending every access at 0x8000..0xFFFF
+		// 32 KB low and scrambling the graphics of any game
+		// that uses the upper half of VRAM.)
+		off := addr & 0x1FFFF
+		if off >= 0x18000 {
+			off -= 0x8000
+		}
+		return b.VRAM[:], off, false, false, true
 	case top == 0x07:
 		return b.OAM[:], addr & (OAMSize - 1), false, false, true
 	case top >= 0x08 && top <= 0x0D:
@@ -217,12 +260,18 @@ func (b *Bus) Read(addr uint32, size int) uint32 {
 			return v
 		}
 	}
+	if b.SaveRead != nil {
+		if v, ok := b.SaveRead(addr, size); ok {
+			b.last = v
+			return v
+		}
+	}
 	if isSRAM(addr) {
 		// Byte wide SRAM: the addressed byte is replicated
 		// across the bus lanes, so every width returns the
 		// replicated byte (a half read returns it in both
 		// bytes).
-		v := uint32(b.SRAM[addr&(SRAMSize-1)])
+		v := uint32(b.SRAM[addr&b.sramMask()])
 		switch size {
 		case 1:
 			// v already holds just the byte.
@@ -274,8 +323,11 @@ func (b *Bus) Write(addr uint32, size int, val uint32) {
 			return
 		}
 	}
+	if b.SaveWrite != nil && b.SaveWrite(addr, size, val) {
+		return
+	}
 	if isSRAM(addr) {
-		b.SRAM[addr&(SRAMSize-1)] = byte(val)
+		b.SRAM[addr&b.sramMask()] = byte(val)
 		return
 	}
 	aligned := addr
