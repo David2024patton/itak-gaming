@@ -51,9 +51,27 @@ type Config struct {
 	SilenceLimit time.Duration
 }
 
+// rosterMember is one entry of the server's roster notice
+// (PROTOCOL.md section 3): a room member's name and role.
+type rosterMember struct {
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
 type envelope struct {
 	Type string          `json:"type"`
 	Raw  json.RawMessage `json:"-"`
+	// sender tagging (PROTOCOL.md section 4.8): with spectators
+	// in the room a socket carries frames from several people,
+	// so senders stamp who they are. From is set by sendEnv on
+	// every envelope; Seat (host 1, guest 2) rides input
+	// envelopes so a watcher can attribute the two streams.
+	From string `json:"from,omitempty"`
+	Seat int    `json:"seat,omitempty"`
+	// To addresses a snapshot transfer to one room member
+	// (section 4.4); empty means unaddressed, the pre-spectator
+	// behavior.
+	To string `json:"to,omitempty"`
 	// common fields
 	Role     string   `json:"role,omitempty"`
 	Game     string   `json:"game,omitempty"`
@@ -62,6 +80,8 @@ type envelope struct {
 	Protocol int      `json:"protocol,omitempty"`
 	Cheats   []string `json:"cheats,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
+	// roster notice (server minted)
+	Members []rosterMember `json:"members,omitempty"`
 	// input
 	Frame   int    `json:"frame,omitempty"`
 	Buttons uint16 `json:"buttons,omitempty"`
@@ -131,7 +151,38 @@ type Session struct {
 	snapGot     int
 	snapFrame   int
 	snapReady   bool
-	snapApplied int // last frame the peer confirmed applying, -1 none
+	snapFrom    string // sender of the snapshot being assembled
+	snapApplied int    // last frame the peer confirmed applying, -1 none
+
+	// snapMu serializes whole snapshot transfers on the wire:
+	// a transfer is a run of envelopes that must not interleave
+	// with another transfer (a desync resync to the guest and a
+	// watch answer to a spectator can be in flight together).
+	snapMu sync.Mutex
+
+	// watchSyncReqs holds the names of spectators who asked
+	// this player session for a snapshot (watch.go), oldest
+	// first. Guarded by mu.
+	watchSyncReqs []string
+
+	// Spectator state (watch.go): only used when watch is true.
+	// Guarded by mu like the rest.
+	watch             bool
+	watchHost         string // seat 1 player's name, once known
+	watchGuest        string // seat 2 player's name, once known
+	watchIn1          map[int]uint16
+	watchIn2          map[int]uint16
+	watchFrame        int // next frame the watcher will deliver
+	watchNeutralUntil int // frames below this are agreed neutral
+	watchDelay        int // input delay, learned from session_accept
+	watchLive         bool
+	watchSnapFrame    int // frame of the last applied snapshot, -1 none
+	watchSnapPending  bool
+	watchMaxPair      int // highest frame holding both seats' inputs
+	watchGoneHost     bool
+	watchGoneGuest    bool
+	lastWatchSync     time.Time
+	lastWatchStep     time.Time // last frame delivered or snapshot applied
 
 	// host side: a resync was requested
 	resyncPending   bool
@@ -243,7 +294,52 @@ func (s *Session) send(v any) error {
 	return s.t.WriteText(string(b))
 }
 
-func (s *Session) sendEnv(e envelope) error { return s.send(e) }
+// sendEnv is the single send path for session envelopes, so
+// it is where sender tagging happens (PROTOCOL.md section
+// 4.8): every envelope carries "from" with our player name,
+// and input envelopes additionally carry our seat number. No
+// call site can forget, and a receiver can always tell a
+// player's frames apart from a spectator's on the same socket.
+// (Voice signaling in signal.go deliberately keeps its own
+// exact wire shape and does not go through here.)
+func (s *Session) sendEnv(e envelope) error {
+	if s.cfg.PlayerName != "" {
+		e.From = s.cfg.PlayerName
+	}
+	if e.Type == "input" {
+		e.Seat = s.seatNumber()
+	}
+	return s.send(e)
+}
+
+// seatNumber is our seat at the table: host 1, guest 2.
+// Spectators hold no seat (0) and never send inputs.
+func (s *Session) seatNumber() int {
+	if s.watch {
+		return 0
+	}
+	if s.cfg.IsHost {
+		return 1
+	}
+	return 2
+}
+
+// playerRole is how a player marks its hello: the seat it
+// holds, "host" or "guest". A spectator's hello says
+// "spectator" instead (watch.go), which is how player
+// sessions know never to mistake it for the peer.
+func (s *Session) playerRole() string {
+	if s.cfg.IsHost {
+		return "host"
+	}
+	return "guest"
+}
+
+func (s *Session) helloEnv() envelope {
+	return envelope{
+		Type: "hello", Player: s.cfg.PlayerName, Role: s.playerRole(),
+	}
+}
 
 // Start runs the waiting room (PROTOCOL.md section 4.0) and then
 // the session setup handshake (section 4.1), returning once both
@@ -368,7 +464,7 @@ func (s *Session) startGuest() error {
 	if err := s.checkEnded(); err != nil {
 		return err
 	}
-	state, frame := s.takeSnapshot()
+	state, frame, from := s.takeSnapshot()
 	if err := s.core.LoadState(state); err != nil {
 		return fmt.Errorf("loading starting snapshot: %w", err)
 	}
@@ -376,5 +472,5 @@ func (s *Session) startGuest() error {
 	s.frame = frame
 	s.mu.Unlock()
 	s.prefillNeutral(frame)
-	return s.sendEnv(envelope{Type: "snapshot_applied", Frame: frame})
+	return s.sendEnv(envelope{Type: "snapshot_applied", Frame: frame, To: from})
 }
