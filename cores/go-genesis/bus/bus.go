@@ -36,6 +36,13 @@
 //	Z80Halted() bool     bus requested or reset asserted
 //	TakeZ80Reset() bool  true once after reset is released (system resets the Z80)
 //	SerializeSize() int / Serialize / Deserialize (RAM, Z80 RAM, SRAM, IO state)
+//
+// SetYMClock(fn func(fromZ80 bool) int64) was added after the
+// original pin: the system installs an emulated-time source (YM2612
+// master clocks since power-on) that timestamps YM2612 writes, so
+// the sound section can render the pending FM span before each
+// write lands (see writeYM). Without one, writes behave exactly
+// as before.
 package bus
 
 import (
@@ -70,14 +77,15 @@ type Bus struct {
 	ZRAM [0x2000]uint8  // Z80 RAM
 	SRAM []uint8        // cartridge save RAM (sized from the cart header)
 
-	pads          [2]uint16 // current button state per player (Pad* bits)
-	ioData        [3]uint8  // last values written to the data ports
-	ioCtrl        [3]uint8  // control (direction/TH select) per port
-	z80Req        bool      // 68k holds the Z80 bus (Z80 halted)
-	z80Rst        bool      // Z80 reset asserted
-	z80RstPending bool      // reset was released; system should reset the Z80
-	bank          uint32    // Z80 window bank (9 bits, in 32KB units >> 15)
-	sramOn        bool      // SRAM mapped at 0x200000 instead of ROM
+	pads          [2]uint16                // current button state per player (Pad* bits)
+	ioData        [3]uint8                 // last values written to the data ports
+	ioCtrl        [3]uint8                 // control (direction/TH select) per port
+	z80Req        bool                     // 68k holds the Z80 bus (Z80 halted)
+	z80Rst        bool                     // Z80 reset asserted
+	z80RstPending bool                     // reset was released; system should reset the Z80
+	bank          uint32                   // Z80 window bank (9 bits, in 32KB units >> 15)
+	sramOn        bool                     // SRAM mapped at 0x200000 instead of ROM
+	ymClockFn     func(fromZ80 bool) int64 // emulated time for YM writes, nil = untimestamped
 }
 
 // New builds the bus around a cartridge, VDP and sound chip set.
@@ -102,6 +110,28 @@ func (b *Bus) SetPad(player int, mask uint16) {
 	if player >= 0 && player < 2 {
 		b.pads[player] = mask
 	}
+}
+
+// SetYMClock installs the emulated-time source used to timestamp
+// YM2612 writes: fn reports the current time in YM2612 master
+// clocks since power-on for a write coming from the 68000
+// (fromZ80 false) or from the Z80 (fromZ80 true). The bus is a
+// wiring layer and owns no clock of its own; the system, which
+// owns both CPUs, supplies the source. Passing nil (or never
+// calling this) leaves writes untimestamped.
+func (b *Bus) SetYMClock(fn func(fromZ80 bool) int64) { b.ymClockFn = fn }
+
+// writeYM passes one YM2612 port write to the sound section. When
+// a clock source is installed, the FM stream is first rendered up
+// to the write's emulated moment, so the register change takes
+// effect at its true position inside the frame: a DAC stream
+// writing data hundreds of times per frame is rendered as a
+// stream, not as its last byte held to frame end.
+func (b *Bus) writeYM(addr uint32, val uint8, fromZ80 bool) {
+	if b.ymClockFn != nil {
+		b.sound.RenderYMTo(b.ymClockFn(fromZ80))
+	}
+	b.sound.WriteYM(addr, val)
 }
 
 // Z80Halted reports whether the Z80 must not run (bus requested by the
@@ -257,7 +287,7 @@ func (b *Bus) Write8(addr uint32, val uint8) {
 			b.vdp.WritePort(off, uint16(val))
 		}
 	case addr >= 0xA04000 && addr <= 0xA04003: // YM2612
-		b.sound.WriteYM(addr&3, val)
+		b.writeYM(addr&3, val, false)
 	case addr >= 0xA130F0 && addr <= 0xA130FF: // SRAM / ROM switch
 		b.sramOn = val&1 == 1
 	case addr == 0xA11100: // Z80 bus request: bit 0 of the byte is the grant bit
@@ -396,7 +426,7 @@ func (b *Bus) Write(addr uint16, val uint8) {
 	case addr < 0x2000:
 		b.ZRAM[addr] = val
 	case addr >= 0x4000 && addr <= 0x4003: // YM2612
-		b.sound.WriteYM(uint32(addr&3), val)
+		b.writeYM(uint32(addr&3), val, true)
 	case addr == 0x6000: // bank register: shift one bit in, LSB first
 		b.bank = (b.bank >> 1) | (uint32(val&1) << 8)
 		b.bank &= 0x1FF
