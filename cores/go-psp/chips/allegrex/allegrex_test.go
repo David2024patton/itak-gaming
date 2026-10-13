@@ -678,30 +678,28 @@ func TestHaltAndWake(t *testing.T) {
 }
 
 func TestCOPFaults(t *testing.T) {
-	// COP2 opcode word: CpU with CE=2 and the VFPU counter moves.
+	// The VFPU is implemented now: a bare COP2 word is MFC2 with
+	// rs=0, and it executes without any exception or fault count.
 	h := newHarness()
 	h.r.load(0, 0x12<<26)
 	h.run(1)
-	if excCode(h.c) != 11 || excCE(h.c) != 2 {
-		t.Errorf("cop2: code=%d CE=%d, want 11/2", excCode(h.c), excCE(h.c))
+	if excCode(h.c) != 0 || h.c.VFPUFaultCount() != 0 {
+		t.Errorf("cop2 mfc2: code=%d count=%d, want 0/0", excCode(h.c), h.c.VFPUFaultCount())
 	}
-	if h.c.VFPUFaultCount() != 1 {
-		t.Errorf("VFPUFaultCount = %d, want 1", h.c.VFPUFaultCount())
-	}
-	// LWC2 fault is counted the same way.
+	// LWC2 is LV.S now and executes without fault.
 	h = newHarness()
 	h.r.load(0, encI(0x32, 0, 8, 0))
 	h.run(1)
-	if excCode(h.c) != 11 || excCE(h.c) != 2 || h.c.VFPUFaultCount() != 1 {
-		t.Errorf("lwc2: code=%d CE=%d count=%d", excCode(h.c), excCE(h.c), h.c.VFPUFaultCount())
+	if excCode(h.c) != 0 || h.c.VFPUFaultCount() != 0 {
+		t.Errorf("lv.s: code=%d count=%d, want 0/0", excCode(h.c), h.c.VFPUFaultCount())
 	}
-	// SWC2 and SDC2 also fault.
+	// SV.S and the quad load and store families also execute.
 	for _, op := range []uint32{0x3A, 0x36, 0x3E} {
 		h = newHarness()
 		h.r.load(0, encI(op, 0, 8, 0))
 		h.run(1)
-		if h.c.VFPUFaultCount() != 1 {
-			t.Errorf("op %#x: VFPUFaultCount = %d", op, h.c.VFPUFaultCount())
+		if h.c.VFPUFaultCount() != 0 {
+			t.Errorf("op %#x: VFPUFaultCount = %d, want 0", op, h.c.VFPUFaultCount())
 		}
 	}
 	// COP1 with CU1 clear: CpU with CE=1.
