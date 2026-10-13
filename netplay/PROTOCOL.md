@@ -595,6 +595,73 @@ at the same time:
   server state is involved. If the host leaves, the room
   ends as it always has (section 1), referee and all.
 
+### 4.10 Got Next (the winner-stays line)
+
+An arcade room with watchers wants a line: winner stays,
+next in line plays the winner. Two more envelopes cover
+it, refereed by the host client exactly like the seats
+(section 4.9). Anyone in the room can join the line:
+
+```json
+{ "type": "got_next", "action": "join" }
+{ "type": "got_next", "action": "leave" }
+```
+
+`action` is `"join"` or `"leave"`, and the sender is the
+envelope's `from` stamp: the call is always about
+yourself. The host folds every join and leave it hears
+into its list (joining appends, if the name is not already
+in line; leaving removes), and broadcasts the result
+after every change:
+
+```json
+{ "type": "got_next_queue", "queue": ["Fan", "Regular"] }
+```
+
+The rules:
+
+- **The host's list is the only list.** A non-host client
+  never folds `got_next` itself; it replaces its line
+  wholesale when a `got_next_queue` arrives from the known
+  host (the guest's peer, the watcher's seat 1 holder). A
+  queue broadcast from anyone else, and an unstamped
+  `got_next`, are ignored. The host's own joins and leaves
+  apply to its own list immediately, like its own
+  `match_end` does.
+- **The line is room state, not match state.** It
+  survives `match_end` untouched: that is its purpose.
+  Taking a seat removes the name (the host's client notes
+  it as it sends the `seat_assign`), and leaving the room
+  removes the name (the departure notices of section 3:
+  `peer_left`, `spectator_left`), so the head of the line
+  is never a ghost.
+- **Rotation is winner stays, for seat 2 only.** When a
+  match ends and the end's reason names the seat 2 holder
+  as the loser (the honor shape of section 4.9: the pause
+  menu's "I lost" sends `"<name> lost"`), the host's
+  client names the head of the line for seat 2 with a
+  plain `seat_assign` (section 4.9), a moment after the
+  room settles, and the S4 rotation flow does the rest:
+  the loser falls back to watching, the head takes the
+  seat, the winner stays. Seat 1 never rotates: it is the
+  host referee's house seat. If the host loses, the line
+  simply waits for the next seat 2 opening, and the room
+  says so. With nobody in line, a match end is just a
+  match end, as in section 4.9.
+- The host's waiting room also offers a **random
+  challenger**: one watcher chosen at random, offered
+  seat 2 through the same `seat_assign`. It is a UI
+  shortcut over section 4.9, not a protocol feature.
+  Picking two random players and sitting the host out is
+  deliberately not in v1: the referee holds seat 1, so a
+  match the host only watches has no referee in it.
+
+Like chat (section 4.7), the line is display and rotation
+state only: it never touches lockstep, frames, inputs, or
+hashes, and there is no server state and no persistence.
+If the host leaves, the room ends as it always has
+(section 1), line and all.
+
 ---
 
 ## 5. Security notes
@@ -809,6 +876,25 @@ Names are the raw player names, exactly as on the other boards:
 trimmed of surrounding whitespace, stripped of control
 characters, max 40 characters. A tournament name is max 80
 characters, a game title max 120.
+
+**Naming the event in the room.** The tournament name is
+host setup, not a server field: the host's client takes it
+on the Online screen when the lobby is created, and tells
+the room with an envelope so the guest's and the watchers'
+screens can show what they are playing under:
+
+```json
+{ "type": "tournament", "name": "Friday Night Fights" }
+```
+
+Referee state, like the seats (section 4.9) and the Got
+Next line (section 4.10): only the host sends it, and
+receivers believe it only on the known host's sender stamp
+(the guest's peer, the watcher's seat 1 holder). The host
+sends it as the room forms and again after each match end.
+The name is capped at the same 80 characters the store
+enforces. A room with no name is a casual room, and nothing
+from it is ever reported.
 
 ### `POST /matches/report`
 
