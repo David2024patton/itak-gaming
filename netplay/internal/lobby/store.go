@@ -9,17 +9,23 @@ import (
 
 // Store errors. The HTTP layer maps these to status codes.
 var (
-	ErrNotFound    = errors.New("lobby not found")
-	ErrBadPassword = errors.New("wrong password")
-	ErrFull        = errors.New("lobby is full")
-	ErrNameTaken   = errors.New("player name already in lobby")
-	ErrTooMany     = errors.New("too many lobbies")
+	ErrNotFound       = errors.New("lobby not found")
+	ErrBadPassword    = errors.New("wrong password")
+	ErrFull           = errors.New("lobby is full")
+	ErrNameTaken      = errors.New("player name already in lobby")
+	ErrTooMany        = errors.New("too many lobbies")
+	ErrSpectatorsFull = errors.New("spectator seats are full")
 )
 
 // Limits and lifetimes.
 const (
 	DefaultMaxLobbies = 500
 	DefaultMaxPlayers = 2
+
+	// MaxSpectators caps how many watchers one lobby holds. Spectators
+	// are tracked apart from the player seats, so this never interacts
+	// with MaxPlayers.
+	MaxSpectators = 10
 
 	// StaleAfterPeers: a lobby whose peers all left is reaped once it
 	// has sat empty this long (the game is over; lingering is a leak).
@@ -55,8 +61,19 @@ type Store interface {
 	PlayerLobby(player string) (PublicLobby, bool)
 	// Join adds a player and returns their bearer token.
 	Join(id, player, password string) (string, error)
+	// Watch adds a spectator and returns their bearer token.
+	// Spectators get their own token class (it authenticates as
+	// RoleSpectator) and never occupy a player seat.
+	Watch(id, player, password string) (string, error)
+	// Members returns the lobby's full roster, players and
+	// spectators, in join order.
+	Members(id string) ([]Member, bool)
 	// Authenticate resolves a bearer token to a role in a lobby.
 	Authenticate(id, token string) (Role, bool)
+	// LookupMember resolves a bearer token to the member it belongs
+	// to (name and role). The signaling layer uses it to greet a
+	// connecting socket by name.
+	LookupMember(id, token string) (Member, bool)
 	// RemoveMemberByToken revokes the membership a token belongs to.
 	// Used when a guest's socket drops for good.
 	RemoveMemberByToken(id, token string) bool
@@ -126,6 +143,7 @@ func (s *MemoryStore) Create(in CreateInput) (*Lobby, string, error) {
 		MaxPlayers: maxPlayers,
 		CreatedAt:  now,
 		members:    make(map[string]*member),
+		watchers:   make(map[string]*member),
 		tokens:     make(map[string]string),
 		emptySince: now,
 	}
@@ -148,7 +166,9 @@ func (s *MemoryStore) Create(in CreateInput) (*Lobby, string, error) {
 }
 
 // addMemberLocked registers a member and returns their bearer token.
-// Callers hold s.mu.
+// Spectators land in the watchers set, players in the members set; the
+// two never mix, so player counts and the MaxPlayers cap only ever
+// see player members. Callers hold s.mu.
 func (s *MemoryStore) addMemberLocked(l *Lobby, player string, role Role) (string, error) {
 	raw, err := randomBytes(8)
 	if err != nil {
@@ -158,10 +178,25 @@ func (s *MemoryStore) addMemberLocked(l *Lobby, player string, role Role) (strin
 	if err != nil {
 		return "", err
 	}
-	m := &member{id: hexID(raw), player: player, role: role}
-	l.members[m.id] = m
+	m := &member{id: hexID(raw), player: player, role: role, seq: l.nextSeq}
+	l.nextSeq++
+	if role == RoleSpectator {
+		l.watchers[m.id] = m
+	} else {
+		l.members[m.id] = m
+	}
 	l.tokens[tokenDigest(token)] = m.id
 	return token, nil
+}
+
+// memberByIDLocked finds a member by id in either set.
+// Callers hold s.mu (read or write).
+func memberByIDLocked(l *Lobby, id string) (*member, bool) {
+	if m, ok := l.members[id]; ok {
+		return m, true
+	}
+	m, ok := l.watchers[id]
+	return m, ok
 }
 
 func hexID(b []byte) string {
@@ -238,25 +273,91 @@ func (s *MemoryStore) Join(id, player, password string) (string, error) {
 	return s.addMemberLocked(l, player, RoleGuest)
 }
 
+// Watch adds a spectator to a lobby and returns their bearer token.
+// The password is checked exactly like a guest join. Names must be
+// unique across the whole room (players and spectators alike) so the
+// roster never shows two people with one name. Spectators have their
+// own cap (MaxSpectators) and never touch the player seats: a full
+// player lobby can still take watchers, and a full watcher bench
+// never blocks a guest join.
+func (s *MemoryStore) Watch(id, player, password string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l, ok := s.lobbies[id]
+	if !ok {
+		return "", ErrNotFound
+	}
+	if l.passHash != nil && !checkPassword(password, l.salt, l.passHash) {
+		return "", ErrBadPassword
+	}
+	if len(l.watchers) >= MaxSpectators {
+		return "", ErrSpectatorsFull
+	}
+	for _, m := range l.members {
+		if m.player == player {
+			return "", ErrNameTaken
+		}
+	}
+	for _, m := range l.watchers {
+		if m.player == player {
+			return "", ErrNameTaken
+		}
+	}
+	return s.addMemberLocked(l, player, RoleSpectator)
+}
+
+// Members returns the lobby's full roster in join order: the host
+// first, then whoever joined or started watching after.
+func (s *MemoryStore) Members(id string) ([]Member, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	l, ok := s.lobbies[id]
+	if !ok {
+		return nil, false
+	}
+	all := make([]*member, 0, len(l.members)+len(l.watchers))
+	for _, m := range l.members {
+		all = append(all, m)
+	}
+	for _, m := range l.watchers {
+		all = append(all, m)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].seq < all[j].seq })
+	out := make([]Member, 0, len(all))
+	for _, m := range all {
+		out = append(out, Member{Name: m.player, Role: m.role})
+	}
+	return out, true
+}
+
 func (s *MemoryStore) Authenticate(id, token string) (Role, bool) {
-	if token == "" {
+	m, ok := s.LookupMember(id, token)
+	if !ok {
 		return "", false
+	}
+	return m.Role, true
+}
+
+func (s *MemoryStore) LookupMember(id, token string) (Member, bool) {
+	if token == "" {
+		return Member{}, false
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	l, ok := s.lobbies[id]
 	if !ok {
-		return "", false
+		return Member{}, false
 	}
 	memberID, ok := l.tokens[tokenDigest(token)]
 	if !ok {
-		return "", false
+		return Member{}, false
 	}
-	m, ok := l.members[memberID]
+	m, ok := memberByIDLocked(l, memberID)
 	if !ok {
-		return "", false
+		return Member{}, false
 	}
-	return m.role, true
+	return Member{Name: m.player, Role: m.role}, true
 }
 
 func (s *MemoryStore) RemoveMemberByToken(id, token string) bool {
@@ -271,8 +372,16 @@ func (s *MemoryStore) RemoveMemberByToken(id, token string) bool {
 	if !ok {
 		return false
 	}
+	m, ok := memberByIDLocked(l, memberID)
+	if !ok {
+		return false
+	}
 	delete(l.tokens, digest)
-	delete(l.members, memberID)
+	if m.role == RoleSpectator {
+		delete(l.watchers, memberID)
+	} else {
+		delete(l.members, memberID)
+	}
 	return true
 }
 
