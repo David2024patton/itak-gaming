@@ -1,14 +1,16 @@
 // Package system wires the VR4300 CPU, the RSP, the
 // RDP/VI/AI output devices, the physical memory bus,
-// and a parsed cartridge into the machine the libretro
-// shell (a later slice) will drive. Slice N64-2 adds the
-// RSP: it executes from IMEM under the interleave model
+// the PIF, and a parsed cartridge into the machine the
+// libretro shell drives. Slice N64-2 adds the RSP: it
+// executes from IMEM under the interleave model
 // described on RunCycles. Slice N64-3 adds the RDP
 // rasterizer, the VI presentation, and AI audio output.
-// Games still cannot boot (boot needs the PIF/CIC path,
-// which lands in N64-4). Bare code loaded directly into
-// memory runs today, which is what the test harness
-// uses.
+// Slice N64-4 adds the PIF with controllers and paks,
+// the cartridge save devices, the real SI DMA, and the
+// HLE boot (see boot.go): Start boots a cartridge
+// through its own IPL3. Bare code loaded directly into
+// memory still runs without booting, which the
+// low-level test harness uses.
 package system
 
 import (
@@ -21,6 +23,7 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-n64/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/r4300"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/rsp"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/pif"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/vi"
 )
 
@@ -59,9 +62,24 @@ type System struct {
 	Cart *cart.Cart
 
 	expansion bool
-	buttons   uint16
+	pads      [4]padState
 	fb        []uint32
 	rspFrac   int // leftover RSP budget numerator (of 3 per CPU cycle)
+
+	cicOverride    cart.CIC
+	cicSet         bool
+	bootCIC        cart.CIC
+	bootCRC1       uint32
+	bootCRC2       uint32
+	bootChecksumOK bool
+	booted         bool
+}
+
+// padState is one controller port's host-side input.
+type padState struct {
+	buttons uint16
+	stickX  int8
+	stickY  int8
 }
 
 // New builds a machine around a raw cartridge dump.
@@ -83,7 +101,10 @@ func NewWithOptions(rom []byte, expansion bool) (*System, error) {
 }
 
 // LoadROM parses a cartridge dump and resets the machine
-// around it.
+// around it. A Controller Pak starts inserted in port 1
+// (the common case; games that use one work without any
+// host setup). The save device starts as none: select
+// one with SetSaveType.
 func (s *System) LoadROM(rom []byte) error {
 	c, err := cart.Parse(rom)
 	if err != nil {
@@ -96,19 +117,22 @@ func (s *System) LoadROM(rom []byte) error {
 	s.Mem.OnMIChange = func(active bool) {
 		s.CPU.SetInterruptLine(active)
 	}
+	s.Mem.PIF.InsertPak(0, pif.PakMemory)
+	s.pads = [4]padState{}
+	s.booted = false
 	s.Reset()
 	return nil
 }
 
 // Reset returns the machine to its power-on state: the
 // CPU resets and the RDP, VI, and AI are rebuilt fresh.
-// Real boot (PIF executing the cartridge boot code with
-// the CIC seed) lands in N64-4; after Reset the CPU sits
-// at the reset vector, and test code is expected to seed
-// PC and memory directly.
+// Reset does not boot the cartridge; Start does. Test
+// code that seeds PC and memory directly uses Reset's
+// state, as it did before the boot existed.
 func (s *System) Reset() {
 	s.Mem.ResetDevices()
 	s.CPU.Reset()
+	s.booted = false
 }
 
 // RunCycles executes the CPU for at least the given
@@ -172,12 +196,77 @@ func (s *System) AudioBuffer() []int16 { return s.Mem.AI.Drain() }
 // Hz, from the programmed DACRATE register.
 func (s *System) AudioRate() int { return s.Mem.AI.SampleRate() }
 
-// SetButtons records the standard controller state. Input
-// reaches games through the PIF in a later slice.
-func (s *System) SetButtons(mask uint16) { s.buttons = mask }
+// SetButtons records player 1's controller state. The
+// state reaches games through the PIF on their next
+// Joybus poll.
+func (s *System) SetButtons(mask uint16) { s.SetButtonsPort(0, mask) }
 
-// Buttons returns the recorded controller state.
-func (s *System) Buttons() uint16 { return s.buttons }
+// SetButtonsPort records one port's button state
+// (port 0 is player 1).
+func (s *System) SetButtonsPort(port int, mask uint16) {
+	if port < 0 || port > 3 {
+		return
+	}
+	s.pads[port].buttons = mask
+	s.pushPad(port)
+}
+
+// SetStick records one port's analog stick position
+// (each axis in the -80..80 hardware range; out of
+// range values are clamped).
+func (s *System) SetStick(port int, x, y int8) {
+	if port < 0 || port > 3 {
+		return
+	}
+	s.pads[port].stickX = clampStick(x)
+	s.pads[port].stickY = clampStick(y)
+	s.pushPad(port)
+}
+
+func clampStick(v int8) int8 {
+	if v > 80 {
+		return 80
+	}
+	if v < -80 {
+		return -80
+	}
+	return v
+}
+
+func (s *System) pushPad(port int) {
+	p := s.pads[port]
+	s.Mem.PIF.SetController(port, p.buttons, p.stickX, p.stickY)
+}
+
+// Buttons returns player 1's recorded controller state.
+func (s *System) Buttons() uint16 { return s.pads[0].buttons }
+
+// InsertPak puts an accessory (memory pak or rumble
+// pak) into a controller port; pif.PakNone removes it.
+func (s *System) InsertPak(port int, kind pif.PakKind) {
+	s.Mem.PIF.InsertPak(port, kind)
+}
+
+// SetSaveType selects the cartridge save device
+// (EEPROM 4K/16K, SRAM, or Flash). Cartridges do not
+// declare a save device in their headers and this core
+// keeps no database, so the host picks: the libretro
+// shell exposes it as the gon64_save_type core option
+// and tests set it directly. Switching discards the
+// previous device's contents.
+func (s *System) SetSaveType(t cart.SaveType) { s.Mem.Saves.Configure(t) }
+
+// SaveType returns the selected save device.
+func (s *System) SaveType() cart.SaveType { return s.Mem.Saves.Type }
+
+// SaveRAM returns the active save device's contents
+// (the libretro SAVE_RAM image), or nil when no device
+// is fitted.
+func (s *System) SaveRAM() []byte { return s.Mem.Saves.Data() }
+
+// SetSaveRAM loads a host save image into the active
+// save device.
+func (s *System) SetSaveRAM(b []byte) { s.Mem.Saves.SetData(b) }
 
 // Title returns the cartridge name from its header.
 func (s *System) Title() string {
@@ -187,19 +276,23 @@ func (s *System) Title() string {
 	return s.Cart.Name
 }
 
-const stateVersion = 3
+const stateVersion = 4
 
 // SerializeSize reports the byte size of a serialized
 // system for this machine's RDRAM configuration.
 func (s *System) SerializeSize() int {
 	return 2 + r4300.SerializeSize + len(s.Mem.RDRAM) + rsp.SerializeSize + 8 + 8 +
-		s.Mem.DP.SerializeSize() + vi.SerializeSize + ai.SerializeSize
+		s.Mem.DP.SerializeSize() + vi.SerializeSize + ai.SerializeSize +
+		8 + pif.RAMSize + pif.StateSize + cart.SaveStateSize
 }
 
 // Serialize writes the full machine state: version byte,
 // option flags, the CPU block, RDRAM, the RSP block, the
 // MI interrupt and mask registers, the RSP interleave
-// remainder, and (version 3) the RDP, VI, and AI blocks.
+// remainder, the RDP, VI, and AI blocks, and (version
+// 4) the SI registers, PIF RAM, the PIF runtime block
+// (pak storage and accessory flags), and the cartridge
+// save device block.
 func (s *System) Serialize() []byte {
 	out := make([]byte, s.SerializeSize())
 	out[0] = stateVersion
@@ -220,6 +313,15 @@ func (s *System) Serialize() []byte {
 	off += s.Mem.DP.Serialize(out[off:])
 	off += s.Mem.VI.Serialize(out[off:])
 	off += s.Mem.AI.Serialize(out[off:])
+	dramAddr, status := s.Mem.SIState()
+	binary.BigEndian.PutUint32(out[off:], dramAddr)
+	binary.BigEndian.PutUint32(out[off+4:], status)
+	off += 8
+	copy(out[off:], s.Mem.PIF.RAM[:])
+	off += pif.RAMSize
+	s.Mem.PIF.Serialize(out[off:])
+	off += pif.StateSize
+	s.Mem.Saves.Serialize(out[off:])
 	return out
 }
 
@@ -261,6 +363,16 @@ func (s *System) Deserialize(in []byte) error {
 	if err := s.Mem.AI.Deserialize(in[off:]); err != nil {
 		return err
 	}
+	off += ai.SerializeSize
+	dramAddr := binary.BigEndian.Uint32(in[off:])
+	siStatus := binary.BigEndian.Uint32(in[off+4:])
+	s.Mem.RestoreSI(dramAddr, siStatus)
+	off += 8
+	copy(s.Mem.PIF.RAM[:], in[off:])
+	off += pif.RAMSize
+	s.Mem.PIF.Deserialize(in[off:])
+	off += pif.StateSize
+	s.Mem.Saves.Deserialize(in[off:])
 	s.CPU.SetInterruptLine(s.Mem.MIInterrupt())
 	return nil
 }
