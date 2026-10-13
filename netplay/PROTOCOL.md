@@ -477,3 +477,78 @@ flag, else `ITAK_STATS_FILE`, else `./stats.json`) written
 atomically (temp file + rename) at most every 10 s when changed,
 and once more at shutdown. At most 20,000 triples are kept;
 inserts beyond the cap evict the least recently played entry.
+
+## 7. Friends
+
+The same server binary also keeps **friends lists**, so the app
+can show the people a player plays with first and say whether any
+of them are in a game right now.
+
+**The follow model:** a friend edge is one-directional. Player A
+follows player B; B's list is unaffected, and a follow is mutual
+only when both players follow each other. There is no consent
+handshake in this version: player names are already public on the
+global leaderboard (section 6), so following a name reveals
+nothing the board does not already show. Names are the raw player
+names, case-sensitive, exactly as on the board; each name is
+trimmed of surrounding whitespace and stripped of control
+characters, max 40 characters. A player may follow at most 200
+names and cannot follow themselves.
+
+### `GET /friends?player=David`
+
+Returns David's list, friends sorted by name:
+
+```json
+{ "player": "David",
+  "friends": [
+    { "name": "Mary", "display": "Mary P.", "region": "MO",
+      "status": "in_lobby", "game": "Mortal Kombat (USA).md" },
+    { "name": "Terry", "display": "", "region": "",
+      "status": "offline" }
+  ] }
+```
+
+- `display` and `region` are the identity the leaderboard knows
+  for that name (from its stat reports, section 6), or empty
+  strings when the name has never reported one.
+- `status` is presence, and in this version it means exactly one
+  thing: **`in_lobby`** when the friend is the host or a guest of
+  a lobby that exists in the lobby registry right now, with
+  `game` naming that lobby's game. Otherwise **`offline`**, and
+  `game` is omitted. There is **no app-open presence** in this
+  version: offline means "not in a lobby", nothing more. It does
+  not say whether the friend's app is running.
+- **200** on success (a player with no list gets an empty
+  `friends` array); **400** when the `player` parameter is
+  missing or blank.
+
+### `POST /friends`
+
+```json
+{ "player": "David", "friend": "Mary" }
+```
+
+Adds the follow. Idempotent: following someone already on the
+list succeeds and changes nothing. Returns **200** with the full
+updated list, in the same shape as the GET. **400** on a malformed
+or oversized (> 4 KB) body, an empty name, a name over 40
+characters, following yourself, or a list already at the 200
+friend cap.
+
+### `POST /friends/remove`
+
+```json
+{ "player": "David", "friend": "Mary" }
+```
+
+Removes the follow. Removing a name that is not on the list
+succeeds and changes nothing. Returns **200** with the full
+updated list, same shape as the GET; **400** on a malformed body
+or an empty name.
+
+**Storage:** in memory, persisted to a JSON file (the
+`-friendsfile` flag, else `ITAK_FRIENDS_FILE`, else a
+`friends.json` next to the stats file) written atomically (temp
+file + rename) at most every 10 s when changed, and once more at
+shutdown.
