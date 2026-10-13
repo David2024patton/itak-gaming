@@ -39,6 +39,14 @@ func (m *Machine) ReadIO(nine bool, off uint32, size int) (uint32, bool) {
 	if nine && off == 0x068 {
 		return 0, true // DISP_MMEM_FIFO reads back 0
 	}
+	if nine && (off == 0x320 || off >= 0x330 && off < 0x3C0 || off >= 0x400 && off < 0x6B0) {
+		// RDLINES_COUNT, the RE register block, the GX
+		// command ports, and the GX status/result block.
+		return m.GX.ReadIO(off, size)
+	}
+	if !nine && off >= 0x400 && off < 0x520 {
+		return m.Audio.ReadIO(off, size)
+	}
 	return m.Periph.ReadIO(nine, off, size)
 }
 
@@ -55,6 +63,12 @@ func (m *Machine) WriteIO(nine bool, off uint32, size int, val uint32) bool {
 	if nine && off == 0x068 {
 		m.Video.SetMainDispAddr(val)
 		return true
+	}
+	if nine && (off == 0x320 || off >= 0x330 && off < 0x3C0 || off >= 0x400 && off < 0x6B0) {
+		return m.GX.WriteIO(off, size, val)
+	}
+	if !nine && off >= 0x400 && off < 0x520 {
+		return m.Audio.WriteIO(off, size, val)
 	}
 	return m.Periph.WriteIO(nine, off, size, val)
 }
