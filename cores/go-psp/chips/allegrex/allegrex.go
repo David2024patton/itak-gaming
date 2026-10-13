@@ -1,7 +1,6 @@
 // Package allegrex implements the Sony Allegrex CPU used in the PSP:
 // a MIPS32 little endian core with a single precision FPU (CP1), the
-// Allegrex SPECIAL2/SPECIAL3 extensions, and a stubbed COP2 (VFPU)
-// that faults until a later slice implements it.
+// Allegrex SPECIAL2/SPECIAL3 extensions, and the COP2 VFPU.
 //
 // Execution model notes:
 //   - PC/NPC pipeline pair: branches and jumps set NPC, so the delay
@@ -75,6 +74,19 @@ type CPU struct {
 
 	icReg [32]uint32 // interrupt controller registers for MFIC/MTIC
 
+	vregs     [128]uint32 // VFPU registers, raw bits
+	ctrl      [32]uint32  // VFPU CFC2/CTC2 register storage
+	mfvcStore [144]uint32 // MFVC/MTVC backing store
+	rngState  [8]uint32   // VFPU random generator state, RCX0..7
+
+	spfxImm uint32 // 19 bit source prefix for VS reads
+	tpfxImm uint32 // 19 bit source prefix for VT reads
+	dpfxImm uint32 // 12 bit destination prefix
+	spfxOn  bool
+	tpfxOn  bool
+	dpfxOn  bool
+	cc      uint32 // VFPU condition code
+
 	llbit  bool
 	lladdr uint32
 
@@ -113,6 +125,13 @@ func (c *CPU) Reset(entry uint32) {
 	// stored value and the system package does not depend on it.
 	c.fpr = [32]uint32{}
 	c.fcr = [32]uint32{}
+	c.vregs = [128]uint32{}
+	c.ctrl = [32]uint32{}
+	c.mfvcStore = [144]uint32{}
+	c.rngState = [8]uint32{}
+	c.spfxImm, c.tpfxImm, c.dpfxImm = 0, 0, 0
+	c.spfxOn, c.tpfxOn, c.dpfxOn = false, false, false
+	c.cc = 0
 	c.icReg = [32]uint32{}
 	c.llbit = false
 	c.lladdr = 0
@@ -203,10 +222,29 @@ func (c *CPU) SetInterruptLines(ip uint32) { c.extIP = ip & 0xFF }
 // for an enabled interrupt.
 func (c *CPU) Halted() bool { return c.halted }
 
-// VFPUFaultCount returns how many COP2/VFPU encodings have faulted.
-// Slice 1 has no VFPU; the count is a diagnostic for the system
-// package so it can tell VFPU using code ran on this core.
+// VFPUFaultCount returns how many genuinely unimplemented VFPU
+// encodings have faulted.
 func (c *CPU) VFPUFaultCount() int { return c.vfpuFaultCount }
+
+// VSingle returns the raw bits of VFPU register i by linear index
+// (0..127, m*16 + row*4 + col).
+func (c *CPU) VSingle(i int) uint32 {
+	if i < 0 || i > 127 {
+		return 0
+	}
+	return c.vregs[i]
+}
+
+// SetVSingle sets the raw bits of VFPU register i by linear index.
+func (c *CPU) SetVSingle(i int, bits uint32) {
+	if i < 0 || i > 127 {
+		return
+	}
+	c.vregs[i] = bits
+}
+
+// VFPUCC returns the VFPU condition code.
+func (c *CPU) VFPUCC() uint32 { return c.cc }
 
 // ipByte composes the Cause.IP byte: external lines, the two
 // software writable bits stored in Cause, and the timer latch at
@@ -421,8 +459,10 @@ func (c *CPU) branchTarget(off int32) uint32 {
 //	cp0[32][8] in register then select order,
 //	fpr 0..31, fcr 0..31 (index 31 is the FCSR),
 //	icReg 0..31, llbit, lladdr, halted, countRemainder,
-//	timerIRQ, vfpuFaultCount, randomState, extIP.
-const serializeWords = 32 + 2 + 2 + 1 + 32*8 + 32 + 32 + 32 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
+//	timerIRQ, vfpuFaultCount, randomState, extIP,
+//	vregs 0..127, ctrl 0..31, mfvcStore 0..143, rngState 0..7,
+//	spfxImm, tpfxImm, dpfxImm, spfxOn, tpfxOn, dpfxOn, cc.
+const serializeWords = 32 + 2 + 2 + 1 + 32*8 + 32 + 32 + 32 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 128 + 32 + 144 + 8 + 3 + 3 + 1
 
 // SerializeSize is the fixed byte length of a serialized CPU.
 const serializeSize = serializeWords * 4
@@ -445,6 +485,13 @@ func (c *CPU) Serialize() []byte {
 	w = append(w, boolWord(c.llbit), c.lladdr, boolWord(c.halted),
 		c.countRemainder, boolWord(c.timerIRQ), uint32(c.vfpuFaultCount),
 		c.randomState, c.extIP)
+	w = append(w, c.vregs[:]...)
+	w = append(w, c.ctrl[:]...)
+	w = append(w, c.mfvcStore[:]...)
+	w = append(w, c.rngState[:]...)
+	w = append(w, c.spfxImm, c.tpfxImm, c.dpfxImm)
+	w = append(w, boolWord(c.spfxOn), boolWord(c.tpfxOn), boolWord(c.dpfxOn))
+	w = append(w, c.cc)
 	for i, v := range w {
 		binary.LittleEndian.PutUint32(out[i*4:], v)
 	}
@@ -491,6 +538,25 @@ func (c *CPU) Deserialize(data []byte) error {
 	c.vfpuFaultCount = int(next())
 	c.randomState = next()
 	c.extIP = next()
+	for r := 0; r < 128; r++ {
+		c.vregs[r] = next()
+	}
+	for r := 0; r < 32; r++ {
+		c.ctrl[r] = next()
+	}
+	for r := 0; r < 144; r++ {
+		c.mfvcStore[r] = next()
+	}
+	for r := 0; r < 8; r++ {
+		c.rngState[r] = next()
+	}
+	c.spfxImm = next()
+	c.tpfxImm = next()
+	c.dpfxImm = next()
+	c.spfxOn = next() != 0
+	c.tpfxOn = next() != 0
+	c.dpfxOn = next() != 0
+	c.cc = next()
 	c.curPC = c.pc
 	c.curDelay = c.inDelaySlot
 	return nil
