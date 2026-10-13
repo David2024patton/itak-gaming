@@ -46,11 +46,26 @@ never committed to the repository.
   latches, pipeline and evaluation state, frame parity), RAM,
   the open bus byte, and the controller state; a determinism
   test proves a frame hash is identical across a
-  serialize/restore boundary. The APU register space stays
-  inert until NES-3.
-- NES-3 (planned): the APU (the 2A03's five channels), the
-  libretro shell mirroring go-gameboy's, and the app wiring
-  that swaps FCEUmm for this core once the proof bar is met.
+  serialize/restore boundary. The APU register space stayed
+  inert through this slice and comes alive in NES-3.
+- NES-3 (this slice, completing the core): the APU in
+  `sound/` (two pulse channels with duty, sweep with the
+  per-channel negate quirk, envelopes and length counters;
+  the triangle with its linear counter; noise with both
+  LFSR modes; the DMC with DMA sample fetches that stall the
+  CPU through the bus, the output level unit, loop mode and
+  its IRQ; the frame sequencer at APU rate with the 3-or-4
+  cycle $4017 reset delay and the triple frame IRQ set at
+  the sequence end; the $4015 status read that clears only
+  the frame IRQ flag; and the published non-linear pulse/tnd
+  mixer formulas rendered at 44100 Hz, mono duplicated to
+  stereo), the libretro shell in `libretro/` mirroring
+  go-gameboy's (24 retro_* exports, XRGB8888 256x240, 60.0988
+  fps, 4/3 aspect), and the app wiring that points the NES
+  row at libgo_nes.so. Save states grew a version-2 block
+  carrying the full APU state; a state saved by this core
+  restores byte-exact, proven on a real MMC3 game through
+  the engine bridge (below).
 
 ## NES-2 conformance results
 
@@ -83,8 +98,52 @@ produces no verdict even given 900 million cycles (about
 30,000 frames): it never reads $4015, its NMI handler is
 entered and its timing counters advance, but its measurement
 sequence never completes here; the precise verdict is on
-TestCPUTimingReport. instr_timing 1/2 stay NES-3 as planned
-(they time against the APU length counters).
+TestCPUTimingReport. instr_timing 1/2 waited for NES-3
+(they time against the APU length counters); both are hard
+gates now, see the NES-3 results below.
+
+## NES-3 conformance results
+
+Hard gates (all passing): Blargg's apu_test singles, all
+eight: 1-len_ctr, 2-len_table, 3-irq_flag, 4-jitter,
+5-len_timing, 6-irq_flag_timing, 7-dmc_basics, 8-dmc_rates.
+The last three are the cycle-grade ones: they pin the frame
+sequencer's APU-rate stepping, the $4017 reset delay of 3
+or 4 cycles by divider phase, and the frame IRQ flag's
+triple set on the last three CPU cycles of the 4-step
+sequence. Blargg's instr_timing 1 and 2, deferred from
+NES-1 because they time against the APU length counters,
+are hard gates now and pass. Unit gates in `sound/` cover
+the sweep target overflow mute, the period-below-8 mute,
+the envelope decay schedule, length halt and $4015 disable
+behavior, DMC playback, loop restart and IRQ, and a
+byte-exact APU serialize round trip whose restored copy
+produces identical samples. A pulse channel playing A4
+(period 253) measures 441.00 Hz, 3.9 cents sharp of 440
+(the period's true pitch is 440.29 Hz; the reading is the
+zero-crossing count over one second).
+
+Report-only: Blargg's apu_mixer set (square, triangle,
+noise, dmc). Each ROM runs its full tone and cancellation
+sequence to the shell's done state here, but the verdict is
+a human listening for near-silence between the beeps, so
+there is no CPU-visible result to gate on; the test logs
+the final status and the audio activity for the record.
+
+Real games, through the iTaK engine bridge and the
+from-scratch core (enginetest): Super Mario Bros. 3 (USA)
+(MMC3) loads, renders non-blank 256x240 video, produces
+non-silent audio, and writes a 15,063-byte save state; its
+one harness flag (the frame 2 frames after a restore
+differs from the save-point frame) is the harness's
+static-screen premise, adjudicated the same way as the
+Game Boy core's: the state re-saved immediately after the
+restore differs from the saved state in 0 of 15,063 bytes,
+and a 300-frame continuation from the restored state lands
+byte-identical to the original continuation. Super Mario
+Bros. (Japan, USA) (NROM) passes the full harness with no
+flags: ALL TESTS PASSED, 15,050-byte states, the restored
+frame matching the save point exactly.
 
 ## Layout
 
@@ -100,8 +159,12 @@ TestCPUTimingReport. instr_timing 1/2 stay NES-3 as planned
 - `ppu/` the 2C02 picture processing unit: dot-stepped timing
   and rendering, the register file, and save-state
   serialization
+- `sound/` the 2A03 APU: pulse, triangle, noise and DMC
+  channels, the frame sequencer, the non-linear mixer, and
+  save-state serialization
 - `system/` the assembled machine: CPU, PPU, cartridge, RAM,
   controllers, DMA, and whole-machine save states, in the
   go-gameboy core's shape (RunFrame, Framebuffer,
   Serialize/Deserialize, SetButtons)
-- `libretro/` the libretro C ABI shell (arrives in NES-3)
+- `libretro/` the libretro C ABI shell (24 retro_* exports),
+  mirroring the go-gameboy core's shell
