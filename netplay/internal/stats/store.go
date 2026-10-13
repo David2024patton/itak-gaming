@@ -241,6 +241,9 @@ func (s *Store) TopPlayers(limit int) []PlayerStat {
 	type agg struct {
 		seconds, plays int
 		games          map[string]struct{}
+		// Identity from the most recent report that carried one.
+		display, region string
+		idSeen          int64
 	}
 	byPlayer := make(map[string]*agg)
 	for _, r := range s.entries {
@@ -252,6 +255,11 @@ func (s *Store) TopPlayers(limit int) []PlayerStat {
 		a.seconds += r.Seconds
 		a.plays += r.Plays
 		a.games[r.Game] = struct{}{}
+		if r.Display != "" && r.LastPlayed >= a.idSeen {
+			a.display = r.Display
+			a.region = r.Region
+			a.idSeen = r.LastPlayed
+		}
 	}
 	out := make([]PlayerStat, 0, len(byPlayer))
 	for name, a := range byPlayer {
@@ -260,6 +268,8 @@ func (s *Store) TopPlayers(limit int) []PlayerStat {
 			Seconds: a.seconds,
 			Plays:   a.plays,
 			Games:   len(a.games),
+			Display: a.display,
+			Region:  a.region,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -327,6 +337,8 @@ func (s *Store) Recent(limit int) []RecentEntry {
 			Game:       r.Game,
 			LastPlayed: r.LastPlayed,
 			Seconds:    r.Seconds,
+			Display:    r.Display,
+			Region:     r.Region,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
