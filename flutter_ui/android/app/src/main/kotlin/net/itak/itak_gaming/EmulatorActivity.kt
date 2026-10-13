@@ -2,6 +2,7 @@ package net.itak.itak_gaming
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -44,6 +45,7 @@ class EmulatorActivity : Activity(), TextureListener {
         const val EXTRA_NP_SERVER = "np_server"
         const val EXTRA_NP_MODE = "np_mode"
         const val EXTRA_NP_PLAYER = "np_player"
+        const val EXTRA_NP_PASSWORD = "np_password"
         private const val TAG = "iTaKEmu"
 
         // Global leaderboard server. Must match kServerBase in
@@ -52,6 +54,7 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private lateinit var glView: EmuGLView
+    private var coreAssetName: String = "libsnes9x.so"
     private var audioTrack: AudioTrack? = null
     @Volatile private var running = false
     @Volatile private var paused = false
@@ -73,6 +76,11 @@ class EmulatorActivity : Activity(), TextureListener {
     private var npLobby: String = ""
     private var npToken: String = ""
     private var npServer: String = ""
+    // The lobby password from our own create/join/watch, kept so
+    // a seat rotation (below) can re-enter the room through the
+    // seat endpoints without asking the player again. Blank for
+    // open lobbies, which is what the endpoints expect there.
+    private var npPassword: String = ""
     @Volatile private var npReady = false
     @Volatile private var npFailed: String? = null
     @Volatile private var npCancelled = false
@@ -94,6 +102,10 @@ class EmulatorActivity : Activity(), TextureListener {
     private var watchBanner: TextView? = null
     private var watchWaitLine: TextView? = null
     private var watchEndShown = false
+    // Seat promotion (the host named us for seat 2): runs once,
+    // and while it runs the wait line is ours, not the phase's.
+    private var watchSeatBusy = false
+    private var watchStatusOverride: String? = null
     private val watchTicker = object : Runnable {
         override fun run() {
             if (!watching || isFinishing) return
@@ -114,6 +126,29 @@ class EmulatorActivity : Activity(), TextureListener {
     private var readyButton: Button? = null
     private var myName: String = ""
     private var rootFrameRef: FrameLayout? = null
+
+    // ----- Seats and rotation (host referee, PROTOCOL.md 4.9) -----
+    // The Members list under the player lines: rebuilt only when
+    // the roster JSON changes. The host taps a Watching row to
+    // offer that player seat 2 for the next match.
+    private var membersBox: LinearLayout? = null
+    private var lastRosterJson: String = ""
+    // A status line that outranks the phase text for a while
+    // ("Moving Fan into seat 2..."), so a room event is seen.
+    private var roomNotice: String? = null
+    private var roomNoticeUntil: Long = 0L
+    // A role switch (demotion to watcher, promotion to guest)
+    // replaces this activity with a fresh one in the new role.
+    // While one runs, this instance must not tear down the
+    // shared Go bridge on its way out: the new instance owns it.
+    @Volatile private var roleSwitching = false
+    @Volatile private var seatDanceBusy = false
+    // Match end: exactly one caller (the in-game ticker, or
+    // the game thread whose step the end interrupted) drives
+    // the return to the room.
+    private val matchEndLock = Object()
+    private var matchEndBusy = false
+    private var pauseDialog: AlertDialog? = null
 
     // ----- Netplay text chat -----
     // Two surfaces over the one session chat log in the Go
@@ -151,6 +186,19 @@ class EmulatorActivity : Activity(), TextureListener {
             if (!netplay || isFinishing) {
                 pauseBanner?.visibility = View.GONE
                 return
+            }
+            // Match end (rotation): either player can end the
+            // match without ending the session. Our own send
+            // surfaces through the same poll, so the pause menu's
+            // "End match" and "I lost" only send; this drives
+            // the return to the room for everyone.
+            if (npReady) {
+                val endReason = try {
+                    Mobile.netplayPollMatchEnd()
+                } catch (e: Exception) {
+                    ""
+                }
+                if (endReason.isNotEmpty()) handleMatchEnd(endReason)
             }
             // Host duty: spectators ask for a snapshot when they
             // join mid-match or fall behind (watch_sync). The poll
@@ -329,6 +377,7 @@ class EmulatorActivity : Activity(), TextureListener {
         setContentView(rootFrame)
 
         val coreAsset = intent.getStringExtra(EXTRA_CORE) ?: "libsnes9x.so"
+        coreAssetName = coreAsset
         romPath = intent.getStringExtra(EXTRA_ROM) ?: return finish()
         Log.i(TAG, "onCreate: core=$coreAsset rom=$romPath")
 
@@ -360,6 +409,7 @@ class EmulatorActivity : Activity(), TextureListener {
         npServer = intent.getStringExtra(EXTRA_NP_SERVER) ?: ""
         npMode = intent.getStringExtra(EXTRA_NP_MODE) ?: ""
         npPlayer = intent.getStringExtra(EXTRA_NP_PLAYER) ?: ""
+        npPassword = intent.getStringExtra(EXTRA_NP_PASSWORD) ?: ""
         if (netplay) {
             Log.i(TAG, "netplay role=$npRole lobby=$npLobby")
             myName = currentPlayer()
@@ -465,6 +515,24 @@ class EmulatorActivity : Activity(), TextureListener {
         val spacer3 = View(this)
         panel.addView(spacer3, LinearLayout.LayoutParams(1, 30))
 
+        // Members: everyone in the room with their seat tag,
+        // from the server roster (see refreshMembers). Bounded
+        // height: a full room is two players plus ten watchers,
+        // and the list scrolls instead of pushing the panel off
+        // the screen. Host rows for watchers are tappable.
+        panel.addView(roomText("Members", 20f, true))
+        val membersScroll = ScrollView(this)
+        val mb = LinearLayout(this)
+        mb.orientation = LinearLayout.VERTICAL
+        membersBox = mb
+        membersScroll.addView(mb)
+        panel.addView(
+            membersScroll,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 176)
+        )
+        val spacerM = View(this)
+        panel.addView(spacerM, LinearLayout.LayoutParams(1, 24))
+
         val btn = Button(this)
         btn.text = "READY"
         btn.textSize = 24f
@@ -532,6 +600,11 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private fun updateRoom() {
+        // Seat calls land in the room phase: the guest watches
+        // for its own rotation out, everyone refreshes the
+        // member list either way.
+        pollSeatAssignsRoom()
+        refreshMembers()
         val phase = try { Mobile.netplayPhase() } catch (e: Exception) { "waiting" }
         val peer = try { Mobile.netplayPeerName() } catch (e: Exception) { "" }
         val peerReady = try { Mobile.netplayPeerReady() } catch (e: Exception) { false }
@@ -579,11 +652,310 @@ class EmulatorActivity : Activity(), TextureListener {
                     "Guests pick this lobby on the Online screen. BACK leaves."
             }
         }
+        // A fresh room event (a seat move) outranks the phase
+        // text until it ages out, so it is actually read.
+        val notice = roomNotice
+        if (notice != null && System.currentTimeMillis() < roomNoticeUntil) {
+            roomStatusLine?.text = notice
+        }
         roomChat?.poll()
     }
 
     private fun hideRoom() {
         roomOverlay?.visibility = View.GONE
+    }
+
+    // ----- Match end: back to the room, same session -----
+
+    /**
+     * A match ended (ours or the peer's send; both surface
+     * through the same one-shot poll). Exactly one caller
+     * drives: the game thread whose step the end interrupted
+     * and this ticker can race to the poll, so the transition
+     * is claimed under a lock before anything moves.
+     *
+     * The session stays alive in the room phase (PROTOCOL.md
+     * 4.9): no NetplayStop, no finish. The finished match is
+     * recorded for stats exactly like a session end, the core
+     * is reloaded to power-on (the next handshake snapshots
+     * whatever the core holds; a fresh match must not inherit
+     * the last one's corpse), and the next match's handshake
+     * starts on its own thread behind the room UI, same as the
+     * first one did.
+     */
+    private fun handleMatchEnd(reason: String) {
+        synchronized(matchEndLock) {
+            if (!npReady || matchEndBusy) return
+            matchEndBusy = true
+            npReady = false
+        }
+        runOnUiThread {
+            try {
+                if (isFinishing) return@runOnUiThread
+                // Close whatever the match had open: the chat
+                // panel, the pause menu. The dismiss listener's
+                // resume is harmless here; the room owns the
+                // screen now.
+                if (chatOverlay?.visibility == View.VISIBLE) {
+                    chatOverlay?.visibility = View.GONE
+                    uiHandler.removeCallbacks(chatTicker)
+                }
+                pauseDialog?.let { if (it.isShowing) it.dismiss() }
+                menuOpen = false
+                keepPaused = false
+                paused = false
+                try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
+                try {
+                    Mobile.netplaySetPaused(false)
+                } catch (e: Exception) { /* ignore */ }
+                statsEnd()
+                statsBegin()
+                try {
+                    Mobile.loadGame(romPath)
+                } catch (e: Exception) {
+                    Log.w(TAG, "match end reload failed", e)
+                }
+                localMask = 0
+                npFailed = null
+                Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
+                roomPanel?.visibility = View.VISIBLE
+                roomCountLine?.visibility = View.GONE
+                roomOverlay?.visibility = View.VISIBLE
+                lastRosterJson = "" // force a members rebuild
+                uiHandler.removeCallbacks(roomTicker)
+                uiHandler.post(roomTicker)
+                thread(name = "netplay-next") {
+                    val err = try {
+                        Mobile.netplayStartNextMatch()
+                    } catch (e: Exception) {
+                        "session error"
+                    }
+                    if (err.isEmpty()) {
+                        npReady = true
+                        Log.i(TAG, "next match ready")
+                    } else {
+                        if (roleSwitching || npCancelled || isFinishing) {
+                            return@thread
+                        }
+                        npFailed = err
+                        Log.w(TAG, "next match failed: $err")
+                        runOnUiThread {
+                            if (isFinishing) return@runOnUiThread
+                            AlertDialog.Builder(this)
+                                .setTitle("Online game ended")
+                                .setMessage(err)
+                                .setPositiveButton("OK") { _, _ -> finish() }
+                                .setOnDismissListener { finish() }
+                                .show()
+                        }
+                    }
+                }
+            } finally {
+                synchronized(matchEndLock) { matchEndBusy = false }
+            }
+        }
+    }
+
+    // ----- Members list and seat control -----
+
+    /**
+     * Rebuild the Members rows from the bridge roster, but only
+     * when it changed: the room ticks five times a second and a
+     * rebuild under the remote's focus would drop the row the
+     * host is standing on. Watchers on the host's screen are
+     * tappable rows: tapping offers them seat 2.
+     */
+    private fun refreshMembers() {
+        val box = membersBox ?: return
+        val raw = try { Mobile.netplayRosterJSON() } catch (e: Exception) { return }
+        if (raw == lastRosterJson) return
+        lastRosterJson = raw
+        box.removeAllViews()
+        val arr = try {
+            org.json.JSONObject(raw).optJSONArray("members")
+        } catch (e: Exception) {
+            null
+        } ?: return
+        for (i in 0 until arr.length()) {
+            val m = arr.optJSONObject(i) ?: continue
+            val name = m.optString("name")
+            val role = m.optString("role")
+            if (name.isEmpty()) continue
+            val tag = when (role) {
+                "host" -> "Seat 1 · Host"
+                "guest" -> "Seat 2"
+                else -> "Watching"
+            }
+            val row = roomText("$name · $tag", 20f)
+            row.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            if (npRole == "host" && role == "spectator") {
+                row.isFocusable = true
+                row.isClickable = true
+                row.setPadding(18, 10, 18, 10)
+                row.setOnFocusChangeListener { v, hasFocus ->
+                    v.setBackgroundColor(
+                        if (hasFocus) Color.argb(70, 255, 255, 255)
+                        else Color.TRANSPARENT
+                    )
+                }
+                row.setOnClickListener { confirmSeatAssign(name) }
+            }
+            box.addView(row)
+        }
+    }
+
+    /** The host referee's one v1 call: this watcher plays next. */
+    private fun confirmSeatAssign(name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Put $name in seat 2?")
+            .setMessage("$name plays the next match in the guest seat. " +
+                "Whoever holds it now moves to watching.")
+            .setPositiveButton("Put in seat 2") { _, _ ->
+                val err = try {
+                    Mobile.netplaySendSeatAssign(name, 2)
+                } catch (e: Exception) {
+                    "seat change failed"
+                }
+                if (err.isEmpty()) {
+                    roomNotice = "Moving $name into seat 2..."
+                    roomNoticeUntil = System.currentTimeMillis() + 8000
+                    roomStatusLine?.text = roomNotice
+                } else {
+                    Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Drain seat calls while in the room. The host never acts
+     * on one (its own calls do not come back, and a claim from
+     * anyone else is not the referee speaking); draining just
+     * keeps the queue clean. The guest acts on exactly one
+     * shape: seat 2 named for somebody else rotates the guest
+     * out, and it falls back to watching.
+     */
+    private fun pollSeatAssignsRoom() {
+        var guard = 0
+        while (guard < 4) {
+            val raw = try {
+                Mobile.netplayPollSeatAssign()
+            } catch (e: Exception) {
+                return
+            }
+            if (raw.isEmpty()) return
+            guard++
+            if (npRole != "guest" || seatDanceBusy) continue
+            val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { continue }
+            val player = obj.optString("player")
+            val seat = obj.optInt("seat", 0)
+            if (seat == 2 && player.isNotEmpty() && player != myName) {
+                startDemotionDance()
+                return
+            }
+        }
+    }
+
+    /**
+     * Guest rotation, out: leave the player seat quietly (a
+     * socket close, never a session_end: the host's session
+     * would take one of those as the whole room ending), take
+     * a spectator seat through the watch endpoint, and hand
+     * the screen over to a fresh activity in watch mode.
+     */
+    private fun startDemotionDance() {
+        if (seatDanceBusy || isFinishing) return
+        seatDanceBusy = true
+        roleSwitching = true
+        npCancelled = true // the connect thread's failure is this, expected
+        roomNotice = "You got rotated out. Moving to the watcher seats..."
+        roomNoticeUntil = Long.MAX_VALUE
+        roomStatusLine?.text = roomNotice
+        thread(name = "seat-demotion") {
+            try { Mobile.netplayLeaveSeat() } catch (e: Exception) { /* already gone */ }
+            val token = postLobbySeat("/watch", "spectatorToken")
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (token == null) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Could not move to watching")
+                        .setMessage("The seat change went through, but this box " +
+                            "could not take a watcher seat. The room goes on without you.")
+                        .setPositiveButton("OK") { _, _ -> finish() }
+                        .setOnDismissListener { finish() }
+                        .show()
+                    return@runOnUiThread
+                }
+                val intent = Intent(this, EmulatorActivity::class.java)
+                intent.putExtra(EXTRA_CORE, coreAssetName)
+                intent.putExtra(EXTRA_ROM, romPath)
+                intent.putExtra(EXTRA_NP_MODE, "watch")
+                intent.putExtra(EXTRA_NP_SERVER, npServer)
+                intent.putExtra(EXTRA_NP_LOBBY, npLobby)
+                intent.putExtra(EXTRA_NP_TOKEN, token)
+                intent.putExtra(EXTRA_NP_PLAYER, myName)
+                intent.putExtra(EXTRA_NP_PASSWORD, npPassword)
+                startActivity(intent)
+                finish()
+            }
+        }
+    }
+
+    /**
+     * POST {player, password} to one of the lobby seat
+     * endpoints (/watch or /join) and return the token field
+     * of the reply, or null. A seat changes hands over a few
+     * seconds (the outgoing player's socket has to close
+     * before the server frees the name or the seat), so a
+     * "not yet" answer (seat taken, name taken, rate brake)
+     * retries every 2 seconds for up to 20 seconds; a wrong
+     * password or a gone lobby answers at once. Blocking:
+     * call from a background thread only.
+     */
+    private fun postLobbySeat(path: String, tokenField: String): String? {
+        val base = npServer.ifEmpty { SERVER_BASE }
+        val deadline = System.currentTimeMillis() + 20_000
+        while (true) {
+            var retryable = true
+            try {
+                val body = org.json.JSONObject()
+                    .put("player", myName)
+                    .put("password", npPassword)
+                val conn = java.net.URL("$base/lobbies/$npLobby$path")
+                    .openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.use {
+                    it.write(body.toString().toByteArray(Charsets.UTF_8))
+                }
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val text = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val token = try {
+                        org.json.JSONObject(text).optString(tokenField)
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    if (token.isNotEmpty()) return token
+                } else {
+                    conn.disconnect()
+                    // A gone lobby and a wrong password will
+                    // still be gone and wrong in 2 seconds.
+                    retryable = code != 401 && code != 404
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "seat endpoint $path failed", e)
+            }
+            if (!retryable || System.currentTimeMillis() + 2000 > deadline) {
+                return null
+            }
+            Thread.sleep(2000)
+        }
     }
 
     // ----- Watch mode UI -----
@@ -622,8 +994,73 @@ class EmulatorActivity : Activity(), TextureListener {
         watchWaitLine = wait
     }
 
+    /**
+     * Drain seat calls while watching. The host referee naming
+     * us for seat 2 is a promotion: leave the watcher seat,
+     * take the guest seat through the join endpoint, and hand
+     * the screen to a fresh activity as a player. A call naming
+     * anyone else needs nothing from us; the roster and the
+     * banner already follow the room.
+     */
+    private fun pollWatchSeatAssigns() {
+        if (watchSeatBusy) return
+        var guard = 0
+        while (guard < 4) {
+            val raw = try {
+                Mobile.netplayPollSeatAssign()
+            } catch (e: Exception) {
+                return
+            }
+            if (raw.isEmpty()) return
+            guard++
+            val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { continue }
+            if (obj.optString("player") == myName && obj.optInt("seat", 0) == 2) {
+                startPromotionDance()
+                return
+            }
+        }
+    }
+
+    /** Watcher rotation, in: swap the spectator token for a seat. */
+    private fun startPromotionDance() {
+        if (watchSeatBusy || isFinishing) return
+        watchSeatBusy = true
+        roleSwitching = true
+        watchStatusOverride = "Taking your seat..."
+        watchWaitLine?.visibility = View.VISIBLE
+        watchWaitLine?.text = watchStatusOverride
+        thread(name = "seat-promotion") {
+            try { Mobile.netplayStopWatch() } catch (e: Exception) { /* already gone */ }
+            val token = postLobbySeat("/join", "guestToken")
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (token == null) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Could not take the seat")
+                        .setMessage("The host put you in seat 2, but this box " +
+                            "could not join as the guest in time.")
+                        .setPositiveButton("OK") { _, _ -> finish() }
+                        .setOnDismissListener { finish() }
+                        .show()
+                    return@runOnUiThread
+                }
+                val intent = Intent(this, EmulatorActivity::class.java)
+                intent.putExtra(EXTRA_CORE, coreAssetName)
+                intent.putExtra(EXTRA_ROM, romPath)
+                intent.putExtra(EXTRA_NP_ROLE, "guest")
+                intent.putExtra(EXTRA_NP_LOBBY, npLobby)
+                intent.putExtra(EXTRA_NP_TOKEN, token)
+                intent.putExtra(EXTRA_NP_SERVER, npServer)
+                intent.putExtra(EXTRA_NP_PASSWORD, npPassword)
+                startActivity(intent)
+                finish()
+            }
+        }
+    }
+
     /** Poll the watch state: banner names, waiting line, the end. */
     private fun updateWatchBanner() {
+        pollWatchSeatAssigns()
         val raw = try { Mobile.netplayWatchInfo() } catch (e: Exception) { return }
         val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return }
         val phase = obj.optString("phase", "waiting")
@@ -644,6 +1081,15 @@ class EmulatorActivity : Activity(), TextureListener {
                 } else {
                     "Waiting for the match to start"
                 }
+        }
+        // A seat promotion in flight owns the wait line (and is
+        // not a watch ending, whatever the phase says now that
+        // the watch session is stopped).
+        val override = watchStatusOverride
+        if (override != null) {
+            watchWaitLine?.visibility = View.VISIBLE
+            watchWaitLine?.text = override
+            return
         }
         if (phase == "ended" && !watchEndShown) {
             watchEndShown = true
@@ -1016,19 +1462,48 @@ class EmulatorActivity : Activity(), TextureListener {
                 ranFrame = watchStepOnce()
                 if (!ranFrame) Thread.sleep(10)
             } else if (netplay) {
-                val err = Mobile.netplayStep(localMask.toLong())
-                if (err.isNotEmpty()) {
-                    Log.w(TAG, "netplay ended: $err")
-                    running = false
-                    runOnUiThread {
-                        AlertDialog.Builder(this)
-                            .setTitle("Online game ended")
-                            .setMessage(err)
-                            .setPositiveButton("OK") { _, _ -> finish() }
-                            .setOnDismissListener { finish() }
-                            .show()
+                if (!npReady) {
+                    // Room phase: before the first match, and
+                    // between matches after a match end. The
+                    // room UI owns the screen and the handshake
+                    // runs on its own thread; stepping a session
+                    // that is sitting in the room is an error by
+                    // design, so idle instead.
+                    ranFrame = false
+                    Thread.sleep(30)
+                } else {
+                    val err = Mobile.netplayStep(localMask.toLong())
+                    if (err.isNotEmpty()) {
+                        // A match end lands here as a step error:
+                        // the session fell back to the room
+                        // mid-step (PROTOCOL.md 4.9). If a match
+                        // end is on record it is a rotation, not
+                        // a death; and if the ticker already took
+                        // the record, npReady is down and the step
+                        // stopped for the room, also not a death.
+                        val endReason = try {
+                            Mobile.netplayPollMatchEnd()
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        if (endReason.isNotEmpty()) {
+                            handleMatchEnd(endReason)
+                        } else if (!npReady) {
+                            Log.i(TAG, "netplay step stopped for the room: $err")
+                        } else {
+                            Log.w(TAG, "netplay ended: $err")
+                            running = false
+                            runOnUiThread {
+                                AlertDialog.Builder(this)
+                                    .setTitle("Online game ended")
+                                    .setMessage(err)
+                                    .setPositiveButton("OK") { _, _ -> finish() }
+                                    .setOnDismissListener { finish() }
+                                    .show()
+                            }
+                            break
+                        }
                     }
-                    break
                 }
             } else {
                 Mobile.runFrame()
@@ -1317,6 +1792,32 @@ class EmulatorActivity : Activity(), TextureListener {
                 keepPaused = true
                 window.decorView.postDelayed({ showChatPanel() }, 200)
             })
+            // Match end (rotation): these only send. The event
+            // lands back through PollMatchEnd, ours included,
+            // and the ticker drives the return to the room, so
+            // both players arrive there together.
+            if (npRole == "host") {
+                entries.add("End match" to {
+                    val err = try {
+                        Mobile.netplaySendMatchEnd("Host ended the match")
+                    } catch (e: Exception) {
+                        "could not end the match"
+                    }
+                    if (err.isNotEmpty()) {
+                        Toast.makeText(this, err, Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
+            entries.add("I lost" to {
+                val err = try {
+                    Mobile.netplaySendMatchEnd("$myName lost")
+                } catch (e: Exception) {
+                    "could not end the match"
+                }
+                if (err.isNotEmpty()) {
+                    Toast.makeText(this, err, Toast.LENGTH_SHORT).show()
+                }
+            })
         }
         entries.add("Save Game" to { doSave() })
         entries.add("Load Game" to { doLoad() })
@@ -1337,7 +1838,9 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         // Note: setMessage + setItems together renders an empty list on
         // this TV's dialog theme, so the player rides in the title.
-        AlertDialog.Builder(this)
+        // The dialog is kept in a field so a match end landing
+        // while the menu is open can close it (handleMatchEnd).
+        pauseDialog = AlertDialog.Builder(this)
             .setTitle("${File(romPath).nameWithoutExtension}  ·  ${currentPlayer()}")
             .setItems(entries.map { it.first }.toTypedArray()) { _, which ->
                 entries[which].second()
@@ -1628,11 +2131,18 @@ class EmulatorActivity : Activity(), TextureListener {
                 as android.hardware.input.InputManager
             im.unregisterInputDeviceListener(seatDeviceListener)
         } catch (e: Exception) { /* already gone */ }
-        if (netplay) {
-            try { Mobile.netplayStop() } catch (e: Exception) { /* already gone */ }
-        }
-        if (watching) {
-            try { Mobile.netplayStopWatch() } catch (e: Exception) { /* already gone */ }
+        // A role switch hands this screen to a fresh activity
+        // in the new role, and that instance already owns the
+        // shared bridge (it reloaded the core and started its
+        // own session). Tearing the bridge down here would
+        // close the new instance's game out from under it.
+        if (!roleSwitching) {
+            if (netplay) {
+                try { Mobile.netplayStop() } catch (e: Exception) { /* already gone */ }
+            }
+            if (watching) {
+                try { Mobile.netplayStopWatch() } catch (e: Exception) { /* already gone */ }
+            }
         }
         statsEnd()
         running = false
@@ -1640,7 +2150,9 @@ class EmulatorActivity : Activity(), TextureListener {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
-        try { Mobile.close() } catch (e: Exception) { Log.w(TAG, "close failed", e) }
+        if (!roleSwitching) {
+            try { Mobile.close() } catch (e: Exception) { Log.w(TAG, "close failed", e) }
+        }
         super.onDestroy()
     }
 
