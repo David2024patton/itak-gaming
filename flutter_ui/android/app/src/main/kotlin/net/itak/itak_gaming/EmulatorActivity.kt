@@ -46,6 +46,7 @@ class EmulatorActivity : Activity(), TextureListener {
         const val EXTRA_NP_MODE = "np_mode"
         const val EXTRA_NP_PLAYER = "np_player"
         const val EXTRA_NP_PASSWORD = "np_password"
+        const val EXTRA_NP_TOURNAMENT = "np_tournament"
         private const val TAG = "iTaKEmu"
 
         // Global leaderboard server. Must match kServerBase in
@@ -81,6 +82,12 @@ class EmulatorActivity : Activity(), TextureListener {
     // seat endpoints without asking the player again. Blank for
     // open lobbies, which is what the endpoints expect there.
     private var npPassword: String = ""
+    // The tournament name for a hosted room (Online screen,
+    // optional; blank = casual room, nothing is reported).
+    // Guests and watchers launch without it and learn the
+    // name from the host's room envelope instead (the Go
+    // session holds it; see knownTournamentName).
+    private var npTournament: String = ""
     @Volatile private var npReady = false
     @Volatile private var npFailed: String? = null
     @Volatile private var npCancelled = false
@@ -150,6 +157,39 @@ class EmulatorActivity : Activity(), TextureListener {
     private var matchEndBusy = false
     private var pauseDialog: AlertDialog? = null
 
+    // ----- Got Next (winner stays, PROTOCOL.md 4.10) -----
+    // The line for seat 2. The waiting room and the watch
+    // screen carry the same toggle button and "Next up"
+    // line, fed by the one bridge read
+    // (Mobile.netplayGotNextJSON) on their existing tickers.
+    private var roomGotNextButton: Button? = null
+    private var roomLineLabel: TextView? = null
+    private var roomGotNextMine = false
+    private var lastGotNextJson: String = ""
+    private var watchGotNextButton: Button? = null
+    private var watchLineLabel: TextView? = null
+    private var watchGotNextMine = false
+    private var lastWatchGotNextJson: String = ""
+    // A rotation the host planned at match end: the name
+    // that takes seat 2, and when the assign fires (a breath
+    // after the room settles, from updateRoom).
+    private var pendingNextUp: String? = null
+    private var pendingNextUpAt: Long = 0L
+
+    // Tournaments (host reporting, PROTOCOL.md 8)
+    // The host broadcasts the room's tournament name through
+    // the session (Mobile.netplaySendTournamentName) and
+    // reports each match's result to the server when it ends
+    // with a declared loser. The send is armed, not periodic:
+    // it fires when this screen starts, once more when the
+    // guest first shows (a first send can race their reader),
+    // and again after every match end.
+    @Volatile private var tournamentSendArmed = true
+    private var tournamentPeerSeen = false
+    private var tournamentRow: LinearLayout? = null
+    private var tournamentLine: TextView? = null
+    private var lastTournamentShown: String? = null
+
     // ----- Netplay text chat -----
     // Two surfaces over the one session chat log in the Go
     // engine: a box built into the waiting room panel below, and
@@ -214,6 +254,36 @@ class EmulatorActivity : Activity(), TextureListener {
                         guard++
                     }
                 } catch (e: Exception) { /* silent */ }
+            }
+            // Host duty: the Got Next line moves whenever
+            // anyone in the room joins or leaves it, in the
+            // room or mid match, and this ticker runs in both.
+            // The rebroadcast is what makes every list in the
+            // room agree; a failure leaves the dirty flag up
+            // and the next tick retries.
+            if (npRole == "host") {
+                try {
+                    if (Mobile.netplayGotNextDirty()) {
+                        Mobile.netplayBroadcastGotNextQueue()
+                    }
+                } catch (e: Exception) { /* silent */ }
+            }
+            // Host duty: the room's tournament name rides out
+            // on the session so the guest's room and the
+            // watchers can show it. Armed sends only (screen
+            // start, the guest's arrival, each match end); a
+            // send that finds no session yet just stays armed
+            // for the next tick.
+            if (npRole == "host" && npTournament.isNotEmpty() &&
+                tournamentSendArmed
+            ) {
+                try {
+                    if (Mobile.netplaySendTournamentName(npTournament)
+                            .isEmpty()
+                    ) {
+                        tournamentSendArmed = false
+                    }
+                } catch (e: Exception) { /* stays armed */ }
             }
             val banner = pauseBanner
             if (banner != null) {
@@ -410,6 +480,7 @@ class EmulatorActivity : Activity(), TextureListener {
         npMode = intent.getStringExtra(EXTRA_NP_MODE) ?: ""
         npPlayer = intent.getStringExtra(EXTRA_NP_PLAYER) ?: ""
         npPassword = intent.getStringExtra(EXTRA_NP_PASSWORD) ?: ""
+        npTournament = intent.getStringExtra(EXTRA_NP_TOURNAMENT) ?: ""
         if (netplay) {
             Log.i(TAG, "netplay role=$npRole lobby=$npLobby")
             myName = currentPlayer()
@@ -503,6 +574,41 @@ class EmulatorActivity : Activity(), TextureListener {
         val sub = roomText("$gameName  ·  Lobby $npLobby", 19f)
         sub.setTextColor(Color.argb(180, 255, 255, 255))
         panel.addView(sub)
+
+        // Tournament (PROTOCOL.md 8): when the room runs under
+        // a tournament name, it shows here for everyone who
+        // knows it, and the host gets the Champion button that
+        // crowns the event's winner on the server board. The
+        // whole row hides for a casual room. refreshTournament
+        // fills it in on the room ticker.
+        val tRow = LinearLayout(this)
+        tRow.orientation = LinearLayout.HORIZONTAL
+        tRow.gravity = Gravity.CENTER
+        val tLine = roomText("", 19f, true)
+        tLine.setTextColor(Color.rgb(255, 213, 79))
+        tRow.addView(
+            tLine,
+            LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            )
+        )
+        if (npRole == "host") {
+            val champBtn = Button(this)
+            champBtn.text = "CHAMPION"
+            champBtn.textSize = 18f
+            champBtn.isFocusable = true
+            champBtn.setOnClickListener { pickChampion() }
+            tRow.addView(
+                champBtn,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 76
+                )
+            )
+        }
+        tRow.visibility = View.GONE
+        tournamentRow = tRow
+        tournamentLine = tLine
+        panel.addView(tRow)
         val spacer1 = View(this)
         panel.addView(spacer1, LinearLayout.LayoutParams(1, 36))
 
@@ -545,6 +651,43 @@ class EmulatorActivity : Activity(), TextureListener {
         panel.addView(btn, LinearLayout.LayoutParams(360, 96))
         val spacer4 = View(this)
         panel.addView(spacer4, LinearLayout.LayoutParams(1, 22))
+
+        // Got Next (winner stays, PROTOCOL.md 4.10): the line
+        // for seat 2, and the button that joins or leaves it.
+        // The host also gets Random challenger, which offers a
+        // random watcher seat 2 through the S4 confirm flow.
+        roomLineLabel = roomText("", 18f)
+        roomLineLabel?.setTextColor(Color.argb(170, 255, 255, 255))
+        panel.addView(roomLineLabel)
+        val nextRow = LinearLayout(this)
+        nextRow.orientation = LinearLayout.HORIZONTAL
+        nextRow.gravity = Gravity.CENTER
+        val gotNextBtn = Button(this)
+        gotNextBtn.text = "GOT NEXT"
+        gotNextBtn.textSize = 20f
+        gotNextBtn.isFocusable = true
+        gotNextBtn.setOnClickListener { toggleGotNextRoom() }
+        roomGotNextButton = gotNextBtn
+        nextRow.addView(gotNextBtn, LinearLayout.LayoutParams(0, 88, 1f))
+        if (npRole == "host") {
+            val rowGap = View(this)
+            nextRow.addView(rowGap, LinearLayout.LayoutParams(20, 1))
+            val randomBtn = Button(this)
+            randomBtn.text = "RANDOM CHALLENGER"
+            randomBtn.textSize = 20f
+            randomBtn.isFocusable = true
+            randomBtn.setOnClickListener { pickRandomChallenger() }
+            nextRow.addView(randomBtn, LinearLayout.LayoutParams(0, 88, 1f))
+        }
+        panel.addView(
+            nextRow,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        val spacerG = View(this)
+        panel.addView(spacerG, LinearLayout.LayoutParams(1, 22))
 
         roomStatusLine = roomText("", 18f)
         roomStatusLine?.setTextColor(Color.argb(170, 255, 255, 255))
@@ -605,6 +748,8 @@ class EmulatorActivity : Activity(), TextureListener {
         // member list either way.
         pollSeatAssignsRoom()
         refreshMembers()
+        refreshGotNextRoom()
+        if (npRole == "host") firePendingNextUp()
         val phase = try { Mobile.netplayPhase() } catch (e: Exception) { "waiting" }
         val peer = try { Mobile.netplayPeerName() } catch (e: Exception) { "" }
         val peerReady = try { Mobile.netplayPeerReady() } catch (e: Exception) { false }
@@ -657,6 +802,14 @@ class EmulatorActivity : Activity(), TextureListener {
         val notice = roomNotice
         if (notice != null && System.currentTimeMillis() < roomNoticeUntil) {
             roomStatusLine?.text = notice
+        }
+        refreshTournament()
+        // The guest is here: if our first tournament name
+        // send raced their reader, send it once more now
+        // that the room has actually formed around them.
+        if (npRole == "host" && !tournamentPeerSeen && peer.isNotEmpty()) {
+            tournamentPeerSeen = true
+            if (npTournament.isNotEmpty()) tournamentSendArmed = true
         }
         roomChat?.poll()
     }
@@ -724,6 +877,20 @@ class EmulatorActivity : Activity(), TextureListener {
                 lastRosterJson = "" // force a members rebuild
                 uiHandler.removeCallbacks(roomTicker)
                 uiHandler.post(roomTicker)
+                // Got Next: the host plans the winner-stays
+                // rotation now; it fires from updateRoom once
+                // the room has settled. The line itself lives
+                // in the Go session and survived the match end
+                // untouched, like the chat did.
+                if (npRole == "host") planGotNextRotation(reason)
+                if (npRole == "host") {
+                    // Tournament (PROTOCOL.md 8): report the
+                    // result under the room's name, and re-arm
+                    // the name send so the room landing again
+                    // re-states it for anyone who missed it.
+                    reportTournamentResult(reason)
+                    if (npTournament.isNotEmpty()) tournamentSendArmed = true
+                }
                 thread(name = "netplay-next") {
                     val err = try {
                         Mobile.netplayStartNextMatch()
@@ -958,6 +1125,392 @@ class EmulatorActivity : Activity(), TextureListener {
         }
     }
 
+    // ----- Got Next: the line UI and the host's rotation -----
+
+    /** Names out of a netplayGotNextJSON payload, in order. */
+    private fun gotNextNames(obj: org.json.JSONObject): List<String> {
+        val arr = obj.optJSONArray("queue") ?: return emptyList()
+        val out = ArrayList<String>()
+        for (i in 0 until arr.length()) {
+            val n = arr.optString(i)
+            if (n.isNotEmpty()) out.add(n)
+        }
+        return out
+    }
+
+    /** The line as the bridge reports it right now. */
+    private fun gotNextQueueNames(): List<String> {
+        val raw = try { Mobile.netplayGotNextJSON() } catch (e: Exception) {
+            return emptyList()
+        }
+        val obj = try { org.json.JSONObject(raw) } catch (e: Exception) {
+            return emptyList()
+        }
+        return gotNextNames(obj)
+    }
+
+    /** "Next up: A, B, C" for a line, first three names. */
+    private fun nextUpText(names: List<String>): String =
+        if (names.isEmpty()) {
+            "Next up: the line is empty"
+        } else {
+            "Next up: " + names.take(3).joinToString(", ") +
+                if (names.size > 3) " +${names.size - 3} more" else ""
+        }
+
+    /**
+     * Refresh the room's Got Next row from the bridge, but
+     * only when the payload changed (same discipline as the
+     * members list: the room ticks five times a second and
+     * the row under the remote must not churn).
+     */
+    private fun refreshGotNextRoom() {
+        val raw = try { Mobile.netplayGotNextJSON() } catch (e: Exception) { return }
+        if (raw == lastGotNextJson) return
+        lastGotNextJson = raw
+        val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return }
+        roomGotNextMine = obj.optBoolean("mine", false)
+        val pos = obj.optInt("position", 0)
+        roomGotNextButton?.text =
+            if (roomGotNextMine) "IN LINE #$pos · TAP TO LEAVE" else "GOT NEXT"
+        roomLineLabel?.text = nextUpText(gotNextNames(obj))
+    }
+
+    /** The room's Got Next button: join the line, or leave it. */
+    private fun toggleGotNextRoom() {
+        val err = try {
+            Mobile.netplaySendGotNext(!roomGotNextMine)
+        } catch (e: Exception) {
+            "could not update the line"
+        }
+        if (err.isNotEmpty()) {
+            Toast.makeText(this, err, Toast.LENGTH_SHORT).show()
+        }
+        lastGotNextJson = "" // re-read on the next room tick
+    }
+
+    /**
+     * Random challenger: the host's other referee toy. Picks
+     * one of the room's watchers at random and offers them
+     * seat 2 through the exact S4 confirm flow, so a random
+     * pick and a tapped pick land identically. (Picking two
+     * random players and sitting the host out is not in the
+     * v1 seat model: seat 1 is the referee's house seat.)
+     */
+    private fun pickRandomChallenger() {
+        val raw = try { Mobile.netplayRosterJSON() } catch (e: Exception) { return }
+        val arr = try {
+            org.json.JSONObject(raw).optJSONArray("members")
+        } catch (e: Exception) {
+            null
+        } ?: return
+        val watchers = ArrayList<String>()
+        for (i in 0 until arr.length()) {
+            val m = arr.optJSONObject(i) ?: continue
+            if (m.optString("role") == "spectator") {
+                val n = m.optString("name")
+                if (n.isNotEmpty()) watchers.add(n)
+            }
+        }
+        if (watchers.isEmpty()) {
+            Toast.makeText(
+                this, "Nobody is watching right now", Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        confirmSeatAssign(watchers.random())
+    }
+
+    /**
+     * Host rotation planning, called from the match-end path
+     * as the room lands. Winner stays, v1 shape: only seat 2
+     * rotates (seat 1 is the host referee's house seat), so a
+     * rotation can be planned only when the guest lost and
+     * someone eligible is in line. The loser is read out of
+     * the match end's own words: the pause menu's "I lost"
+     * sends "<name> lost", and the host's "End match" reason
+     * never takes that shape, so it never plans anything.
+     * The assign itself fires a breath later, from
+     * updateRoom, once the line can be re-read settled.
+     */
+    private fun planGotNextRotation(reason: String) {
+        if (!reason.endsWith(" lost")) return
+        val loser = reason.removeSuffix(" lost").trim()
+        if (loser.isEmpty()) return
+        if (loser == myName) {
+            // The host lost: the house seat rule. The host
+            // keeps seat 1 and referees on; the line keeps
+            // waiting for the next seat 2 opening, and the
+            // room says so instead of silently skipping it.
+            if (gotNextQueueNames().isNotEmpty()) {
+                roomNotice = "House seat: the line plays for seat 2"
+                roomNoticeUntil = System.currentTimeMillis() + 8000
+                roomStatusLine?.text = roomNotice
+            }
+            return
+        }
+        val peer = try { Mobile.netplayPeerName() } catch (e: Exception) { "" }
+        if (peer.isEmpty() || loser != peer) return
+        val next = gotNextQueueNames()
+            .firstOrNull { it != myName && it != loser } ?: return
+        pendingNextUp = next
+        pendingNextUpAt = System.currentTimeMillis() + 2000
+    }
+
+    /**
+     * Fire a planned rotation once its moment comes: the
+     * planned name takes the loser's seat through the same
+     * seat_assign a manual pick sends, and leaves the line
+     * as they take it (NoteSeatTaken). If the line moved on
+     * without them in the meantime, the plan dies quietly.
+     */
+    private fun firePendingNextUp() {
+        val next = pendingNextUp ?: return
+        if (System.currentTimeMillis() < pendingNextUpAt) return
+        pendingNextUp = null
+        if (!gotNextQueueNames().contains(next)) return
+        val err = try {
+            Mobile.netplaySendSeatAssign(next, 2)
+        } catch (e: Exception) {
+            "seat change failed"
+        }
+        if (err.isEmpty()) {
+            try { Mobile.netplayNoteSeatTaken(next) } catch (e: Exception) { /* ignore */ }
+            roomNotice = "Winner stays. Next up: $next"
+            roomNoticeUntil = System.currentTimeMillis() + 8000
+            roomStatusLine?.text = roomNotice
+        }
+    }
+
+    // Tournaments: name display, reporting, champion
+
+    /**
+     * The tournament name as this client knows it: the host's
+     * own (from its launch) first, the session's copy for
+     * everyone else (the host's envelope settled it there).
+     */
+    private fun knownTournamentName(): String {
+        if (npTournament.isNotEmpty()) return npTournament
+        return try {
+            Mobile.netplayTournamentName()
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /**
+     * Show or hide the room's tournament row from the name as
+     * currently known. Changed-only, like the members list:
+     * the room ticks five times a second and the row must not
+     * churn under the remote.
+     */
+    private fun refreshTournament() {
+        val name = knownTournamentName()
+        if (name == lastTournamentShown) return
+        lastTournamentShown = name
+        tournamentLine?.text =
+            if (name.isEmpty()) "" else "Tournament: $name"
+        tournamentRow?.visibility =
+            if (name.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /**
+     * This box's board identity (display name, home region)
+     * for a player, from the prefs the Flutter side keeps,
+     * trusted only when they name this exact player (the same
+     * rule uploadStats uses). Only the host's own identity is
+     * ever known here; a report carries it for whichever seat
+     * the host holds and leaves the other seat's fields out,
+     * and the server fills those in from that player's own
+     * reports.
+     */
+    private fun identityFor(player: String): Pair<String?, String?> {
+        val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
+        if (prefs.getString("identity_name", null) != player) {
+            return null to null
+        }
+        val display = prefs.getString("identity_display", null)
+            ?.takeIf { it.isNotBlank() }
+        val region = prefs.getString("identity_region", null)
+            ?.takeIf { it.isNotBlank() }
+        return display to region
+    }
+
+    /**
+     * POST a JSON body to the game server, fire and forget.
+     * Background thread only. A bad answer or a dead server
+     * is logged and nothing more: tournament bookkeeping
+     * must never disturb the room it is bookkeeping for.
+     */
+    private fun postToServer(path: String, body: org.json.JSONObject) {
+        try {
+            val base = npServer.ifEmpty { SERVER_BASE }
+            val conn = java.net.URL("$base$path")
+                .openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use {
+                it.write(body.toString().toByteArray(Charsets.UTF_8))
+            }
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code !in 200..299) {
+                Log.w(TAG, "POST $path answered $code")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "POST $path failed", e)
+        }
+    }
+
+    /**
+     * Host reporting, called from the match-end path when the
+     * room runs under a tournament name. The result counts
+     * only when the match ended with a declared loser, read
+     * out of the reason the way the Got Next rotation reads
+     * it: the pause menu's "I lost" sends "<name> lost", and
+     * the host's "End match" never takes that shape, so it
+     * never reports. With no loser there is nothing to send,
+     * and the room says so instead of silently skipping it.
+     */
+    private fun reportTournamentResult(reason: String) {
+        val tName = npTournament.trim()
+        if (tName.isEmpty()) return
+        if (!reason.endsWith(" lost")) {
+            roomNotice = "Not counted: no loser declared"
+            roomNoticeUntil = System.currentTimeMillis() + 8000
+            roomStatusLine?.text = roomNotice
+            return
+        }
+        val loser = reason.removeSuffix(" lost").trim()
+        val peer = try {
+            Mobile.netplayPeerName()
+        } catch (e: Exception) {
+            ""
+        }
+        val winner = when (loser) {
+            myName -> peer
+            peer -> myName
+            else -> ""
+        }
+        if (loser.isEmpty() || winner.isEmpty()) return
+        val body = org.json.JSONObject()
+            .put("tournament", tName)
+            .put("game", java.io.File(romPath).name)
+            .put("winner", winner)
+            .put("loser", loser)
+            .put("host", myName)
+        val (wDisplay, wRegion) = identityFor(winner)
+        if (wDisplay != null) body.put("winnerDisplay", wDisplay)
+        if (wRegion != null) body.put("winnerRegion", wRegion)
+        val (lDisplay, lRegion) = identityFor(loser)
+        if (lDisplay != null) body.put("loserDisplay", lDisplay)
+        if (lRegion != null) body.put("loserRegion", lRegion)
+        thread(name = "tournament-report") {
+            postToServer("/matches/report", body)
+        }
+    }
+
+    /**
+     * The Champion button: pick one of the room's current
+     * members to crown as the tournament's winner. The
+     * roster is the same list the Members rows show, seats
+     * and watchers alike: a tournament's winner is the
+     * host's call, and the board is honor system anyway.
+     */
+    private fun pickChampion() {
+        val tName = knownTournamentName()
+        if (tName.isEmpty()) return
+        val raw = try {
+            Mobile.netplayRosterJSON()
+        } catch (e: Exception) {
+            return
+        }
+        val arr = try {
+            org.json.JSONObject(raw).optJSONArray("members")
+        } catch (e: Exception) {
+            null
+        } ?: return
+        val names = ArrayList<String>()
+        for (i in 0 until arr.length()) {
+            val n = arr.optJSONObject(i)?.optString("name") ?: ""
+            if (n.isNotEmpty()) names.add(n)
+        }
+        if (names.isEmpty()) {
+            Toast.makeText(
+                this, "Nobody is in the room yet", Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Tournament champion")
+            .setItems(arrayOf<CharSequence>(*names.toTypedArray())) { _, which ->
+                confirmChampion(tName, names[which])
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Confirm and post the champion, in confirmSeatAssign's
+     * shape: a crown lands on a public board, so it gets the
+     * same second thought a seat change gets.
+     */
+    private fun confirmChampion(tournament: String, champion: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Crown $champion?")
+            .setMessage("$champion is recorded as the winner of " +
+                "$tournament on the tournament board.")
+            .setPositiveButton("Champion") { _, _ ->
+                val body = org.json.JSONObject()
+                    .put("tournament", tournament)
+                    .put("champion", champion)
+                    .put("host", myName)
+                val (display, region) = identityFor(champion)
+                if (display != null) body.put("championDisplay", display)
+                if (region != null) body.put("championRegion", region)
+                thread(name = "tournament-champion") {
+                    postToServer("/matches/champion", body)
+                }
+                roomNotice = "Champion: $champion"
+                roomNoticeUntil = System.currentTimeMillis() + 8000
+                roomStatusLine?.text = roomNotice
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Refresh the watch screen's Got Next bar from the
+     * bridge, same changed-only discipline as the room's.
+     */
+    private fun refreshWatchGotNext() {
+        val raw = try { Mobile.netplayGotNextJSON() } catch (e: Exception) { return }
+        if (raw == lastWatchGotNextJson) return
+        lastWatchGotNextJson = raw
+        val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return }
+        watchGotNextMine = obj.optBoolean("mine", false)
+        val pos = obj.optInt("position", 0)
+        watchGotNextButton?.text =
+            if (watchGotNextMine) "IN LINE #$pos · TAP TO LEAVE" else "GOT NEXT"
+        watchLineLabel?.text = nextUpText(gotNextNames(obj))
+    }
+
+    /** The watch screen's Got Next button: join, or leave. */
+    private fun toggleGotNextWatch() {
+        val err = try {
+            Mobile.netplaySendGotNext(!watchGotNextMine)
+        } catch (e: Exception) {
+            "could not update the line"
+        }
+        if (err.isNotEmpty()) {
+            Toast.makeText(this, err, Toast.LENGTH_SHORT).show()
+        }
+        lastWatchGotNextJson = "" // re-read on the next watch tick
+    }
+
     // ----- Watch mode UI -----
 
     /** The WATCHING banner (top) and the waiting line (center). */
@@ -992,6 +1545,41 @@ class EmulatorActivity : Activity(), TextureListener {
         waitParams.gravity = Gravity.CENTER
         root.addView(wait, waitParams)
         watchWaitLine = wait
+
+        // Got Next (PROTOCOL.md 4.10): the line for seat 2
+        // lives at the bottom of the watch screen. Watchers
+        // are who the line is mostly for: tap to get in, win
+        // or rotate in through the S4 promotion when the call
+        // comes.
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.VERTICAL
+        bar.gravity = Gravity.CENTER
+        val line = TextView(this)
+        line.textSize = 18f
+        line.setTextColor(Color.WHITE)
+        line.setBackgroundColor(Color.argb(160, 20, 20, 32))
+        line.setPadding(24, 10, 24, 10)
+        line.gravity = Gravity.CENTER
+        watchLineLabel = line
+        bar.addView(line)
+        val nextBtn = Button(this)
+        nextBtn.text = "GOT NEXT"
+        nextBtn.textSize = 20f
+        nextBtn.isFocusable = true
+        nextBtn.setOnClickListener { toggleGotNextWatch() }
+        watchGotNextButton = nextBtn
+        val nextBtnParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, 84
+        )
+        nextBtnParams.topMargin = 12
+        bar.addView(nextBtn, nextBtnParams)
+        val barParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        barParams.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        barParams.bottomMargin = 28
+        root.addView(bar, barParams)
     }
 
     /**
@@ -1061,6 +1649,7 @@ class EmulatorActivity : Activity(), TextureListener {
     /** Poll the watch state: banner names, waiting line, the end. */
     private fun updateWatchBanner() {
         pollWatchSeatAssigns()
+        refreshWatchGotNext()
         val raw = try { Mobile.netplayWatchInfo() } catch (e: Exception) { return }
         val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return }
         val phase = obj.optString("phase", "waiting")
@@ -1075,12 +1664,25 @@ class EmulatorActivity : Activity(), TextureListener {
         val waiting = phase != "playing" && phase != "ended"
         watchWaitLine?.visibility = if (waiting) View.VISIBLE else View.GONE
         if (waiting) {
-            watchWaitLine?.text =
-                if (host.isNotEmpty() && guest.isNotEmpty()) {
-                    "Waiting for the match to start\n$host vs $guest"
-                } else {
-                    "Waiting for the match to start"
-                }
+            // The room's tournament name rides along while
+            // the match forms, when the watcher knows it: the
+            // host's envelope settled it in the watch session.
+            val tName = try {
+                Mobile.netplayTournamentName()
+            } catch (e: Exception) {
+                ""
+            }
+            val versus = if (host.isNotEmpty() && guest.isNotEmpty()) {
+                "\n$host vs $guest"
+            } else {
+                ""
+            }
+            val event = if (tName.isNotEmpty()) {
+                "\nTournament: $tName"
+            } else {
+                ""
+            }
+            watchWaitLine?.text = "Waiting for the match to start$versus$event"
         }
         // A seat promotion in flight owns the wait line (and is
         // not a watch ending, whatever the phase says now that
