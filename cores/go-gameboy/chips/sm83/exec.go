@@ -117,21 +117,21 @@ func (c *CPU) execute(bus Bus) int {
 	case 0x00: // NOP
 		return 1
 	case 0x02: // LD (BC), A
-		bus.Write(c.bc(), c.a)
+		c.wr(bus, c.bc(), c.a)
 		return 2
 	case 0x0A: // LD A, (BC)
-		c.a = bus.Read(c.bc())
+		c.a = c.rd(bus, c.bc())
 		return 2
 	case 0x12: // LD (DE), A
-		bus.Write(c.de(), c.a)
+		c.wr(bus, c.de(), c.a)
 		return 2
 	case 0x1A: // LD A, (DE)
-		c.a = bus.Read(c.de())
+		c.a = c.rd(bus, c.de())
 		return 2
 	case 0x08: // LD (a16), SP
 		addr := c.fetch16(bus)
-		bus.Write(addr, uint8(c.sp))
-		bus.Write(addr+1, uint8(c.sp>>8))
+		c.wr(bus, addr, uint8(c.sp))
+		c.wr(bus, addr+1, uint8(c.sp>>8))
 		return 5
 	case 0x07: // RLCA: zero flag always clears on the SM83 rotates
 		cy := c.a >> 7
@@ -170,7 +170,7 @@ func (c *CPU) execute(bus Bus) int {
 		// a CGB speed switch on plain DMG hardware reaches STOP
 		// with the joypad lines in the pressed state.
 		c.fetch8(bus) // padding byte
-		if bus.Read(0xFF00)&0x0F == 0x0F {
+		if c.rd(bus, 0xFF00)&0x0F == 0x0F {
 			c.stopped = true
 		}
 		return 1
@@ -179,19 +179,19 @@ func (c *CPU) execute(bus Bus) int {
 		c.pc = uint16(int32(int16(c.pc)) + int32(e))
 		return 3
 	case 0x22: // LD (HL+), A
-		bus.Write(c.hl(), c.a)
+		c.wr(bus, c.hl(), c.a)
 		c.setHL(c.hl() + 1)
 		return 2
 	case 0x2A: // LD A, (HL+)
-		c.a = bus.Read(c.hl())
+		c.a = c.rd(bus, c.hl())
 		c.setHL(c.hl() + 1)
 		return 2
 	case 0x32: // LD (HL-), A
-		bus.Write(c.hl(), c.a)
+		c.wr(bus, c.hl(), c.a)
 		c.setHL(c.hl() - 1)
 		return 2
 	case 0x3A: // LD A, (HL-)
-		c.a = bus.Read(c.hl())
+		c.a = c.rd(bus, c.hl())
 		c.setHL(c.hl() - 1)
 		return 2
 	case 0x27: // DAA
@@ -230,10 +230,10 @@ func (c *CPU) execute(bus Bus) int {
 		c.eiDelay = 0
 		return 4
 	case 0xE0: // LDH (a8), A
-		bus.Write(0xFF00+uint16(c.fetch8(bus)), c.a)
+		c.wr(bus, 0xFF00+uint16(c.fetch8(bus)), c.a)
 		return 3
 	case 0xE2: // LD (C), A
-		bus.Write(0xFF00+uint16(c.c), c.a)
+		c.wr(bus, 0xFF00+uint16(c.c), c.a)
 		return 2
 	case 0xE8: // ADD SP, r8
 		c.sp = c.addSPe8(c.fetch8(bus))
@@ -242,13 +242,13 @@ func (c *CPU) execute(bus Bus) int {
 		c.pc = c.hl()
 		return 1
 	case 0xEA: // LD (a16), A
-		bus.Write(c.fetch16(bus), c.a)
+		c.wr(bus, c.fetch16(bus), c.a)
 		return 4
 	case 0xF0: // LDH A, (a8)
-		c.a = bus.Read(0xFF00 + uint16(c.fetch8(bus)))
+		c.a = c.rd(bus, 0xFF00+uint16(c.fetch8(bus)))
 		return 3
 	case 0xF2: // LD A, (C)
-		c.a = bus.Read(0xFF00 + uint16(c.c))
+		c.a = c.rd(bus, 0xFF00+uint16(c.c))
 		return 2
 	case 0xF3: // DI
 		c.ime = false
@@ -261,7 +261,7 @@ func (c *CPU) execute(bus Bus) int {
 		c.sp = c.hl()
 		return 2
 	case 0xFA: // LD A, (a16)
-		c.a = bus.Read(c.fetch16(bus))
+		c.a = c.rd(bus, c.fetch16(bus))
 		return 4
 	case 0xFB: // EI: IME takes effect after the next instruction.
 		// The enable is scheduled once: a second EI executed while
