@@ -125,6 +125,10 @@ func (s *Session) reader() {
 				s.noteWatchSyncLocked(name)
 			}
 		case "peer_left":
+			// Whoever left the room leaves the Got Next
+			// line too (gotnext.go); the name is captured
+			// before the room branch clears it.
+			s.noteMemberLeftLocked(s.peerName)
 			if s.phase == phaseRoom {
 				// Still in the waiting room: the seat simply
 				// empties and both readys reset, so whoever
@@ -195,6 +199,27 @@ func (s *Session) reader() {
 			if fromPeer {
 				s.noteSeatAssignLocked(e.Player, e.Seat)
 			}
+		case "spectator_left":
+			// A server notice, not a peer envelope: a
+			// watcher who left the room leaves the Got
+			// Next line too (gotnext.go).
+			s.noteMemberLeftLocked(e.Player)
+		case "got_next":
+			// A room member joins or leaves the winner
+			// stays line (section 4.10). Only the host
+			// folds these into the authoritative list;
+			// the helper enforces that.
+			s.noteGotNextLocked(e)
+		case "got_next_queue":
+			// The host referee's line order (section
+			// 4.10). Believed only from the known host;
+			// the helper enforces that too.
+			s.noteGotNextQueueLocked(e)
+		case "tournament":
+			// The room's tournament name (section 8).
+			// Believed only on the known host's stamp;
+			// the helper enforces that.
+			s.noteTournamentLocked(e)
 		case "session_end":
 			if fromPeer {
 				s.ended = true
