@@ -8,6 +8,7 @@
 //	0xA04000-0xA04003 YM2612
 //	0xA06000          bank register mirror (Z80 view handles the real one)
 //	0xA10000-0xA1001F I/O: version, controller data/control, serial
+//	0xA12000-0xA120FF Sega CD gate array, only when a unit is attached via AttachCD
 //	0xA11100          Z80 bus request (0x0100 = grant/hold, 0x0000 = release)
 //	0xA11200          Z80 reset (0x0000 = assert, 0x0100 = release)
 //	0xA130F1          SRAM enable / ROM bank switch
@@ -35,6 +36,7 @@
 //	SetPad(player int, mask uint16)
 //	Z80Halted() bool     bus requested or reset asserted
 //	TakeZ80Reset() bool  true once after reset is released (system resets the Z80)
+//	AttachCD(u *scd.Unit) / CDAttached() bool  Sega CD gate array window
 //	SerializeSize() int / Serialize / Deserialize (RAM, Z80 RAM, SRAM, IO state)
 //
 // SetYMClock(fn func(fromZ80 bool) int64) was added after the
@@ -50,6 +52,7 @@ import (
 	"errors"
 
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/cart"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/scd"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/sound"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/vdp"
 )
@@ -72,6 +75,7 @@ type Bus struct {
 	cart  *cart.Cart
 	vdp   *vdp.VDP
 	sound *sound.Sound
+	cd    *scd.Unit
 
 	RAM  [0x10000]uint8 // 68k work RAM
 	ZRAM [0x2000]uint8  // Z80 RAM
@@ -104,6 +108,13 @@ func New(c *cart.Cart, v *vdp.VDP, s *sound.Sound) *Bus {
 	v.SetDMASource(func(addr uint32) uint16 { return b.Read16(addr) })
 	return b
 }
+
+// AttachCD attaches a Sega CD unit so its gate array answers at
+// 0xA12000-0xA120FF on the 68k map.
+func (b *Bus) AttachCD(u *scd.Unit) { b.cd = u }
+
+// CDAttached reports whether a Sega CD unit is attached.
+func (b *Bus) CDAttached() bool { return b.cd != nil }
 
 // SetPad records the button state for a player (0 or 1).
 func (b *Bus) SetPad(player int, mask uint16) {
@@ -230,6 +241,11 @@ func (b *Bus) Read8(addr uint32) uint8 {
 		return 0
 	case addr >= 0xA14000 && addr <= 0xA14003: // TMSS
 		return 0
+	case addr >= 0xA12000 && addr <= 0xA120FF:
+		if b.cd != nil {
+			return b.cd.MainRead8(addr - 0xA12000)
+		}
+		return 0xFF
 	case addr >= 0xA00000: // Z80 window 0xA00000-0xA0FFFF (mirrored decode)
 		if a := addr & 0x7FFF; a < 0x2000 {
 			return b.ZRAM[a]
@@ -296,6 +312,10 @@ func (b *Bus) Write8(addr uint32, val uint8) {
 		b.writeZ80Reset(val&1 == 1)
 	case addr >= 0xA10000 && addr <= 0xA1001F:
 		b.writeIO8(addr, val)
+	case addr >= 0xA12000 && addr <= 0xA120FF:
+		if b.cd != nil {
+			b.cd.MainWrite8(addr-0xA12000, val)
+		}
 	case addr >= 0xA00000: // Z80 window 0xA00000-0xA0FFFF (mirrored decode)
 		if a := addr & 0x7FFF; a < 0x2000 {
 			b.ZRAM[a] = val
