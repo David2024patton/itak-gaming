@@ -1,11 +1,14 @@
-// Package system wires the Allegrex CPU, the memory bus and the UMD reader
-// into the machine skeleton the rest of the project builds on.
+// Package system wires the Allegrex CPU (with its VFPU), the GE display
+// list processor, the memory bus and the UMD reader into the machine the
+// rest of the project builds on.
 //
-// Slice PSP-1 state: the CPU is the only active component. There is no GPU,
-// no VFPU and no kernel HLE yet, so LoadISO only mounts and inspects the
-// disc image; nothing boots from it in this slice. PSP software is an
-// operating environment, and the eventual game path is HLE of the PSP
-// kernel in PSP-3, not low-level boot of Sony code.
+// Slice PSP-2 state: the CPU and VFPU execute for real, and display lists
+// submitted through SubmitDisplayList are executed synchronously by the
+// GE into VRAM, which Framebuffer then presents. There is still no kernel
+// HLE, so LoadISO only mounts and inspects the disc image; nothing boots
+// from it in this slice. PSP software is an operating environment, and the
+// eventual game path is HLE of the PSP kernel in PSP-3, not low-level
+// boot of Sony code.
 package system
 
 import (
@@ -15,6 +18,7 @@ import (
 
 	"github.com/davidpatton/itak-gaming/cores/go-psp/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-psp/chips/allegrex"
+	"github.com/davidpatton/itak-gaming/cores/go-psp/ge"
 	"github.com/davidpatton/itak-gaming/cores/go-psp/umd"
 )
 
@@ -30,8 +34,9 @@ const (
 const FrameCycles = 3700000
 
 // stateVersion tags the serialized layout. It must change whenever the
-// layout changes.
-const stateVersion = 1
+// layout changes. Version 2 (PSP-2) appends the GE state block and the
+// GE-active flag, and the CPU block grew to include the VFPU state.
+const stateVersion = 2
 
 // PSP controller button bits (sceCtrl masks).
 const (
@@ -53,10 +58,11 @@ const (
 // No code lives there until a loader (PSP-3) or a test puts some there.
 const defaultEntry = 0x08000000
 
-// Machine is the PSP system skeleton.
+// Machine is the PSP system.
 type Machine struct {
 	CPU *allegrex.CPU
 	Bus *bus.Bus
+	GE  *ge.GE
 
 	iso *umd.ISO
 	sfo *umd.SFO
@@ -66,6 +72,7 @@ type Machine struct {
 	analogX     byte
 	analogY     byte
 	cycles      uint64
+	geActive    bool // a display list was submitted; Framebuffer presents the GE
 }
 
 // New returns a machine with zeroed memory and the CPU parked at the
@@ -74,12 +81,13 @@ func New() *Machine {
 	b := bus.New()
 	m := &Machine{
 		Bus:         b,
+		GE:          ge.New(b),
 		framebuffer: make([]uint32, Width*Height),
 		analogX:     0x80,
 		analogY:     0x80,
 	}
 	for i := range m.framebuffer {
-		m.framebuffer[i] = 0xFF000000 // opaque black until the GE exists
+		m.framebuffer[i] = 0xFF000000 // opaque black until the GE draws
 	}
 	m.CPU = allegrex.New(b)
 	m.Boot(defaultEntry)
@@ -138,10 +146,55 @@ func (m *Machine) LoadBytes(vaddr uint32, data []byte) {
 	}
 }
 
-// Framebuffer returns the 480x272 XRGB8888 frame. In this slice it stays
-// blank; the GE arrives in PSP-2.
+// Framebuffer returns the 480x272 XRGB8888 frame. Before any display
+// list is submitted it is the opaque black buffer from boot; afterwards
+// it presents the GE display buffer (the current draw buffer, or the
+// buffer chosen with SetDisplayBuffer) converted from VRAM.
 func (m *Machine) Framebuffer() []uint32 {
+	if !m.geActive {
+		return m.framebuffer
+	}
+	rgba := m.GE.ConvertDisplay(Width, Height)
+	for i := 0; i < Width*Height; i++ {
+		r := uint32(rgba[i*4])
+		g := uint32(rgba[i*4+1])
+		b := uint32(rgba[i*4+2])
+		a := uint32(rgba[i*4+3])
+		m.framebuffer[i] = a<<24 | r<<16 | g<<8 | b
+	}
 	return m.framebuffer
+}
+
+// SubmitDisplayList executes the display list at the given bus address
+// synchronously through the GE and returns the resulting list state.
+// Execution stops at END (StateCompleted) or at a SIGNAL
+// (StateStalled); ContinueDisplayList resumes a stalled list. The HLE
+// sceGu path that games use arrives in PSP-3; this direct API is how
+// slices and tests drive the GE until then.
+func (m *Machine) SubmitDisplayList(addr uint32) ge.ListState {
+	st := m.GE.Submit(addr)
+	m.geActive = true
+	return st
+}
+
+// ContinueDisplayList resumes a display list that stalled on a SIGNAL.
+func (m *Machine) ContinueDisplayList() ge.ListState {
+	st := m.GE.Continue()
+	m.geActive = true
+	return st
+}
+
+// DisplayListState returns the GE list state: ready, stalled on a
+// signal, or completed.
+func (m *Machine) DisplayListState() ge.ListState {
+	return m.GE.State()
+}
+
+// SetDisplayBuffer selects which VRAM buffer Framebuffer presents, in
+// the GE pixel format codes (0=5650, 1=5551, 2=4444, 3=8888). Until a
+// list or a game sets one, the GE draw buffer is presented.
+func (m *Machine) SetDisplayBuffer(addr uint32, width, format int) {
+	m.GE.SetDisplayBuffer(addr, width, format)
 }
 
 // SetButtons stores the current controller button bitset.
@@ -193,22 +246,27 @@ func (m *Machine) TotalCycles() uint64 {
 }
 
 // StateSize returns the exact serialized size in bytes for the current
-// format.
+// format and the machine's current GE state (the GE block is variable
+// length because the stencil plane is optional).
 func (m *Machine) StateSize() int {
 	cpuLen := len(m.CPU.Serialize())
-	return 1 + 4 + cpuLen + bus.RAMSize + bus.VRAMSize + bus.ScratchpadSize + 4 + 2 + 2 + 8
+	geLen := len(m.GE.Serialize())
+	return 1 + 4 + cpuLen + bus.RAMSize + bus.VRAMSize + bus.ScratchpadSize + 4 + 2 + 2 + 8 + 4 + 4 + geLen
 }
 
-// Serialize captures the full machine state: CPU, RAM, VRAM, scratchpad,
-// input and the cycle counter. The layout is:
+// Serialize captures the full machine state: CPU (including the VFPU),
+// RAM, VRAM, scratchpad, input, the cycle counter, and the GE. The
+// layout is:
 //
 //	[0]      state version byte
 //	[1:5]    uint32 LE CPU state length
 //	[5:...]  CPU state, then RAM, VRAM, scratchpad,
 //	         buttons uint32, analog X, analog Y, 2 pad bytes,
-//	         total cycles uint64
+//	         total cycles uint64, GE-active uint32,
+//	         uint32 LE GE state length, GE state
 func (m *Machine) Serialize() []byte {
 	cpuState := m.CPU.Serialize()
+	geState := m.GE.Serialize()
 	out := make([]byte, 0, m.StateSize())
 	out = append(out, stateVersion)
 	var tmp [8]byte
@@ -223,15 +281,24 @@ func (m *Machine) Serialize() []byte {
 	out = append(out, m.analogX, m.analogY, 0, 0)
 	binary.LittleEndian.PutUint64(tmp[:8], m.cycles)
 	out = append(out, tmp[:8]...)
+	geActive := uint32(0)
+	if m.geActive {
+		geActive = 1
+	}
+	binary.LittleEndian.PutUint32(tmp[:4], geActive)
+	out = append(out, tmp[:4]...)
+	binary.LittleEndian.PutUint32(tmp[:4], uint32(len(geState)))
+	out = append(out, tmp[:4]...)
+	out = append(out, geState...)
 	return out
 }
 
-// Deserialize restores a state produced by Serialize. The bytes must match
-// the current format exactly; anything else is an error and leaves the
-// machine untouched.
+// Deserialize restores a state produced by Serialize. The bytes are
+// parsed field by field and must be consumed exactly; anything else is
+// an error and leaves the machine untouched.
 func (m *Machine) Deserialize(data []byte) error {
-	if len(data) != m.StateSize() {
-		return fmt.Errorf("system: state size %d, want %d", len(data), m.StateSize())
+	if len(data) < 1+4 {
+		return errors.New("system: state too short")
 	}
 	if data[0] != stateVersion {
 		return fmt.Errorf("system: state version %d, want %d", data[0], stateVersion)
@@ -241,6 +308,10 @@ func (m *Machine) Deserialize(data []byte) error {
 	off += 4
 	if cpuLen != len(m.CPU.Serialize()) {
 		return errors.New("system: CPU state length mismatch")
+	}
+	tailLen := cpuLen + bus.RAMSize + bus.VRAMSize + bus.ScratchpadSize + 4 + 4 + 8 + 4 + 4
+	if len(data) < off+tailLen {
+		return fmt.Errorf("system: state size %d too short for layout", len(data))
 	}
 	cpuState := data[off : off+cpuLen]
 	off += cpuLen
@@ -255,8 +326,20 @@ func (m *Machine) Deserialize(data []byte) error {
 	analogX, analogY := data[off], data[off+1]
 	off += 4 // analog pair plus 2 pad bytes
 	cycles := binary.LittleEndian.Uint64(data[off:])
+	off += 8
+	geActive := binary.LittleEndian.Uint32(data[off:]) != 0
+	off += 4
+	geLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	if len(data) != off+geLen {
+		return fmt.Errorf("system: state size %d, want %d", len(data), off+geLen)
+	}
+	geState := data[off : off+geLen]
 
 	if err := m.CPU.Deserialize(cpuState); err != nil {
+		return err
+	}
+	if err := m.GE.Deserialize(geState); err != nil {
 		return err
 	}
 	copy(m.Bus.RAM, ram)
@@ -266,5 +349,6 @@ func (m *Machine) Deserialize(data []byte) error {
 	m.analogX = analogX
 	m.analogY = analogY
 	m.cycles = cycles
+	m.geActive = geActive
 	return nil
 }
