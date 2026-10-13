@@ -309,6 +309,47 @@ func TestYMDACPanPowerOnDefault(t *testing.T) {
 	}
 }
 
+// A DAC stream is register writes at audio rate: this drives the
+// timestamp seam the bus uses (RenderYMTo, then the write) and
+// proves one Produce window holds a genuine step, low byte for
+// its true duration then high byte, not the last byte held for
+// the whole window and not a blend.
+func TestYMDACStreamStep(t *testing.T) {
+	s := New()
+	ymWriteA(s, 0x2B, 0x80) // DAC enable: channel 6 becomes the DAC
+	ymWriteA(s, 0x2A, 0x00) // DAC data low: (0-128)/128*0.75 = -0.75
+
+	// A 735-frame Produce spans 888 native samples (127,872
+	// clocks). Render half of that span with the low byte in
+	// force, then land the high byte, as a stream would.
+	s.RenderYMTo(63936)
+	ymWriteA(s, 0x2A, 0xFF) // DAC data high: +0.744
+
+	out := s.Produce(735)
+	if len(out) != 1470 {
+		t.Fatalf("len(Produce(735)) = %d, want 1470", len(out))
+	}
+	// The step sits at native sample 444, near output frame 368.
+	// Average regions well clear of it: frames 10-100 must sit at
+	// the low steady value (about -9000 after the mix gain) and
+	// frames 635-725 at the high one (about +8929). Frame-end
+	// rendering would put both at the high value; a blend would
+	// put both near zero.
+	mean := func(from, to int) float64 {
+		sum := 0.0
+		for _, v := range out[from*2 : to*2] {
+			sum += float64(v)
+		}
+		return sum / float64((to-from)*2)
+	}
+	if got := mean(10, 100); got < -9500 || got > -8500 {
+		t.Fatalf("early mean = %.0f, want about -9000 (low byte held for its span)", got)
+	}
+	if got := mean(635, 725); got < 8400 || got > 9500 {
+		t.Fatalf("late mean = %.0f, want about +8929 (high byte after the step)", got)
+	}
+}
+
 func TestYMSerializeDeterministic(t *testing.T) {
 	s := New()
 	ymPatchSine(s, 0, 1083, 4)
