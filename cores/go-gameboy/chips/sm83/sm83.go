@@ -74,6 +74,14 @@ type CPU struct {
 	// of the step's first cycle.
 	OnCycle func()
 
+	// OnStopSwitch, when set by a CGB machine, is consulted when
+	// STOP executes: if it returns true, the STOP was a speed
+	// switch request with KEY1 armed, the machine has toggled its
+	// clock speed, and the CPU does not enter the stopped state.
+	// When it returns false (or is unset), STOP behaves as on the
+	// DMG: the joypad wake-condition check decides.
+	OnStopSwitch func() bool
+
 	slots int // M-cycle slots consumed so far in the current step
 }
 
@@ -88,7 +96,8 @@ func New() *CPU {
 // is machine wiring, not CPU state, and survives.
 func (c *CPU) Reset() {
 	hook := c.OnCycle
-	*c = CPU{OnCycle: hook}
+	sw := c.OnStopSwitch
+	*c = CPU{OnCycle: hook, OnStopSwitch: sw}
 }
 
 // Regs returns a snapshot of the programmer-visible registers.
