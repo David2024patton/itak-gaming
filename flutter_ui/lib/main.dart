@@ -2568,7 +2568,8 @@ class _OnlineScreenState extends State<OnlineScreen> {
       {required String role,
       required String lobbyId,
       required String token,
-      String password = ''}) async {
+      String password = '',
+      String tournament = ''}) async {
     await PlayStats.record(game.file.path);
     await _channel.invokeMethod('launch', {
       'core': game.system.core,
@@ -2580,6 +2581,11 @@ class _OnlineScreenState extends State<OnlineScreen> {
       // The game screen keeps the password so a seat rotation
       // can re-enter the room (watch or join) on its own.
       'npPassword': password,
+      // Only meaningful for the host: the game screen reports
+      // the room's results to the tournament board under this
+      // name. Guests launch with it blank and learn the name
+      // from the host inside the room.
+      'npTournament': tournament,
     });
   }
 
@@ -2598,6 +2604,9 @@ class _OnlineScreenState extends State<OnlineScreen> {
     final password = await showTvKeyboard(context,
         title: 'Password (blank = open to anyone)', initial: '');
     if (password == null || !mounted) return;
+    final tournament = await showTvKeyboard(context,
+        title: 'Tournament name (blank = casual game)', initial: '');
+    if (tournament == null || !mounted) return;
     try {
       final data = await _api('POST', '/lobbies', {
         'name': "$player's lobby",
@@ -2615,7 +2624,11 @@ class _OnlineScreenState extends State<OnlineScreen> {
       }
       appLog('lobby created: $lobbyId for ${game.fileName} by $player');
       await _launchOnline(game,
-          role: 'host', lobbyId: lobbyId, token: token, password: password);
+          role: 'host',
+          lobbyId: lobbyId,
+          token: token,
+          password: password,
+          tournament: tournament.trim());
     } catch (e) {
       appLog('create lobby failed: $e');
       _showMessage('Could not create the lobby', '$e');
@@ -5046,6 +5059,51 @@ class _PlayerStat {
       : games.reduce((a, b) => a.last >= b.last ? a : b);
 }
 
+/// One row of the tournament board (PROTOCOL.md 8): a player's
+/// reported record from the server's tournament store, ranked
+/// there by titles, then wins. Nothing here counts play time;
+/// a row exists because matches were reported.
+class _TPlayer {
+  final String name;
+  final String display;
+  final String region;
+  final int wins;
+  final int losses;
+  final int matches;
+  final int tournamentsWon;
+  final String lastTournament;
+  final String lastGame;
+  final String lastTitle;
+  const _TPlayer({
+    required this.name,
+    this.display = '',
+    this.region = '',
+    this.wins = 0,
+    this.losses = 0,
+    this.matches = 0,
+    this.tournamentsWon = 0,
+    this.lastTournament = '',
+    this.lastGame = '',
+    this.lastTitle = '',
+  });
+}
+
+/// One reported tournament match from the recent feed.
+class _TResult {
+  final String tournament;
+  final String game;
+  final String winner;
+  final String loser;
+  final int at;
+  const _TResult({
+    required this.tournament,
+    required this.game,
+    required this.winner,
+    required this.loser,
+    required this.at,
+  });
+}
+
 String _fmtDuration(int seconds) {
   if (seconds >= 3600) {
     final h = seconds ~/ 3600;
@@ -5085,15 +5143,18 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   int _mode = 0;
   final FocusNode _focusNode = FocusNode();
 
-  // Board scope: 0 = this box (Local), 1 = everyone (Global). The
-  // switch lives in the top bar now (David, 2026-10-12), next to the
-  // back button. Remote focus moves through three zones: 0 = top
-  // bar (Back, Local, Global), 1 = filter chips, 2 = the rows.
-  // UP/DOWN travel between zones and through the rows, so the back
+  // Board scope: 0 = this box (Local), 1 = everyone (Global),
+  // 2 = the tournament board. The switch lives in the top bar
+  // now (David, 2026-10-12), next to the back button. Remote
+  // focus moves through three zones: 0 = top bar (Back and the
+  // board pills), 1 = filter chips, 2 = the rows. UP/DOWN
+  // travel between zones and through the rows, so the back
   // button is reachable and the board itself can be browsed.
+  // The tournament board has no filter chips: its zone 1 is
+  // skipped in both directions.
   int _scope = 0;
   int _zone = 1;
-  int _barIndex = 0; // 0 = Back, 1 = Local, 2 = Global
+  int _barIndex = 0; // 0 = Back, 1 = Local, 2 = Global, 3 = Tournament
   int _selIndex = 0;
   int _rowCount = 0;
   // Hold-to-scroll: holding UP or DOWN on the remote sends repeat
@@ -5111,6 +5172,12 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       _gRecent = [];
   bool _gLoaded = false;
   bool _gFailed = false;
+  // The tournament board (PROTOCOL.md 8): ranked records plus
+  // the recent results feed, from the server's matches store.
+  List<_TPlayer> _tPlayers = [];
+  List<_TResult> _tRecent = [];
+  bool _tLoaded = false;
+  bool _tFailed = false;
   // Friend names for the current player, from the server's friends
   // store. Players rows carry a Friend chip when their name is in
   // here, and OK on a Players row toggles membership.
@@ -5145,6 +5212,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     });
     _scrollTop();
     if (scope == 1 && !_gLoaded) _fetchGlobal();
+    if (scope == 2 && !_tLoaded) _fetchTournament();
   }
 
   void _setMode(int mode) {
@@ -5207,7 +5275,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             _selIndex = (_selIndex - _rowStep).clamp(0, _selIndex);
             _scrollToSel();
           } else {
-            _zone = 1;
+            // The tournament board has no chips zone to land on.
+            _zone = _scope == 2 ? 0 : 1;
           }
         } else if (_zone == 1) {
           _zone = 0;
@@ -5218,7 +5287,17 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     if (key == LogicalKeyboardKey.arrowDown) {
       setState(() {
         if (_zone == 0) {
-          _zone = 1;
+          // The tournament board has no filter chips: DOWN
+          // from the top bar goes straight to its rows.
+          if (_scope == 2) {
+            if (_rowCount > 0) {
+              _zone = 2;
+              _selIndex = 0;
+              _scrollToSel();
+            }
+          } else {
+            _zone = 1;
+          }
         } else if (_zone == 1) {
           if (_rowCount > 0) {
             _zone = 2;
@@ -5237,7 +5316,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       final dir = key == LogicalKeyboardKey.arrowLeft ? -1 : 1;
       setState(() {
         if (_zone == 0) {
-          _barIndex = (_barIndex + dir).clamp(0, 2);
+          _barIndex = (_barIndex + dir).clamp(0, 3);
         } else if (_zone == 1) {
           _mode = (_mode + dir + _modes.length) % _modes.length;
           _selIndex = 0;
@@ -5358,6 +5437,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   // The player name behind the selected row, Players mode only.
   // Rows in the other modes are games or activity, not people.
   String? _selectedPlayerName() {
+    // Tournament rows are match records, not friend toggles.
+    if (_scope == 2) return null;
     if (_mode != 0) return null;
     final list = _scope == 1 ? _gPlayers : _players;
     if (_selIndex < 0 || _selIndex >= list.length) return null;
@@ -5414,6 +5495,55 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       setState(() {
         _gLoaded = true;
         _gFailed = true;
+      });
+    }
+  }
+
+  // The tournament board (PROTOCOL.md 8): ranked records and
+  // the recent results feed from the server's matches store,
+  // a different store from the playtime boards above. Fetched
+  // lazily on first entry, the same way the global board is.
+  Future<void> _fetchTournament() async {
+    try {
+      final board =
+          await _getJson('/matches/leaderboard') as Map<String, dynamic>;
+      final feed =
+          await _getJson('/matches/recent') as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _tPlayers = ((board['players'] as List?) ?? []).map((e) {
+          final m = e as Map<String, dynamic>;
+          return _TPlayer(
+            name: m['name']?.toString() ?? 'Player',
+            display: m['display']?.toString() ?? '',
+            region: m['region']?.toString() ?? '',
+            wins: (m['wins'] as num? ?? 0).toInt(),
+            losses: (m['losses'] as num? ?? 0).toInt(),
+            matches: (m['matches'] as num? ?? 0).toInt(),
+            tournamentsWon: (m['tournamentsWon'] as num? ?? 0).toInt(),
+            lastTournament: m['lastTournament']?.toString() ?? '',
+            lastGame: m['lastGame']?.toString() ?? '',
+            lastTitle: m['lastTitle']?.toString() ?? '',
+          );
+        }).toList();
+        _tRecent = ((feed['recent'] as List?) ?? []).map((e) {
+          final m = e as Map<String, dynamic>;
+          return _TResult(
+            tournament: m['tournament']?.toString() ?? '',
+            game: m['game']?.toString() ?? '',
+            winner: m['winner']?.toString() ?? 'Player',
+            loser: m['loser']?.toString() ?? 'Player',
+            at: (m['at'] as num? ?? 0).toInt(),
+          );
+        }).toList();
+        _tLoaded = true;
+        _tFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _tLoaded = true;
+        _tFailed = true;
       });
     }
   }
@@ -5620,9 +5750,10 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         title: const Text('Leaderboard'),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        // The Local/Global switch lives in the top bar now, beside
+        // The board switch lives in the top bar now, beside
         // the back button (David, 2026-10-12). UP from anywhere
-        // below reaches this row; OK picks Back, Local, or Global.
+        // below reaches this row; OK picks Back or a board:
+        // Local, Global, or Tournament.
         // A custom leading button (instead of the automatic one) so
         // remote focus on Back is visible.
         leading: Center(
@@ -5649,6 +5780,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           _scopePill('Local', 0),
           const SizedBox(width: 8),
           _scopePill('Global', 1),
+          const SizedBox(width: 8),
+          _scopePill('Tournament', 2),
           const SizedBox(width: 14),
         ],
       ),
@@ -5668,11 +5801,16 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 child: Column(
                   children: [
                     const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 10,
-                      alignment: WrapAlignment.center,
-                      children: [
-                        for (var i = 0; i < _modes.length; i++)
+                    // The mode chips sort the playtime boards.
+                    // The tournament board keeps the server's
+                    // own order (titles, then wins), so the
+                    // chips hide while it is up.
+                    if (_scope != 2)
+                      Wrap(
+                        spacing: 10,
+                        alignment: WrapAlignment.center,
+                        children: [
+                          for (var i = 0; i < _modes.length; i++)
                           GestureDetector(
                             onTap: () => _setMode(i),
                             child: Container(
@@ -5761,6 +5899,15 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   }
 
   String _emptyText() {
+    if (_scope == 2) {
+      if (!_tLoaded) return 'Loading the tournament board...';
+      if (_tFailed) {
+        return 'Cannot reach the leaderboard server.\n'
+            'Tournament results are kept there.';
+      }
+      return 'No tournament matches yet.\n'
+          'Host a room with a tournament name to start one.';
+    }
     if (_scope == 1) {
       if (!_gLoaded) return 'Loading the global board...';
       if (_gFailed) {
@@ -5820,6 +5967,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   List<Widget> _visibleContent() {
     if (_scope == 0) return _modeContent();
+    if (_scope == 2) return _tournamentContent();
     switch (_mode) {
       case 1: // Top Games, by time
         final games = [..._gGames]
@@ -5887,6 +6035,147 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             _playerCard(i + 1, _gPlayers[i], global: true),
         ];
     }
+  }
+
+  // The tournament board: the ranked rows in the server's
+  // order, then the recent results under a header. One list,
+  // so the remote browses both the way it browses the other
+  // boards.
+  List<Widget> _tournamentContent() {
+    final rows = <Widget>[
+      for (var i = 0; i < _tPlayers.length; i++)
+        _tournamentRow(i + 1, _tPlayers[i]),
+    ];
+    if (_tRecent.isNotEmpty) {
+      rows.add(const Padding(
+        padding: EdgeInsets.only(top: 18, bottom: 6, left: 4),
+        child: Text(
+          'Recent results',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+      ));
+      for (final r in _tRecent) {
+        rows.add(_tournamentRecentRow(r));
+      }
+    }
+    return rows;
+  }
+
+  // One tournament row, in _playerCard's shape: rank medal,
+  // avatar, identity with its region tag, the record under it.
+  Widget _tournamentRow(int rank, _TPlayer p) {
+    final medalColor = rank == 1
+        ? const Color(0xFFFFD54F)
+        : rank == 2
+            ? const Color(0xFFB0BEC5)
+            : rank == 3
+                ? const Color(0xFFBCAAA4)
+                : const Color(0xFF424242);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B1B28),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 17,
+            backgroundColor: medalColor,
+            child: Text(
+              '$rank',
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          PlayerAvatar(name: p.name, size: 32),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        p.display.isNotEmpty ? p.display : p.name,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (p.region.isNotEmpty) ...[
+                      const SizedBox(width: 9),
+                      _regionTag(p.region),
+                    ],
+                  ],
+                ),
+                Text(
+                  'Record: ${p.wins}-${p.losses} · Matches: ${p.matches} · '
+                  'Titles: ${p.tournamentsWon}',
+                  style:
+                      const TextStyle(fontSize: 13.5, color: Colors.white70),
+                ),
+                if (p.lastTitle.isNotEmpty)
+                  Text(
+                    'Latest title: ${p.lastTitle}',
+                    style:
+                        const TextStyle(fontSize: 13, color: Colors.white54),
+                  )
+                else if (p.lastTournament.isNotEmpty)
+                  Text(
+                    'Last event: ${p.lastTournament}',
+                    style:
+                        const TextStyle(fontSize: 13, color: Colors.white54),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // One recent result: who beat who, in which event, at what.
+  Widget _tournamentRecentRow(_TResult r) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B1B28),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        children: [
+          PlayerAvatar(name: r.winner, size: 30),
+          const SizedBox(width: 11),
+          Text(
+            '${r.winner} def. ${r.loser}',
+            style: const TextStyle(
+                fontSize: 16.5, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Text(
+              '${r.tournament} · ${_GameStat(r.game, 0, 0, 0).name}',
+              style: const TextStyle(fontSize: 15.5),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Text(
+            _fmtWhen(r.at),
+            style: const TextStyle(fontSize: 14, color: Colors.white60),
+          ),
+        ],
+      ),
+    );
   }
 
   List<Widget> _modeContent() {
