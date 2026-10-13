@@ -4,15 +4,21 @@
 // window, and the PIF region. It is original code written
 // from the published N64 hardware documentation.
 //
-// Devices that are later slices (RSP, RDP rendering, PIF
-// boot, audio and video output) appear here as register
-// storage with their documented reset behavior, so CPU code
-// can be developed and tested against the real map now.
-// The PI implements its DMA engine for real, including the
+// The SP window and SP registers route to the real RSP
+// (chips/rsp) since slice N64-2. Devices that are later
+// slices (RDP rendering, PIF boot, audio and video
+// output) appear here as register storage with their
+// documented reset behavior, so CPU code can be
+// developed and tested against the real map now. The PI
+// implements its DMA engine for real, including the
 // completion interrupt through MI.
 package bus
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/rsp"
+)
 
 // MI interrupt bit assignments (MI_INTR and MI_MASK).
 const (
@@ -29,9 +35,11 @@ type Memory struct {
 	RDRAM []byte // 4 MB, or 8 MB with the Expansion Pak
 	ROM   []byte // cartridge ROM image (canonical big-endian)
 
-	spMem  [0x2000]byte // SP DMEM + IMEM
-	spRegs [0x20]byte
-	spPC   uint32
+	// RSP is the signal processor. The SP memory window,
+	// SP registers, and SP PC on the bus route to it, and
+	// its DMA engine works on RDRAM.
+	RSP *rsp.RSP
+
 	dpRegs [0x20]byte
 
 	miMode uint32
@@ -64,7 +72,13 @@ func New(rom []byte, expansion bool) *Memory {
 	if expansion {
 		size = 8 << 20
 	}
-	return &Memory{RDRAM: make([]byte, size), ROM: rom}
+	m := &Memory{RDRAM: make([]byte, size), ROM: rom}
+	m.RSP = rsp.New()
+	m.RSP.AttachDRAM(m.RDRAM)
+	m.RSP.OnInterrupt = func(active bool) {
+		m.SetMI(MIIntrSP, active)
+	}
+	return m
 }
 
 // SetROM replaces the cartridge image.
@@ -75,6 +89,15 @@ func (m *Memory) SetROM(rom []byte) { m.ROM = rom }
 func (m *Memory) MIInterrupt() bool {
 	return m.miIntr&m.miMask != 0
 }
+
+// MIState returns the raw MI interrupt and mask
+// registers, for save states.
+func (m *Memory) MIState() (uint32, uint32) { return m.miIntr, m.miMask }
+
+// RestoreMI sets the MI interrupt and mask registers
+// from a save state; the caller refreshes the CPU
+// interrupt line afterward.
+func (m *Memory) RestoreMI(intr, mask uint32) { m.miIntr, m.miMask = intr, mask }
 
 func (m *Memory) fireMI() {
 	if m.OnMIChange != nil {
@@ -120,16 +143,18 @@ func (m *Memory) Read(addr uint32, size int) uint64 {
 	case addr < 0x04000000: // RDRAM registers
 		return readBytes(m.rdRegs[:], addr-0x03F00000, size)
 	case addr < 0x04002000: // SP memory (DMEM/IMEM)
-		return readBytes(m.spMem[:], addr-0x04000000, size)
+		var v uint64
+		for i := 0; i < size; i++ {
+			v = v<<8 | uint64(m.spByteAt(addr-0x04000000+uint32(i)))
+		}
+		return v
 	case addr < 0x04040000:
 		return 0
 	case addr < 0x04040020: // SP registers
-		return readBytes(m.spRegs[:], addr-0x04040000, size)
+		off := addr - 0x04040000
+		return extract32(m.RSP.ReadRegister(off&^3), off&3, size)
 	case addr >= 0x04080000 && addr < 0x04080004: // SP PC
-		if size == 4 {
-			return uint64(m.spPC)
-		}
-		return uint64(uint32(m.spPC)>>(8*(3-(addr&3)))) & maskFor(size)
+		return extract32(m.RSP.ReadPC(), addr&3, size)
 	case addr >= 0x04100000 && addr < 0x04100020: // DP registers
 		return readBytes(m.dpRegs[:], addr-0x04100000, size)
 	case addr >= 0x04300000 && addr < 0x04300010: // MI
@@ -160,14 +185,18 @@ func (m *Memory) Write(addr uint32, size int, val uint64) {
 	case addr < 0x04000000: // RDRAM registers
 		writeBytes(m.rdRegs[:], addr-0x03F00000, size, val)
 	case addr < 0x04002000: // SP memory
-		writeBytes(m.spMem[:], addr-0x04000000, size, val)
+		for i := 0; i < size; i++ {
+			m.setSPByteAt(addr-0x04000000+uint32(i), byte(val>>(8*uint(size-1-i))))
+		}
 	case addr < 0x04040000:
 		// Unmapped gap.
-	case addr < 0x04040020: // SP registers
-		writeBytes(m.spRegs[:], addr-0x04040000, size, val)
+	case addr < 0x04040020: // SP registers (32-bit accesses)
+		if size == 4 {
+			m.RSP.WriteRegister(addr-0x04040000, uint32(val))
+		}
 	case addr >= 0x04080000 && addr < 0x04080004: // SP PC
 		if size == 4 {
-			m.spPC = uint32(val) & 0xFFF
+			m.RSP.WritePC(uint32(val))
 		}
 	case addr >= 0x04100000 && addr < 0x04100020: // DP registers
 		writeBytes(m.dpRegs[:], addr-0x04100000, size, val)
@@ -195,6 +224,16 @@ func maskFor(size int) uint64 {
 		return ^uint64(0)
 	}
 	return (uint64(1) << (8 * uint(size))) - 1
+}
+
+// extract32 pulls a big-endian subfield of size bytes at
+// byte offset off out of a 32-bit register value.
+func extract32(v uint32, off uint32, size int) uint64 {
+	if size >= 4 {
+		return uint64(v)
+	}
+	shift := 8 * (3 - int(off) - (size - 1))
+	return uint64(v>>uint(shift)) & maskFor(size)
 }
 
 // readBytes composes a big-endian value from a byte slice
@@ -333,9 +372,32 @@ func (m *Memory) piDMA(val uint32, fromCart bool) {
 	m.fireMI()
 }
 
-// SPMemi returns the SP DMEM/IMEM backing store (used by
-// save states and later RSP slices).
-func (m *Memory) SPMem() []byte { return m.spMem[:] }
+// spByteAt reads one byte of the SP memory window;
+// offsets below 0x1000 are DMEM, the rest IMEM.
+func (m *Memory) spByteAt(off uint32) byte {
+	if off < 0x1000 {
+		return m.RSP.DMEM[off]
+	}
+	return m.RSP.IMEM[off-0x1000]
+}
+
+// setSPByteAt writes one byte of the SP memory window.
+func (m *Memory) setSPByteAt(off uint32, v byte) {
+	if off < 0x1000 {
+		m.RSP.DMEM[off] = v
+	} else {
+		m.RSP.IMEM[off-0x1000] = v
+	}
+}
+
+// SPMem returns a snapshot of the SP DMEM (first 4 KB)
+// and IMEM (second 4 KB) as one 8 KB slice.
+func (m *Memory) SPMem() []byte {
+	out := make([]byte, 0x2000)
+	copy(out, m.RSP.DMEM[:])
+	copy(out[0x1000:], m.RSP.IMEM[:])
+	return out
+}
 
 // PIFRAM returns the PIF RAM backing store.
 func (m *Memory) PIFRAM() []byte { return m.pifRAM[:] }
