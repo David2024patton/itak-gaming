@@ -1,12 +1,13 @@
 // Package system wires the VR4300 CPU, the RSP, the
-// physical memory bus, and a parsed cartridge into the
-// machine the libretro shell (a later slice) will drive.
-// Slice N64-2 adds the RSP: it executes from IMEM under
-// the interleave model described on RunCycles. There is
-// no RDP, video, or audio output yet, so the framebuffer
-// is blank and games cannot boot (boot needs the PIF/CIC
-// path, which lands in N64-4). Bare code loaded directly
-// into memory runs today, which is what the test harness
+// RDP/VI/AI output devices, the physical memory bus,
+// and a parsed cartridge into the machine the libretro
+// shell (a later slice) will drive. Slice N64-2 adds the
+// RSP: it executes from IMEM under the interleave model
+// described on RunCycles. Slice N64-3 adds the RDP
+// rasterizer, the VI presentation, and AI audio output.
+// Games still cannot boot (boot needs the PIF/CIC path,
+// which lands in N64-4). Bare code loaded directly into
+// memory runs today, which is what the test harness
 // uses.
 package system
 
@@ -15,10 +16,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/davidpatton/itak-gaming/cores/go-n64/ai"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/r4300"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/rsp"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/vi"
 )
 
 // Frame geometry and timing (NTSC): the VR4300 runs at
@@ -97,12 +100,14 @@ func (s *System) LoadROM(rom []byte) error {
 	return nil
 }
 
-// Reset returns the CPU to its power-on state. Real boot
-// (PIF executing the cartridge boot code with the CIC seed)
-// lands in N64-4; after Reset the CPU sits at the reset
-// vector, and test code is expected to seed PC and memory
-// directly.
+// Reset returns the machine to its power-on state: the
+// CPU resets and the RDP, VI, and AI are rebuilt fresh.
+// Real boot (PIF executing the cartridge boot code with
+// the CIC seed) lands in N64-4; after Reset the CPU sits
+// at the reset vector, and test code is expected to seed
+// PC and memory directly.
 func (s *System) Reset() {
+	s.Mem.ResetDevices()
 	s.CPU.Reset()
 }
 
@@ -127,6 +132,11 @@ func (s *System) RunCycles(cycles int) {
 			s.RSP.Run(steps)
 		}
 	}
+	// The VI and AI advance on the cycles actually
+	// consumed: device timing granularity is the
+	// RunCycles call.
+	s.Mem.VI.Advance(n)
+	s.Mem.AI.Advance(n)
 }
 
 // RunFrame executes one 60 Hz frame budget of CPU cycles.
@@ -134,9 +144,33 @@ func (s *System) RunFrame() {
 	s.RunCycles(CyclesPerFrame)
 }
 
-// Framebuffer returns the current video output: a blank
-// 320x240 XRGB8888 frame until the RDP/VI slice lands.
-func (s *System) Framebuffer() []uint32 { return s.fb }
+// Framebuffer returns the current video output: the VI
+// presentation of the programmed color image when the
+// VI is on, otherwise the blank 320x240 buffer.
+func (s *System) Framebuffer() []uint32 {
+	if fb, _, _ := s.Mem.VI.Present(s.Mem.RDRAM); fb != nil {
+		return fb
+	}
+	return s.fb
+}
+
+// FramebufferSize reports the VI output geometry when
+// the VI is presenting (width, height), or the blank
+// buffer's 320x240 when it is not.
+func (s *System) FramebufferSize() (int, int) {
+	if _, w, h := s.Mem.VI.Present(s.Mem.RDRAM); w > 0 {
+		return w, h
+	}
+	return Width, Height
+}
+
+// AudioBuffer drains the AI's produced samples:
+// interleaved signed 16-bit stereo at AudioRate.
+func (s *System) AudioBuffer() []int16 { return s.Mem.AI.Drain() }
+
+// AudioRate reports the AI's current DAC sample rate in
+// Hz, from the programmed DACRATE register.
+func (s *System) AudioRate() int { return s.Mem.AI.SampleRate() }
 
 // SetButtons records the standard controller state. Input
 // reaches games through the PIF in a later slice.
@@ -153,18 +187,19 @@ func (s *System) Title() string {
 	return s.Cart.Name
 }
 
-const stateVersion = 2
+const stateVersion = 3
 
 // SerializeSize reports the byte size of a serialized
 // system for this machine's RDRAM configuration.
 func (s *System) SerializeSize() int {
-	return 2 + r4300.SerializeSize + len(s.Mem.RDRAM) + rsp.SerializeSize + 8 + 8
+	return 2 + r4300.SerializeSize + len(s.Mem.RDRAM) + rsp.SerializeSize + 8 + 8 +
+		s.Mem.DP.SerializeSize() + vi.SerializeSize + ai.SerializeSize
 }
 
 // Serialize writes the full machine state: version byte,
 // option flags, the CPU block, RDRAM, the RSP block, the
-// MI interrupt and mask registers, and the RSP
-// interleave remainder.
+// MI interrupt and mask registers, the RSP interleave
+// remainder, and (version 3) the RDP, VI, and AI blocks.
 func (s *System) Serialize() []byte {
 	out := make([]byte, s.SerializeSize())
 	out[0] = stateVersion
@@ -181,6 +216,10 @@ func (s *System) Serialize() []byte {
 	binary.BigEndian.PutUint32(out[off+4:], mask)
 	off += 8
 	binary.BigEndian.PutUint64(out[off:], uint64(int64(s.rspFrac)))
+	off += 8
+	off += s.Mem.DP.Serialize(out[off:])
+	off += s.Mem.VI.Serialize(out[off:])
+	off += s.Mem.AI.Serialize(out[off:])
 	return out
 }
 
@@ -210,6 +249,18 @@ func (s *System) Deserialize(in []byte) error {
 	s.Mem.RestoreMI(intr, mask)
 	off += 8
 	s.rspFrac = int(int64(binary.BigEndian.Uint64(in[off:])))
+	off += 8
+	if err := s.Mem.DP.Deserialize(in[off:]); err != nil {
+		return err
+	}
+	off += s.Mem.DP.SerializeSize()
+	if err := s.Mem.VI.Deserialize(in[off:]); err != nil {
+		return err
+	}
+	off += vi.SerializeSize
+	if err := s.Mem.AI.Deserialize(in[off:]); err != nil {
+		return err
+	}
 	s.CPU.SetInterruptLine(s.Mem.MIInterrupt())
 	return nil
 }
