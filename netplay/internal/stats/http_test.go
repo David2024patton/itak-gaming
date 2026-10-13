@@ -96,6 +96,33 @@ func TestReportAndLeaderboardRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReportIdentityRoundTrip(t *testing.T) {
+	ts, _ := newTestHandler(t)
+
+	// A report carrying the optional identity fields surfaces them
+	// on both the players board and the recent feed.
+	resp := postRaw(t, ts.URL+"/stats/report",
+		`{"deviceId":"tv","player":"David","game":"SMW","plays":3,"seconds":600,"lastPlayed":1000,"display":"David M. P.","region":"KY"}`)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("report status = %d, want 204", resp.StatusCode)
+	}
+	_, _, players := getJSON[[]PlayerStat](t, ts.URL+"/leaderboard/players")
+	if len(players) != 1 || players[0].Display != "David M. P." || players[0].Region != "KY" {
+		t.Errorf("players board = %+v, want identity David M. P. / KY", players)
+	}
+	_, _, recent := getJSON[[]RecentEntry](t, ts.URL+"/leaderboard/recent")
+	if len(recent) != 1 || recent[0].Display != "David M. P." || recent[0].Region != "KY" {
+		t.Errorf("recent = %+v, want identity David M. P. / KY", recent)
+	}
+
+	// An over-long display name is rejected.
+	resp = postRaw(t, ts.URL+"/stats/report",
+		`{"deviceId":"tv","player":"David","game":"SMW","plays":3,"seconds":600,"lastPlayed":1000,"display":"`+strings.Repeat("x", MaxDisplayChars+1)+`"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("over-long display status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestReportValidation(t *testing.T) {
 	ts, _ := newTestHandler(t)
 	cases := map[string]string{
