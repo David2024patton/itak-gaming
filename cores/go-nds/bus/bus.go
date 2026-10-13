@@ -270,7 +270,7 @@ func (b *Bus) decode7(addr uint32) ([]byte, uint32, bool) {
 		// 0x20000 times its OFS low bit.
 		for i, cntOff := range []int{ioVRAMCNTC, ioVRAMCNTD} {
 			cnt := uint32(b.IO9[cntOff])
-			if cnt&1 != 0 && (cnt>>1)&3 == 2 && uint32(addr-0x06000000)>>17 == (cnt>>3)&1 {
+			if cnt&0x80 != 0 && cnt&7 == 2 && uint32(addr-0x06000000)>>17 == (cnt>>3)&1 {
 				return b.VRAMBank(2 + i), addr & 0x1FFFF, true
 			}
 		}
