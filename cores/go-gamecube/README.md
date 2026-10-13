@@ -14,10 +14,13 @@ out. No third-party Go dependencies.
 
 ## Status
 
-**GCN-3 (this slice): the DSP, the audio, disc,
-external and serial interfaces, the video interface,
-the processor interrupt aggregate, and IPL HLE boot,
-wired into the system.**
+**GCN-4 (this slice): the GameCube core is complete.**
+The libretro shell, a homebrew enginetest that boots a
+fully synthetic disc through the real HLE boot and
+drives every subsystem end to end, the android-64bit
+app wiring preparation, and a disc parser robustness
+pass close the GameCube track. The GCN-3 status text
+follows.
 
 - `chips/dsp`: the GameCube DSP as a cycle-stepped
   core running IRAM microcode, with its mailbox link
@@ -231,6 +234,105 @@ foundations, and the system skeleton.**
   restored continuation matches the uninterrupted run
   byte for byte, EFB pixels included.
 
+GCN-4 additions:
+
+- `libretro`: the shell, core name "iTaK GoGCN",
+  extensions iso and gcm, 640x480 XRGB8888 video,
+  60.0 fps (the core frame is 8,100,000 cycles at
+  486 MHz, exactly 60 per second), and audio declared
+  at 48000 Hz: the AI rate is game-programmed (48000
+  or 32000 per the AICR rate select), and the shell
+  resamples to the declared rate with a linear
+  interpolator whenever the active rate differs.
+  Input maps the libretro joypad onto the GameCube
+  pad: A, B, X, Y, Start and the D-pad by name,
+  libretro R2 onto the GC Z button (Z is the lone
+  right shoulder button on the GC pad), L and R onto
+  the GC L and R with the analog trigger bytes taken
+  from the libretro analog L2 and R2 values when the
+  frontend reports them and a digital full press
+  otherwise, the main stick on the left analog and
+  the C-stick on the right analog. MEM1 is exposed as
+  RETRO_MEMORY_SYSTEM_RAM; there is no SAVE_RAM
+  device, because GameCube saves live on memory
+  cards. Card A persists as the file
+  "iTaK GoGCN.cardA.raw" in the frontend save
+  directory when the environment provides one
+  (RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY), loaded at
+  game load and written back at unload and reset;
+  card B is not file-backed. Loading a disc boots
+  its DOL immediately through the HLE boot. Disc
+  change is not supported. A reset rebuilds the
+  machine from the loaded disc.
+- The GCN-4 enginetest gate
+  (`system/system_gcn4_test.go`): a fixture generator
+  builds a fully synthetic disc (header, apploader
+  header stub, DOL, an FST with one file
+  TESTDATA.BIN) whose hand-assembled DOL, entered
+  through BootDisc with no seeding, walks the FST,
+  programs DBAT2 for the hardware page through
+  mtspr (the boot BATs cover MEM1 only), DI-DMAs the
+  file into MEM1 and verifies its byte checksum,
+  streams a 440 Hz sine through AI DMA and polls
+  AIINT, polls the SI pad, round-trips a 512 byte
+  pattern through memory card A over EXI and
+  byte-compares the readback, pushes a GX FIFO
+  stream that clears the EFB to a programmed color
+  and draws a flat-shaded quad, records five
+  milestone words in order, and spins on the VI
+  halfline counter. The gate asserts every milestone
+  and log word, the exact quad and clear pixels, the
+  sine's zero crossings (8 to 9 in 960 frames at
+  440 Hz), the exact DI bytes, the card pattern in
+  the card media itself, and the SI report against
+  the staged pad. A second gate takes a save
+  mid-spin and requires byte-identical continuation
+  in state, framebuffer, and audio. The same disc
+  runs through the built desktop shell under the
+  shared `go_backend/cmd/enginetest` harness: all
+  harness checks pass (core load, game load, AV
+  info, non-blank video, non-silent audio, save
+  state capture, per-player save round trip, and
+  restore frame equality).
+- Two core bugs the enginetest caught and GCN-4
+  fixed. First, the X-form register logical
+  instructions (and, or, xor and family) wrote their
+  result into the f1 field register; the architected
+  layout, the same one andi. and ori use in D form
+  and the shifts use in X form, carries the source
+  in f1 (rS) and the destination in f2 (rA). No
+  earlier gate had used a register logical with
+  distinct source and destination registers. The fix
+  is in `chips/gekko/exec.go`, pinned by
+  `chips/gekko/logical_test.go` with hand-derived
+  vectors for all eight logical forms plus the mr
+  shape. Second, the disc parser's length checks
+  used 32 bit arithmetic that wild offsets and entry
+  counts could wrap past, and the bi2 read ran past
+  the end of images between 0x440 and 0x460 bytes;
+  the checks are 64 bit now with an explicit bi2
+  floor, pinned by `disc/disc_robust_test.go`
+  (truncated headers, wild DOL and FST offsets, a
+  wrapping FST entry count, a wrapping file extent,
+  overlapping DOL sections), all returning errors
+  with no panics and no recover.
+- App wiring preparation (nothing shipped from this
+  slice; the parent assigns the build): `go_backend`
+  gained a SystemGameCube entry ("Go GameCube",
+  libgo_gamecube.so, .iso and .gcm, 64-bit) in
+  Cores64BitOnly, and the Flutter system grid's
+  GameCube entry now names libgo_gamecube.so with
+  extensions .iso and .gcm. The Kotlin activities
+  take the core name from Flutter, so they need no
+  change. What remains at ship time: the
+  android-64bit pipeline itself does not exist yet.
+  tools/autobuild-server.sh builds only the 32-bit
+  APK (android-arm target, arm backend AAR), carries
+  no core build list, and has no arm64 branch; the
+  64-bit build path (arm64 core builds, the arm64
+  AAR, an android-arm64 APK target and its publish
+  feed) is a separate pipeline job for the parent.
+
 ## Conformance
 
 There is no Tom Harte PowerPC corpus: the ProcessorTests
@@ -274,6 +376,13 @@ stream delivered one byte at a time rendering
 identically). `disc` adds 5 tests and `system` adds 5,
 including the synthetic-disc DOL, FST, and save-state
 determinism gates above.
+GCN-4 adds one `chips/gekko` test (the X-form logical
+field layout, eight forms plus mr), seven `disc`
+robustness tests, and three `system` tests (the
+homebrew enginetest, its save-state determinism gate,
+and the disc fixture writer the shared harness run
+uses). The state format is unchanged in GCN-4:
+version 3, 54,768,032 bytes.
 `go vet ./...` is clean and `go test ./...` is green.
 
 ## Roadmap
@@ -286,10 +395,11 @@ determinism gates above.
   aggregate, and IPL HLE boot (this project never ships
   the Nintendo IPL; games boot through the DOL staging
   path and an HLE BIOS layer).
-- GCN-4: the libretro shell, an enginetest with a
-  homebrew DOL, and the app wiring for the
-  android-64bit build.
-- Wii track (after the GameCube core proves out): MEM2
+- GCN-4 (done): the libretro shell, the homebrew
+  enginetest through the real boot, the disc parser
+  robustness pass, and the android-64bit app wiring
+  preparation. The GameCube track is complete.
+- Wii track (future work, only when called for): MEM2
   (the extra 64 MB), the Starlet ARM coprocessor, and IOS
   HLE, as their own slices in this same module.
 
@@ -422,3 +532,17 @@ determinism gates above.
   reconstruction from published layout facts. No IPL
   or apploader code is executed or embedded anywhere
   in this module.
+- **No retail game has been booted yet.** Every gate
+  in this module runs on synthetic or hand-assembled
+  fixtures, the GCN-4 enginetest included. The core is
+  complete against its documented model and its
+  gates; commercial-game compatibility is unproven
+  and will surface real bugs (the X-form logical fix
+  in GCN-4 is the shape of what to expect).
+- **Shell scope limits, stated plainly.** Disc change
+  is not supported. Only card A is file-backed; card
+  B exists in the machine but is not persisted by
+  the shell. The 32000 Hz to 48000 Hz audio resample
+  is a linear interpolator, not a polyphase filter.
+  A reset rebuilds the whole machine from the disc
+  rather than pulsing the hardware reset line.
