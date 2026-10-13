@@ -191,6 +191,12 @@ type Controller struct {
 	filterChannel uint8
 	session       uint8
 
+	// Host-side diagnostic: command bytes rejected
+	// as invalid, kept across Reset, never
+	// serialized.
+	unknownCmds []uint8
+	unknownCmdN int
+
 	events []cdEvent
 	now    int64
 
@@ -270,10 +276,37 @@ func (c *Controller) SetDisc(r Reader) {
 func (c *Controller) Reset() {
 	disc := c.disc
 	onIRQ := c.OnIRQ
-	*c = Controller{disc: disc, OnIRQ: onIRQ, xaRate: 37800, stopped: true}
+	unk, unkN := c.unknownCmds, c.unknownCmdN
+	*c = Controller{disc: disc, OnIRQ: onIRQ, xaRate: 37800, stopped: true,
+		unknownCmds: unk, unknownCmdN: unkN}
 	if disc != nil {
 		c.SetDisc(disc)
 	}
+}
+
+// UnknownCommands returns the distinct command bytes
+// this controller has rejected as invalid (INT5
+// code 40h), in first-seen order. It is a host-side
+// diagnostic: the log survives Reset and is not part
+// of the serialized state.
+func (c *Controller) UnknownCommands() []uint8 {
+	out := make([]uint8, len(c.unknownCmds))
+	copy(out, c.unknownCmds)
+	return out
+}
+
+// UnknownCommandCount returns the total number of
+// invalid commands received, repeats included.
+func (c *Controller) UnknownCommandCount() int { return c.unknownCmdN }
+
+func (c *Controller) noteUnknownCmd(cmd uint8) {
+	c.unknownCmdN++
+	for _, u := range c.unknownCmds {
+		if u == cmd {
+			return
+		}
+	}
+	c.unknownCmds = append(c.unknownCmds, cmd)
 }
 
 // DataLen returns the number of bytes waiting in the
@@ -897,6 +930,7 @@ func (c *Controller) execCommand(cmd uint8) {
 		// the secret unlock family while locked, and
 		// every unused opcode: the doc's answer is
 		// INT5 with code 40h, invalid command.
+		c.noteUnknownCmd(cmd)
 		c.errorResp(0x40)
 	}
 }
