@@ -281,9 +281,9 @@ const List<SystemInfo> kSystems = [
     name: 'PlayStation',
     tagline: 'PS1 · 1995',
     color: Color(0xFF616161),
-    core: 'libpcsx_rearmed.so',
+    core: 'libgo_ps1.so',
     dir: 'PS1',
-    exts: ['.cue', '.iso'],
+    exts: ['.cue', '.iso', '.bin'],
     thumbRepo: 'Sony_-_PlayStation',
     imageUrl:
         'https://commons.wikimedia.org/wiki/Special:FilePath/PSX-Console-wController.png?width=900',
