@@ -66,6 +66,11 @@ func (s *Session) reader() {
 			// Recorded for the UI only. Chat must never touch
 			// lockstep state (see chat.go).
 			s.notePeerChat(e.Text)
+		case "offer", "answer", "ice":
+			// Voice signaling, queued for the UI layer only.
+			// Like chat, it must never touch lockstep state
+			// (see signal.go).
+			s.notePeerSignal(e)
 		case "peer_left":
 			if s.phase == phaseRoom {
 				// Still in the waiting room: the seat simply
