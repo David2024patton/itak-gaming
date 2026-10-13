@@ -18,6 +18,7 @@ import (
 
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/cart"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/scd"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/sound"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/vdp"
 
@@ -33,6 +34,15 @@ const (
 	z80PerLine    = 228                        // 896,040 / 15 / 262, exact
 )
 
+// subFrameCycles is the number of sub CPU cycles in one frame: the
+// Sega CD sub CPU runs at 12.5 MHz.
+const subFrameCycles = 12500000 * masterFrame / masterHz
+
+// subTarget is the sub CPU cycle count at the end of the given line.
+func subTarget(line int) uint64 {
+	return uint64(line+1) * subFrameCycles / linesTotal
+}
+
 // System is one Genesis console.
 type System struct {
 	cart  *cart.Cart
@@ -41,6 +51,9 @@ type System struct {
 	bus   *bus.Bus
 	cpu   *m68k.CPU
 	zcpu  *z80.CPU
+	cd    *scd.Unit
+	scpu  *m68k.CPU
+	disc  *scd.Disc
 
 	audio    []int16 // samples produced since the last AudioBuffer call
 	audioAcc float64 // fractional samples owed
@@ -61,10 +74,19 @@ type System struct {
 func New() *System { return &System{} }
 
 // LoadGame builds the machine around a cartridge image and powers it on.
+// Loading a cartridge powers the machine on fresh: any Sega CD
+// attachment is cleared before the new bus is built, and any disc
+// must be loaded again afterwards with LoadDisc.
 func (s *System) LoadGame(data []byte) error {
 	c, err := cart.Load(data)
 	if err != nil {
 		return err
+	}
+	s.cd = nil
+	s.scpu = nil
+	if s.disc != nil {
+		s.disc.Close()
+		s.disc = nil
 	}
 	s.cart = c
 	s.vdp = vdp.New()
@@ -111,6 +133,40 @@ func (s *System) LoadGame(data []byte) error {
 // Loaded reports whether a game is in the machine.
 func (s *System) Loaded() bool { return s.loaded }
 
+// LoadDisc opens a disc image and attaches a Sega CD unit. With no
+// cartridge loaded, the machine powers on around the built-in main
+// stub program so a CD-only boot works; with a cartridge loaded, the
+// CD attaches alongside and the cartridge stays in control (it must
+// release the sub CPU itself through the gate array, as on hardware).
+// Loading a cartridge afterwards clears the attachment, so a disc
+// must be loaded again after LoadGame.
+func (s *System) LoadDisc(path string) error {
+	disc, err := scd.OpenDisc(path)
+	if err != nil {
+		return err
+	}
+	if !s.loaded {
+		if err := s.LoadGame(scd.MainStubROM()); err != nil {
+			disc.Close()
+			return err
+		}
+	}
+	if s.disc != nil {
+		s.disc.Close()
+	}
+	s.disc = disc
+	s.cd = scd.NewUnit(disc)
+	s.scpu = m68k.New(s.cd)
+	s.bus.AttachCD(s.cd)
+	return nil
+}
+
+// CDAttached reports whether a Sega CD unit is attached.
+func (s *System) CDAttached() bool { return s.cd != nil }
+
+// CDUnit returns the attached Sega CD unit, or nil when detached.
+func (s *System) CDUnit() *scd.Unit { return s.cd }
+
 // Reset is the console reset button: the 68000 restarts from its vectors.
 // RAM, VRAM and cartridge save RAM survive, as they do on hardware.
 func (s *System) Reset() {
@@ -118,6 +174,9 @@ func (s *System) Reset() {
 		return
 	}
 	s.cpu.Reset()
+	if s.cd != nil {
+		s.cd.ForceSubReset()
+	}
 }
 
 // Title returns the cartridge's overseas title, for logs and UIs.
@@ -211,6 +270,32 @@ func (s *System) run68k(target uint64) {
 	}
 }
 
+// runSubLine advances the Sega CD sub CPU by one scanline of cycles,
+// honoring the gate array reset and halt lines the main CPU controls.
+func (s *System) runSubLine(line int) {
+	if s.cd == nil {
+		return
+	}
+	if s.cd.TakeSubReset() {
+		s.scpu.Reset()
+	}
+	if s.cd.SubHalted() {
+		return
+	}
+	base := s.frame * subFrameCycles
+	target := base + subTarget(line)
+	for i := 0; i < 32; i++ {
+		cur := s.scpu.Cycles()
+		if cur >= target {
+			return
+		}
+		s.scpu.StepCycles(int(target - cur))
+		if s.scpu.Cycles() == cur {
+			return
+		}
+	}
+}
+
 // runZ80Line advances the Z80 by one scanline of cycles, honoring the
 // bus-request and reset lines the 68000 controls. lineStartYM is the
 // scanline's start time in YM2612 clocks; it and the Z80 counter at
@@ -268,6 +353,12 @@ func (s *System) RunFrame() {
 		// The line starts, in 68000 (and YM2612) cycles, at the
 		// previous line's cumulative target.
 		s.runZ80Line(int64(base + uint64(line)*masterFrame/7/linesTotal))
+		s.runSubLine(line)
+		if s.cd != nil {
+			if fire, vec := s.cd.LineTick(line); fire {
+				s.cpu.RequestInterrupt(2, vec)
+			}
+		}
 		target := base + m68kTarget(line)
 		s.sound.AdvanceClocks(uint32(target - clocked))
 		clocked = target
@@ -304,31 +395,11 @@ const m68kStateSize = 80 // D[8]+A[8] u32, PC u32, SR u16, USP u32, SSP u32, IR 
 // the first frame after a restore.
 const trailerSize = 24
 
-// SerializeSize is the total save-state size in bytes.
-func (s *System) SerializeSize() int {
-	if !s.loaded {
-		return 0
-	}
-	return m68kStateSize + z80.SerializeSize +
-		s.bus.SerializeSize() + s.vdp.SerializeSize() + s.sound.SerializeSize() +
-		trailerSize
-}
-
-// Serialize writes the full machine state into buf.
-//
-// Note: a pending-but-unserviced 68000 interrupt is not part of the CPU
-// library's register snapshot. Interrupts re-fire every frame (VBlank) or
-// are re-requested by the game, so a restore at worst shifts one interrupt
-// by a frame.
-func (s *System) Serialize(buf []byte) error {
-	if !s.loaded {
-		return errors.New("system: no game loaded")
-	}
-	if len(buf) < s.SerializeSize() {
-		return errors.New("system: serialize buffer too small")
-	}
+// writeM68kState writes one 68000 register snapshot (m68kStateSize
+// bytes) into buf.
+func writeM68kState(buf []byte, cpu *m68k.CPU) {
 	off := 0
-	r := s.cpu.Registers()
+	r := cpu.Registers()
 	// The CPU's SetState ignores the A[7] slot and derives the
 	// active stack pointer from SSP (supervisor) or USP (user) instead,
 	// while its Registers() can report a stale SSP/USP next to the live
@@ -357,7 +428,68 @@ func (s *System) Serialize(buf []byte) error {
 	binary.LittleEndian.PutUint32(buf[off:], r.SSP)
 	off += 4
 	binary.LittleEndian.PutUint16(buf[off:], r.IR)
+}
+
+// readM68kState parses one 68000 register snapshot from buf and
+// installs it into cpu.
+func readM68kState(buf []byte, cpu *m68k.CPU) {
+	off := 0
+	var r m68k.Registers
+	for i := 0; i < 8; i++ {
+		r.D[i] = binary.LittleEndian.Uint32(buf[off:])
+		off += 4
+	}
+	for i := 0; i < 8; i++ {
+		r.A[i] = binary.LittleEndian.Uint32(buf[off:])
+		off += 4
+	}
+	r.PC = binary.LittleEndian.Uint32(buf[off:])
+	off += 4
+	r.SR = binary.LittleEndian.Uint16(buf[off:])
 	off += 2
+	r.USP = binary.LittleEndian.Uint32(buf[off:])
+	off += 4
+	r.SSP = binary.LittleEndian.Uint32(buf[off:])
+	off += 4
+	r.IR = binary.LittleEndian.Uint16(buf[off:])
+	cpu.SetState(r)
+}
+
+// SerializeSize is the total save-state size in bytes.
+//
+// Versioning choice: the cartridge-only layout is unchanged and old
+// cartridge states still load in cartridge mode; CD states carry an
+// appended CD section and loading one requires the CD attached (a
+// cartridge-sized buffer in CD mode fails the existing size check).
+func (s *System) SerializeSize() int {
+	if !s.loaded {
+		return 0
+	}
+	n := m68kStateSize + z80.SerializeSize +
+		s.bus.SerializeSize() + s.vdp.SerializeSize() + s.sound.SerializeSize() +
+		trailerSize
+	if s.cd != nil {
+		n += m68kStateSize + s.cd.SerializeSize() + 8
+	}
+	return n
+}
+
+// Serialize writes the full machine state into buf.
+//
+// Note: a pending-but-unserviced 68000 interrupt is not part of the CPU
+// library's register snapshot. Interrupts re-fire every frame (VBlank) or
+// are re-requested by the game, so a restore at worst shifts one interrupt
+// by a frame.
+func (s *System) Serialize(buf []byte) error {
+	if !s.loaded {
+		return errors.New("system: no game loaded")
+	}
+	if len(buf) < s.SerializeSize() {
+		return errors.New("system: serialize buffer too small")
+	}
+	off := 0
+	writeM68kState(buf[off:], s.cpu)
+	off += m68kStateSize
 
 	if err := s.zcpu.Serialize(buf[off:]); err != nil {
 		return err
@@ -378,6 +510,16 @@ func (s *System) Serialize(buf []byte) error {
 	binary.LittleEndian.PutUint64(buf[off:], s.frame)
 	binary.LittleEndian.PutUint64(buf[off+8:], s.cpu.Cycles())
 	binary.LittleEndian.PutUint64(buf[off+16:], math.Float64bits(s.audioAcc))
+	off += trailerSize
+	if s.cd != nil {
+		writeM68kState(buf[off:], s.scpu)
+		off += m68kStateSize
+		if err := s.cd.Serialize(buf[off:]); err != nil {
+			return err
+		}
+		off += s.cd.SerializeSize()
+		binary.LittleEndian.PutUint64(buf[off:], s.scpu.Cycles())
+	}
 	return nil
 }
 
@@ -390,26 +532,8 @@ func (s *System) Deserialize(buf []byte) error {
 		return errors.New("system: state too small")
 	}
 	off := 0
-	var r m68k.Registers
-	for i := 0; i < 8; i++ {
-		r.D[i] = binary.LittleEndian.Uint32(buf[off:])
-		off += 4
-	}
-	for i := 0; i < 8; i++ {
-		r.A[i] = binary.LittleEndian.Uint32(buf[off:])
-		off += 4
-	}
-	r.PC = binary.LittleEndian.Uint32(buf[off:])
-	off += 4
-	r.SR = binary.LittleEndian.Uint16(buf[off:])
-	off += 2
-	r.USP = binary.LittleEndian.Uint32(buf[off:])
-	off += 4
-	r.SSP = binary.LittleEndian.Uint32(buf[off:])
-	off += 4
-	r.IR = binary.LittleEndian.Uint16(buf[off:])
-	off += 2
-	s.cpu.SetState(r)
+	readM68kState(buf[off:], s.cpu)
+	off += m68kStateSize
 
 	if err := s.zcpu.Deserialize(buf[off:]); err != nil {
 		return err
@@ -432,5 +556,15 @@ func (s *System) Deserialize(buf []byte) error {
 	// timing base and the counter agree again.
 	s.cpu.AddCycles(binary.LittleEndian.Uint64(buf[off+8:]))
 	s.audioAcc = math.Float64frombits(binary.LittleEndian.Uint64(buf[off+16:]))
+	off += trailerSize
+	if s.cd != nil {
+		readM68kState(buf[off:], s.scpu)
+		off += m68kStateSize
+		if err := s.cd.Deserialize(buf[off:]); err != nil {
+			return err
+		}
+		off += s.cd.SerializeSize()
+		s.scpu.AddCycles(binary.LittleEndian.Uint64(buf[off:]))
+	}
 	return nil
 }
