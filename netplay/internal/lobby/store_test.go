@@ -223,3 +223,45 @@ func TestCreateCapEnforced(t *testing.T) {
 		t.Errorf("over-cap err = %v, want ErrTooMany", err)
 	}
 }
+
+func TestPlayerLobby(t *testing.T) {
+	s, _ := testStore(t0)
+	l, _, err := s.Create(CreateInput{
+		Name:       "Fight night",
+		Game:       "Mortal Kombat (USA).md",
+		HostPlayer: "Mary",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Join(l.ID, "Terry", ""); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+
+	// Both the host and the guest resolve to the lobby, with its
+	// game attached.
+	for _, name := range []string{"Mary", "Terry"} {
+		pub, ok := s.PlayerLobby(name)
+		if !ok {
+			t.Errorf("PlayerLobby(%q) not found, want the live lobby", name)
+			continue
+		}
+		if pub.ID != l.ID || pub.Game != "Mortal Kombat (USA).md" {
+			t.Errorf("PlayerLobby(%q) = %+v, want lobby %s with its game", name, pub, l.ID)
+		}
+	}
+
+	// A player in no lobby, and the empty name, find nothing.
+	if _, ok := s.PlayerLobby("Ghost"); ok {
+		t.Error("PlayerLobby(Ghost) found a lobby, want none")
+	}
+	if _, ok := s.PlayerLobby(""); ok {
+		t.Error("PlayerLobby(empty) found a lobby, want none")
+	}
+
+	// Once the lobby is deleted, its members no longer resolve.
+	s.Delete(l.ID)
+	if _, ok := s.PlayerLobby("Mary"); ok {
+		t.Error("PlayerLobby(Mary) after delete found a lobby, want none")
+	}
+}
