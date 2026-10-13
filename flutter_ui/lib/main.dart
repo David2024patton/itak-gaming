@@ -2363,15 +2363,16 @@ class _OnlineScreenState extends State<OnlineScreen> {
   String _status = 'Connecting to the lobby server...';
   bool _online = false;
   // Focus rows: 0 = Create, 1 = Refresh, then one row per friend,
-  // then one row per lobby, last = Back. The Friends and Open
-  // lobbies section labels sit between the rows in the list but are
-  // not selectable, so they own no focus index.
+  // then two stops per lobby (Join, then Watch on the same card),
+  // last = Back. The Friends and Open lobbies section labels sit
+  // between the rows in the list but are not selectable, so they
+  // own no focus index.
   int _sel = 0;
   Timer? _ticker;
   final ScrollController _listScroll = ScrollController();
   final Map<int, GlobalKey> _rowKeys = {};
 
-  int get _itemCount => _lobbies.length + _friends.length + 3;
+  int get _itemCount => _lobbies.length * 2 + _friends.length + 3;
 
   @override
   void initState() {
@@ -2663,6 +2664,68 @@ class _OnlineScreenState extends State<OnlineScreen> {
     }
   }
 
+  // Watch a lobby without taking a seat: the server hands back a
+  // spectator token, and the game screen reconstructs the match
+  // locally from both players' inputs. Watching runs the same
+  // game on this box, so the game file has to be in the library,
+  // exactly like joining.
+  Future<void> _watchLobby(Map<String, dynamic> lobby) async {
+    final player = await _playerName();
+    if (!mounted) return;
+    var password = '';
+    if (lobby['locked'] == true) {
+      final pw = await showTvKeyboard(context,
+          title: 'Lobby password', initial: '');
+      if (pw == null || !mounted) return;
+      password = pw;
+    }
+    try {
+      final data = await _api('POST', '/lobbies/${lobby['id']}/watch', {
+        'player': player,
+        'password': password,
+      });
+      if (!mounted) return;
+      final token = (data['spectatorToken'] ?? '').toString();
+      if (token.isEmpty) {
+        setState(() =>
+            _status = 'The server did not send a spectator token.');
+        return;
+      }
+      final games = await scanLocalGames();
+      LocalGame? match;
+      for (final g in games) {
+        if (g.fileName == lobby['game']) {
+          match = g;
+          break;
+        }
+      }
+      if (!mounted) return;
+      if (match == null) {
+        setState(() =>
+            _status = 'You need this game in your library to watch');
+        return;
+      }
+      appLog(
+          'watch joined: ${lobby['id']} for ${match.fileName} by $player');
+      await _channel.invokeMethod('launch', {
+        'core': match.system.core,
+        'rom': match.file.path,
+        'mode': 'watch',
+        'serverBase': kServerBase,
+        'lobbyId': lobby['id'].toString(),
+        'token': token,
+        'playerName': player,
+      });
+    } catch (e) {
+      appLog('watch lobby failed: $e');
+      if (!mounted) return;
+      // The server's own words (bad password, room full of
+      // watchers) belong on the status line, like a failed join.
+      setState(() =>
+          _status = e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
   void _showMessage(String title, String body) {
     if (!mounted) return;
     showDialog<void>(
@@ -2692,8 +2755,15 @@ class _OnlineScreenState extends State<OnlineScreen> {
     } else if (_sel < 2 + _friends.length) {
       _tapFriend(_friends[_sel - 2] as Map<String, dynamic>);
     } else {
-      _joinLobby(
-          _lobbies[_sel - 2 - _friends.length] as Map<String, dynamic>);
+      // Lobby stops come in pairs on one card: even offset is the
+      // Join stop, odd offset is the Watch stop.
+      final off = _sel - 2 - _friends.length;
+      final lobby = _lobbies[off ~/ 2] as Map<String, dynamic>;
+      if (off % 2 == 0) {
+        _joinLobby(lobby);
+      } else {
+        _watchLobby(lobby);
+      }
     }
   }
 
@@ -2764,17 +2834,62 @@ class _OnlineScreenState extends State<OnlineScreen> {
     );
   }
 
-  Widget _lobbyRow(int index, Map<String, dynamic> lobby) {
+  // One small pill on a lobby card (Join / Watch). Each pill is
+  // its own focus stop in the flat index walk; tapping it selects
+  // the stop and fires its action at once.
+  Widget _lobbyAction(
+      int index, String label, VoidCallback action,
+      {bool primary = false}) {
     final focused = _sel == index;
-    final locked = lobby['locked'] == true;
-    final host = (lobby['hostPlayer'] ?? 'Player').toString();
     return GestureDetector(
       onTap: () {
         setState(() => _sel = index);
+        action();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: primary
+              ? const Color(0xFF00E676)
+              : const Color(0xFF23233A),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: focused
+                ? Colors.white
+                : (primary ? Colors.white54 : Colors.white24),
+            width: focused ? 2.5 : 1.2,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 15.5,
+            fontWeight: FontWeight.bold,
+            color: primary ? Colors.black : Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _lobbyRow(int lobbyIndex, Map<String, dynamic> lobby) {
+    // The card owns two consecutive focus stops: Join, then Watch.
+    final joinIndex = 2 + _friends.length + 2 * lobbyIndex;
+    final watchIndex = joinIndex + 1;
+    final focused = _sel == joinIndex || _sel == watchIndex;
+    final locked = lobby['locked'] == true;
+    final host = (lobby['hostPlayer'] ?? 'Player').toString();
+    final spectators = (lobby['spectators'] as num?)?.toInt() ?? 0;
+    // Both stops scroll to this card, so they share its key.
+    final cardKey = _rowKeys.putIfAbsent(joinIndex, () => GlobalKey());
+    _rowKeys[watchIndex] = cardKey;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _sel = joinIndex);
         _joinLobby(lobby);
       },
       child: AnimatedContainer(
-        key: _rowKeys.putIfAbsent(index, () => GlobalKey()),
+        key: cardKey,
         duration: const Duration(milliseconds: 120),
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
@@ -2880,6 +2995,34 @@ class _OnlineScreenState extends State<OnlineScreen> {
                       style: const TextStyle(
                           fontSize: 14.5, color: Colors.white70),
                     ),
+                  ],
+                ),
+                if (spectators > 0) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.visibility,
+                          size: 15, color: Colors.white54),
+                      const SizedBox(width: 5),
+                      Text(
+                        '$spectators watching',
+                        style: const TextStyle(
+                            fontSize: 13.5, color: Colors.white54),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _lobbyAction(
+                        joinIndex, 'Join', () => _joinLobby(lobby),
+                        primary: true),
+                    const SizedBox(width: 8),
+                    _lobbyAction(
+                        watchIndex, 'Watch', () => _watchLobby(lobby)),
                   ],
                 ),
               ],
@@ -3172,8 +3315,8 @@ class _OnlineScreenState extends State<OnlineScreen> {
                         _noLobbies()
                       else
                         for (var i = 0; i < _lobbies.length; i++)
-                          _lobbyRow(2 + _friends.length + i,
-                              _lobbies[i] as Map<String, dynamic>),
+                          _lobbyRow(
+                              i, _lobbies[i] as Map<String, dynamic>),
                     ],
                   ),
                 ),
@@ -3183,7 +3326,7 @@ class _OnlineScreenState extends State<OnlineScreen> {
                     _actionButton(_itemCount - 1, Icons.arrow_back, 'Back'),
                     const Spacer(),
                     const Text(
-                      'UP / DOWN browse · OK to join · BACK returns',
+                      'UP / DOWN browse · OK to select · BACK returns',
                       style: TextStyle(fontSize: 14, color: Colors.white38),
                     ),
                   ],
