@@ -201,6 +201,81 @@ func TestYMTimerAFlag(t *testing.T) {
 	}
 }
 
+func TestYMAdvanceClocksTimerA(t *testing.T) {
+	s := New()
+	ymWriteA(s, 0x24, 0xFA)
+	ymWriteA(s, 0x25, 0x00) // NA = 1000: period 18*24 = 432 master clocks
+	ymWriteA(s, 0x27, 0x05) // load + enable timer A
+	// No Produce call anywhere: the flag must move on stepped
+	// clocks alone, at exactly the accumulated period.
+	s.AdvanceClocks(431)
+	if got := s.ReadYM(); got&0x01 != 0 {
+		t.Fatalf("timer A flag set after 431 of 432 clocks: %#02x", got)
+	}
+	s.AdvanceClocks(1)
+	if got := s.ReadYM(); got&0x01 == 0 {
+		t.Fatalf("timer A flag not set at 432 clocks: %#02x", got)
+	}
+	ymWriteA(s, 0x27, 0x10) // reset bit still clears it
+	if got := s.ReadYM(); got&0x01 != 0 {
+		t.Fatalf("timer A flag not cleared by the 0x27 reset bit: %#02x", got)
+	}
+}
+
+func TestYMAdvanceClocksTimerB(t *testing.T) {
+	s := New()
+	ymWriteA(s, 0x26, 0xFE) // NB = 254: period 288*2 = 576 master clocks
+	ymWriteA(s, 0x27, 0x0A) // load + enable timer B
+	s.AdvanceClocks(575)
+	if got := s.ReadYM(); got&0x02 != 0 {
+		t.Fatalf("timer B flag set after 575 of 576 clocks: %#02x", got)
+	}
+	s.AdvanceClocks(1)
+	if got := s.ReadYM(); got&0x02 == 0 {
+		t.Fatalf("timer B flag not set at 576 clocks: %#02x", got)
+	}
+}
+
+func TestYMAdvanceClocksLedger(t *testing.T) {
+	s := New()
+	ymWriteA(s, 0x24, 0xFA)
+	ymWriteA(s, 0x25, 0x00) // period 432 master clocks
+	ymWriteA(s, 0x27, 0x05) // load + enable timer A
+	s.AdvanceClocks(400)
+	// One rendered output frame from a fresh chip generates two
+	// native samples (288 clocks), all inside the 400 already
+	// stepped. If Produce stepped them again the total would be
+	// 688 and the flag would be up; it must stay down.
+	s.Produce(1)
+	if got := s.ReadYM(); got&0x01 != 0 {
+		t.Fatalf("timer A flag set: Produce double-stepped system time: %#02x", got)
+	}
+
+	// The ledger is part of the save state: a chip restored here
+	// agrees on the remaining distance to the flag.
+	buf := make([]byte, s.SerializeSize())
+	if err := s.Serialize(buf); err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	s2 := New()
+	if err := s2.Deserialize(buf); err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	s2.AdvanceClocks(31) // 431 total
+	if got := s2.ReadYM(); got&0x01 != 0 {
+		t.Fatalf("restored chip: timer A flag set after 431 clocks: %#02x", got)
+	}
+	s.AdvanceClocks(31)
+	s.AdvanceClocks(1)
+	s2.AdvanceClocks(1)
+	if got := s.ReadYM(); got&0x01 == 0 {
+		t.Fatalf("timer A flag not set at 432 clocks: %#02x", got)
+	}
+	if got := s2.ReadYM(); got&0x01 == 0 {
+		t.Fatalf("restored chip: timer A flag not set at 432 clocks: %#02x", got)
+	}
+}
+
 func TestYMDACMode(t *testing.T) {
 	s := New()
 	ymWriteA(s, 0x2A, 0xFF) // DAC data, near positive full scale
@@ -214,6 +289,22 @@ func TestYMDACMode(t *testing.T) {
 		}
 		if out[i] != out[200] {
 			t.Fatalf("DAC output not steady: sample %d = %d, sample 200 = %d", i, out[i], out[200])
+		}
+	}
+}
+
+// The DAC must be audible with NO pan write at all: pan powers on
+// routed to both sides (Sonic 1's SEGA jingle streams the DAC
+// without ever writing channel 6's pan register first).
+func TestYMDACPanPowerOnDefault(t *testing.T) {
+	s := New()
+	ymWriteA(s, 0x2A, 0xFF) // DAC data, near positive full scale
+	ymWriteA(s, 0x2B, 0x80) // DAC enable: channel 6 becomes the DAC
+
+	out := s.Produce(400)
+	for i := 200; i < len(out); i++ {
+		if out[i] < 2000 {
+			t.Fatalf("DAC sample %d = %d, want a steady value over 2000 with no pan write", i, out[i])
 		}
 	}
 }
