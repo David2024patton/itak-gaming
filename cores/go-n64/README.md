@@ -11,10 +11,16 @@ No third-party Go dependencies.
 
 ## Status
 
-**N64-1 (this slice): R4300 CPU + memory map + cartridge
-foundations + system skeleton.** The processor runs real
-MIPS code with full address translation; nothing renders
-yet, and games cannot boot until the PIF/CIC slice lands.
+**N64-1: R4300 CPU + memory map + cartridge foundations
++ system skeleton.** The processor runs real MIPS code
+with full address translation.
+
+**N64-2 (this slice): the RSP.** The signal processor is
+a full second computer: its own scalar MIPS I core, its
+SP DMA engine, and the complete vector unit, all wired
+into the bus and the system interleave. Nothing renders
+yet, and games cannot boot until the PIF/CIC slice
+lands.
 
 - `chips/r4300`: the VR4300 (MIPS III + 64-bit
   extensions). Full integer set including the 64-bit loads
@@ -37,9 +43,51 @@ yet, and games cannot boot until the PIF/CIC slice lands.
   single and double, all conversions, the ROUND/TRUNC/
   CEIL/FLOOR family, C.cond into all 8 condition bits,
   and BC1T/BC1F/BC1TL/BC1FL.
+- `chips/rsp`: the Reality Signal Processor. DMEM and
+  IMEM (4 KB each) with 12-bit wrapped addressing, owned
+  by the package and visible through the SP window. The
+  scalar core is the documented MIPS I subset: the
+  integer ops minus the 64-bit forms and the TLB/CP0
+  machinery, with LWL/LWR/SWL/SWR, MULT/DIV into HI/LO,
+  delay slots, JAL/JALR links, and BREAK (sets the broke
+  state, halts, and raises the MI SP interrupt when
+  interrupt-on-break is enabled). No exceptions besides
+  BREAK; reserved encodings are NOPs, and ADD/ADDI do not
+  trap on overflow, per the RSP documentation. Its CP0
+  is the SP register set: SP_MEM_ADDR (with the
+  DMEM/IMEM select bit), SP_DRAM_ADDR, SP_RD_LEN and
+  SP_WR_LEN with the full length/count/skip multi-row
+  DMA format, SP_STATUS with the documented read state
+  bits and write set/clear bit pairs (halt, broke,
+  interrupt, interrupt-on-break, signals 0-7), the
+  test-and-set SP_SEMAPHORE (read sets, write clears),
+  and SP_PC, writable only while halted. The vector unit
+  implements the full documented COP2 set: 32 vector
+  registers of 8 lanes, the 48-bit accumulator with VSAR
+  slice read-out, VCC/VCO/VCE control registers with
+  CFC2/CTC2, element broadcast (scalar, quarter, half,
+  whole) applied per the manual, the multiply family
+  (VMULF, VMULU, VMULQ, VMUDL/M/N/H, VMACF, VMACU,
+  VMACQ, VMADL/M/N/H, VRNDN, VRNDP) with the documented
+  accumulator clamp rules, VADD/VSUB/VADDC/VSUBC with the
+  VCO carry chain, VABS, the compares (VLT, VEQ, VNE,
+  VGE; VGT and VLE are the same functs with operands
+  exchanged and have no encoding of their own), the clip
+  family VCH/VCL/VCR implemented step for step from the
+  manual algorithms, the logicals, VMOV, VMRG, VSAR, and
+  VRCP/VRCPL/VRCPH/VRSQ/VRSQL/VRSQH with the latched
+  double-precision protocol. Every documented vector
+  load and store is implemented: LBV, LSV, LLV, LDV,
+  LQV and LRV with the unaligned merge rule, the packed
+  LPV, LUV, LHV, LFV, the transpose LTV/STV with the
+  documented start-element rotation, and SWV. Microcode
+  is cart-supplied data that this processor executes;
+  none is embedded.
 - `bus`: the physical map. RDRAM (4 MB, or 8 MB with the
   Expansion Pak option) with mirroring, RDRAM register
-  page, SP DMEM/IMEM and register stubs, DP/VI/AI/RI/SI
+  page, the SP memory window, SP registers, and SP PC
+  routed to the real RSP (its interrupt output drives
+  the MI SP bit), DP/VI/AI/RI/SI
   register storage, MI with the documented paired-bit
   mask semantics and the interrupt line wired to the CPU,
   and the PI with real DMA between the cartridge window
@@ -52,12 +100,18 @@ yet, and games cannot boot until the PIF/CIC slice lands.
   ROM's own boot-area CRC32 against the documented
   checksum values. No boot code or CIC seed data is
   embedded anywhere in this core.
-- `system`: the machine skeleton. LoadROM, RunFrame with
-  a 93.75 MHz / 60 frame budget (1,562,500 cycles), a
-  blank 320x240 XRGB8888 framebuffer, SetButtons in the
+- `system`: the machine. LoadROM, RunFrame with a
+  93.75 MHz / 60 frame budget (1,562,500 cycles), a blank
+  320x240 XRGB8888 framebuffer, SetButtons in the
   standard controller bit layout, and versioned
-  Serialize/Deserialize covering the CPU plus RDRAM
-  (4,196,162 bytes with 4 MB; 8,390,466 with 8 MB).
+  Serialize/Deserialize. Version 2 states add the full
+  RSP block, the MI interrupt and mask registers, and
+  the interleave remainder (4,205,131 bytes with 4 MB;
+  8,399,435 with 8 MB). While the RSP is not halted it
+  executes interleaved with the CPU: 2 RSP cycles per 3
+  CPU cycles (62.5 MHz against 93.75 MHz), credited
+  exactly after every CPU step at system step
+  granularity.
 
 ## Verification
 
@@ -84,6 +138,31 @@ and checksums them: a save state taken mid-run restores
 into a fresh machine and produces byte-identical RDRAM,
 registers, and results.
 
+The RSP is gated on hand-derived numeric vectors from
+the RSP programmer's documentation (19 test functions in
+the package, plus 3 system gates): scalar arithmetic with the LWL/LWR merge, branch links
+and delay slots, the SP_STATUS write bit pairs, the
+semaphore test-and-set, multi-row DMA with skip in both
+directions (register API and RSP-driven MTC0), BREAK
+interrupt behavior, and a serialization round trip.
+Vector gates pin the VMULF 0x8000 x 0x8000 corner
+(result 0x7FFF, accumulator 0x80008000 read back through
+VSAR), a three-op VMAC chain that accumulates and
+saturates, the VADDC/VSUBC carry chain with VCO read
+back through CFC2, quarter/half/whole element
+broadcasts, the combined VSUBC-then-VEQ double-precision
+compare, VCH/VCL on the equal, clamp-high, clamp-low,
+and double-precision refinement cases, VRCP/VRSQ values
+(0.5 gives exactly 2.0, the double-precision 1.0 gives
+exactly 0x8000), the LQV+LRV unaligned pair, the
+transpose store with its rotation, and the packed
+loads. The end-to-end gate runs through the system: the
+CPU DMAs a hand-assembled RSP program into IMEM, starts
+it, and the RSP computes an 8-lane dot product
+(0x7800 in S1.15) into DMEM and BREAKs; the CPU takes
+the MI SP interrupt, and a state saved while the RSP
+was mid-program restores and finishes byte-identically.
+
 The open-source n64-systemtest homebrew ROM would be a
 useful extra gate, but its official GitHub has no
 releases and no committed binary (it is a Rust project
@@ -96,9 +175,8 @@ not a gate today.
 
 ## Roadmap
 
-- **N64-2:** RSP: the scalar MIPS core plus the vector
-  unit (VU), DMEM/IMEM execution, SP status and DMA.
-- **N64-3:** RDP software rasterizer, VI output, AI audio.
+- **N64-3:** RDP software rasterizer (its own command
+  processor), VI output, AI audio.
 - **N64-4:** PIF/CIC boot (the CIC seed exchange
   implemented from documentation, no dumped boot code),
   the libretro shell, a real-game enginetest, and app
@@ -144,3 +222,35 @@ not a gate today.
 - Divide by zero follows the common MIPS convention
   (quotient all-ones or 1 by dividend sign, remainder is
   the dividend); the architecture leaves it undefined.
+- RSP DMA executes atomically on the length-register
+  write: the whole multi-row transfer lands at once, so
+  the DMA busy and full flags always read 0 and a CPU
+  write that sets halt stops the RSP at the next system
+  step boundary rather than mid-instruction. The DRAM
+  address is taken modulo 2^24 and then masked to the
+  installed RDRAM size; the SP address wraps inside its
+  4 KB bank; the length field contributes (length &
+  0xFF8) + 8 bytes per row, per the manual.
+- The RSP executes one instruction per cycle in the
+  interleave accounting. Pipeline behavior is not
+  modeled: there are no load-use delay slots (results
+  are available to the next instruction immediately),
+  and scalar and vector accesses see DMEM only, the
+  12-bit space the instruction pseudocode documents.
+- Reciprocals: VRCP and VRSQ are computed exactly in
+  the documented formats (single-precision S1.15 input
+  to S16.15 output, double-precision S15.16 input) by
+  integer and float64 math. The hardware instead uses a
+  lookup table with roughly 10 bits of precision, so the
+  low bits of a result can differ from hardware even
+  though ours are the correctly rounded values of the
+  documented function; the examples the documentation
+  works (0.5 to 2.0, 1.0) match exactly.
+- Two places where the RSP documentation disagrees with
+  itself are resolved for its worked algorithms: VADDC
+  writes the not-equal flag byte as 0 (its Operation
+  section, against one architecture sentence), and the
+  VCH/VCL clip flags sit in VCC with the less-or-equal
+  bits low and the greater-or-equal bits high (the
+  register-format figure and the Operation sections,
+  against one chapter sentence).
