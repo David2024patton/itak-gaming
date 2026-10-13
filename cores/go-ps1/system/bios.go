@@ -113,21 +113,21 @@ type BIOSCall struct {
 // Event classes and specs used by the delivery
 // model (psx-spx BIOS Event Summary).
 const (
-	evClassVBlank  = 0xF0000001
-	evClassGPU     = 0xF0000002
-	evClassCDROM   = 0xF0000003
-	evClassDMA     = 0xF0000004
-	evClassTMR0    = 0xF0000005
-	evClassTMR1    = 0xF0000006 // TMR2 shares this class (documented quirk)
-	evClassPAD     = 0xF0000008
-	evClassSPU     = 0xF0000009
-	evSpecIRQ      = 0x1000
-	evSpecRCnt     = 0x0002
-	evClassRCnt0   = 0xF2000000
-	evClassRCntVB  = 0xF2000003
-	evModeCallback = 0x1000
-	evModeReady    = 0x2000
-	evHandleBase   = 0xF1000000
+	evClassVBlank  uint32 = 0xF0000001
+	evClassGPU     uint32 = 0xF0000002
+	evClassCDROM   uint32 = 0xF0000003
+	evClassDMA     uint32 = 0xF0000004
+	evClassTMR0    uint32 = 0xF0000005
+	evClassTMR1    uint32 = 0xF0000006 // TMR2 shares this class (documented quirk)
+	evClassPAD     uint32 = 0xF0000008
+	evClassSPU     uint32 = 0xF0000009
+	evSpecIRQ      uint32 = 0x1000
+	evSpecRCnt     uint32 = 0x0002
+	evClassRCnt0   uint32 = 0xF2000000
+	evClassRCntVB  uint32 = 0xF2000003
+	evModeCallback uint32 = 0x1000
+	evModeReady    uint32 = 0x2000
+	evHandleBase   uint32 = 0xF1000000
 )
 
 // Event slot states.
