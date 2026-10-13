@@ -19,15 +19,23 @@
 // that hangs timing-sensitive devices off the bus (the PPU, the
 // MMC3 IRQ counter, DMA) can therefore watch the accesses go by.
 //
-// Interrupts are polled at instruction boundaries, which matches
-// the hardware's poll point closely enough for the documented
-// software-visible behavior at this slice: NMI is an edge latch
+// Interrupts are polled the way the hardware polls them: once
+// per instruction, just before the instruction's last bus
+// access. The CPU records the interrupt lines before every
+// access, and at the end of each Step the sample taken before
+// the last access becomes the decision the next Step acts on.
+// That one mechanism produces the documented behavior with no
+// special cases: an interrupt that lands during the final
+// access waits for the next instruction, CLI/SEI/PLP/RTI give
+// IRQ a one-instruction delay because the deciding sample
+// predates the flag write, and an NMI enabled during vblank is
+// serviced after one more instruction. NMI is an edge latch
 // with priority over IRQ, IRQ is masked by the I flag, and BRK
-// checks the NMI latch again when it reaches its vector fetch,
-// which is how a mid-BRK NMI hijacks the sequence to the NMI
-// vector while keeping BRK's pushed bytes. Devices on the bus can
-// raise the latch mid-instruction through SetNMILine, because the
-// vector fetch happens after the pushes.
+// and IRQ sequences check the NMI latch again when they reach
+// their vector fetch, which is how a mid-sequence NMI hijacks
+// to the NMI vector while keeping the bytes already pushed.
+// Devices on the bus raise the latch mid-instruction through
+// SetNMILine; the sample ordering sorts out the rest.
 package cpu6502
 
 import (
@@ -93,6 +101,14 @@ type CPU struct {
 
 	stall  int  // pending RDY stall cycles (OAM DMA and friends)
 	jammed bool // a KIL opcode has halted the CPU until reset
+
+	// Interrupt poll state (see the package comment): the
+	// samples are refreshed before every bus access, and the
+	// takes are the decision latched at the end of each Step.
+	smpNMI  bool // NMI latch as sampled before the last access
+	smpIRQ  bool // IRQ recognizable as sampled before the last access
+	takeNMI bool // the next Step enters the NMI sequence
+	takeIRQ bool // the next Step enters the IRQ sequence
 }
 
 // New returns a CPU in its power-on state: registers zeroed,
@@ -124,6 +140,8 @@ func (c *CPU) Reset() {
 	c.p = (c.p | FlagI | FlagU) &^ FlagB
 	c.nmiPending = false
 	c.jammed = false
+	c.smpNMI, c.smpIRQ = false, false
+	c.takeNMI, c.takeIRQ = false, false
 	lo := c.read(VectorReset)
 	hi := c.read(VectorReset + 1)
 	c.pc = uint16(hi)<<8 | uint16(lo)
@@ -185,8 +203,26 @@ func (c *CPU) Stall(n int) {
 // reset recovers.
 func (c *CPU) Jammed() bool { return c.jammed }
 
+// sampleInterrupts records the interrupt lines as they stand
+// before a bus access. The poll point for an instruction is
+// the sample taken before its last access.
+func (c *CPU) sampleInterrupts() {
+	c.smpNMI = c.nmiPending
+	c.smpIRQ = c.irqLine && c.p&FlagI == 0
+}
+
+// latchPoll moves the latest samples into the decision the
+// next Step acts on. It runs at the end of every Step unit
+// (instruction, interrupt sequence, stall cycle, jammed
+// cycle).
+func (c *CPU) latchPoll() {
+	c.takeNMI = c.smpNMI
+	c.takeIRQ = c.smpIRQ
+}
+
 // read performs one bus read and charges one cycle.
 func (c *CPU) read(addr uint16) uint8 {
+	c.sampleInterrupts()
 	v := c.bus.Read(addr)
 	c.cycles++
 	return v
@@ -194,6 +230,7 @@ func (c *CPU) read(addr uint16) uint8 {
 
 // write performs one bus write and charges one cycle.
 func (c *CPU) write(addr uint16, val uint8) {
+	c.sampleInterrupts()
 	c.bus.Write(addr, val)
 	c.cycles++
 }
@@ -245,26 +282,33 @@ func (c *CPU) Step() int {
 	if c.jammed {
 		// The hardware jams reading the KIL opcode forever.
 		c.read(c.pc)
+		c.latchPoll()
 		return int(c.cycles - start)
 	}
 	if c.stall > 0 {
 		c.stall--
 		c.dummy(c.pc)
+		c.latchPoll()
 		return int(c.cycles - start)
 	}
-	// Interrupt poll, taken before the next opcode fetch. NMI
-	// wins over IRQ; IRQ is masked by I.
-	if c.nmiPending {
+	// Interrupt decision latched at the previous Step's poll
+	// point. NMI wins over IRQ.
+	if c.takeNMI {
+		c.takeNMI = false
 		c.nmiPending = false
 		c.interrupt(VectorNMI)
+		c.latchPoll()
 		return int(c.cycles - start)
 	}
-	if c.irqLine && c.p&FlagI == 0 {
+	if c.takeIRQ {
+		c.takeIRQ = false
 		c.interrupt(VectorIRQ)
+		c.latchPoll()
 		return int(c.cycles - start)
 	}
 	op := c.fetch()
 	c.exec(op)
+	c.latchPoll()
 	return int(c.cycles - start)
 }
 
@@ -272,7 +316,8 @@ func (c *CPU) Step() int {
 // internal cycles with PC held (the fetched opcode is discarded),
 // the return address and a B-clear status byte pushed, I set, and
 // PC loaded from the vector. BRK shares the shape but pushes its
-// own bytes; see execBRK.
+// own bytes; see execBRK. An NMI latched after the sequence
+// began hijacks the vector fetch to the NMI vector.
 func (c *CPU) interrupt(vector uint16) {
 	c.dummy(c.pc)
 	c.dummy(c.pc)
@@ -280,6 +325,10 @@ func (c *CPU) interrupt(vector uint16) {
 	c.push(uint8(c.pc))
 	c.push(c.statusByte(false))
 	c.p |= FlagI
+	if vector != VectorNMI && c.nmiPending {
+		c.nmiPending = false
+		vector = VectorNMI
+	}
 	lo := c.read(vector)
 	hi := c.read(vector + 1)
 	c.pc = uint16(hi)<<8 | uint16(lo)
@@ -311,7 +360,22 @@ func (c *CPU) Serialize() []byte {
 		lines |= 8
 	}
 	out[18] = lines
-	// out[19], out[20] are reserved and stay zero in version 1.
+	// Byte 19 carries the interrupt poll state; byte 20 is
+	// reserved and stays zero in version 1.
+	var poll uint8
+	if c.takeNMI {
+		poll |= 1
+	}
+	if c.takeIRQ {
+		poll |= 2
+	}
+	if c.smpNMI {
+		poll |= 4
+	}
+	if c.smpIRQ {
+		poll |= 8
+	}
+	out[19] = poll
 	return out
 }
 
@@ -333,5 +397,10 @@ func (c *CPU) Deserialize(in []byte) error {
 	c.nmiPending = lines&2 != 0
 	c.irqLine = lines&4 != 0
 	c.jammed = lines&8 != 0
+	poll := in[19]
+	c.takeNMI = poll&1 != 0
+	c.takeIRQ = poll&2 != 0
+	c.smpNMI = poll&4 != 0
+	c.smpIRQ = poll&8 != 0
 	return nil
 }
