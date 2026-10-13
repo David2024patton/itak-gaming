@@ -77,6 +77,11 @@ type envelope struct {
 	Paused bool `json:"paused,omitempty"`
 	// chat
 	Text string `json:"text,omitempty"`
+	// voice signaling (PROTOCOL.md 3.1)
+	SDP           string `json:"sdp,omitempty"`
+	Candidate     string `json:"candidate,omitempty"`
+	SDPMid        string `json:"sdpMid,omitempty"`
+	SDPMLineIndex int    `json:"sdpMLineIndex,omitempty"`
 	// snapshot
 	Bytes  int    `json:"bytes,omitempty"`
 	Chunks int    `json:"chunks,omitempty"`
@@ -150,6 +155,12 @@ type Session struct {
 	// session, oldest first, capped. Guarded by mu like the rest.
 	chatLog []ChatMessage
 	chatSeq int // seq of the most recent log entry, 0 when empty
+
+	// voice signaling queue (signal.go): inbound offer,
+	// answer, and ice entries from the peer, oldest first,
+	// capped. Guarded by mu like the rest.
+	signalQueue []SignalMessage
+	signalSeq   int // seq of the most recent entry, 0 when empty
 
 	// pause state: while either side is paused, lockstep stalls
 	// by design and the silence limit does not apply.
