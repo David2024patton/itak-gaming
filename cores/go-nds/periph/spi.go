@@ -111,18 +111,39 @@ func (sp *SPI) fwExchange(b byte) byte {
 // channel in bits 6-4); the next two byte exchanges return
 // the 12-bit ADC value split as (adc>>5) then (adc&0x1F)<<3,
 // so adc = ((b1<<8)|b2)>>3. Channel 1 is Y, channel 5 is X.
-// With the pen up the ADC reads 0.
+// With the pen up the ADC reads 0. Channel 6 is the
+// microphone aux input (DS-3): each control byte consumes
+// one sample from the machine's microphone source, converted
+// from int16 to the 12-bit ADC scale around the idle center
+// value 0x800, which is also what reads return when no
+// source is installed or it is exhausted.
 func (sp *SPI) tscExchange(b byte, s *Set) byte {
 	switch sp.tscPh {
 	case 0:
 		x, y, down := s.touch()
 		sp.tscADC = 0
-		if down {
-			switch (b >> 4) & 7 {
-			case 1:
+		switch (b >> 4) & 7 {
+		case 1:
+			if down {
 				sp.tscADC = adcFromCoord(uint32(y), 191)
-			case 5:
+			}
+		case 5:
+			if down {
 				sp.tscADC = adcFromCoord(uint32(x), 255)
+			}
+		case 6:
+			sp.tscADC = 0x800
+			if s.mic != nil {
+				if v, ok := s.mic(); ok {
+					adc := int32(v>>4) + 0x800
+					if adc < 0 {
+						adc = 0
+					}
+					if adc > 0xFFF {
+						adc = 0xFFF
+					}
+					sp.tscADC = uint16(adc)
+				}
 			}
 		}
 		sp.tscPh = 1
