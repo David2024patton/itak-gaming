@@ -89,6 +89,17 @@ const (
 	ErrIllegalMemSize       = 0x800201B7 // SCE_KERNEL_ERROR_ILLEGAL_MEMSIZE
 	ErrModuleMgrUnsupported = 0x80020148 // SCE_KERNEL_ERROR_UNSUPPORTED_PRX_TYPE
 	ErrUnknownSyscall       = ErrError   // model value, see README
+
+	// sceAudio error codes (the published SCE_ERROR_AUDIO set).
+	ErrAudioChannelNotInit     = 0x80260001 // SCE_ERROR_AUDIO_CHANNEL_NOT_INIT
+	ErrAudioChannelBusy        = 0x80260002 // SCE_ERROR_AUDIO_CHANNEL_BUSY
+	ErrAudioInvalidChannel     = 0x80260003 // SCE_ERROR_AUDIO_INVALID_CHANNEL
+	ErrAudioNoChannels         = 0x80260005 // SCE_ERROR_AUDIO_NO_CHANNELS_AVAILABLE
+	ErrAudioSampleNotAligned   = 0x80260006 // SCE_ERROR_AUDIO_OUTPUT_SAMPLE_DATA_SIZE_NOT_ALIGNED
+	ErrAudioInvalidFormat      = 0x80260007 // SCE_ERROR_AUDIO_INVALID_FORMAT
+	ErrAudioChannelNotReserved = 0x80260008 // SCE_ERROR_AUDIO_CHANNEL_NOT_RESERVED
+	ErrAudioInvalidFrequency   = 0x8026000A // SCE_ERROR_AUDIO_INVALID_FREQUENCY
+	ErrAudioInvalidVolume      = 0x8026000B // SCE_ERROR_AUDIO_INVALID_VOLUME
 )
 
 // Host is what the kernel needs from the machine that owns it. The
@@ -207,6 +218,13 @@ type Kernel struct {
 	fds    map[int]*fileDesc
 	nextFD int
 
+	// sceAudio state (PSP-4; the engine lives in audio.go).
+	audioChans          [audioChannels]audioChan
+	audioMixed          uint64 // output frames mixed since boot
+	audioOut            []int16
+	audioRoutingMode    int32
+	audioRoutingVolMode int32
+
 	resched bool // an HLE call asked for a scheduler re-pick
 }
 
@@ -228,6 +246,9 @@ func New(host Host) *Kernel {
 		fds:      make(map[int]*fileDesc),
 		nextFD:   3,
 		bootPath: "umd0:",
+		// The routing pair powers on in the speaker-on mode.
+		audioRoutingMode:    1,
+		audioRoutingVolMode: 1,
 	}
 	k.cpu.SyscallHook = k.handleSyscall
 	return k
