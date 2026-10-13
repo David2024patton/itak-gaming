@@ -168,13 +168,18 @@ func TestMOVAddressing(t *testing.T) {
 		stepN(c, 1)
 		eq(t, "mov imm", c.Reg[3], 0xFFFFFFFF)
 	})
-	t.Run("movt real encoding and zero form", func(t *testing.T) {
+	t.Run("movt real encoding, and 0009 is nop", func(t *testing.T) {
+		// The SH-2 manual gives MOVT the 0x0n29 encoding
+		// and 0x0009 is NOP, changing no register. The
+		// zero form was treated as MOVT R0 in SAT-1 by
+		// direction; SAT-4 corrects it to the manual
+		// (NOP delay slots must not corrupt R0).
 		c, _ := prog([]uint16{0x0018, 0x0529, 0x0009})
 		stepN(c, 1)
 		stepN(c, 1)
 		eq(t, "movt with T set", c.Reg[5], 1)
 		stepN(c, 1)
-		eq(t, "opcode 0009 as movt r0", c.Reg[0], 1)
+		eq(t, "opcode 0009 is nop, r0 untouched", c.Reg[0], 0)
 	})
 	t.Run("swap byte and word", func(t *testing.T) {
 		c, _ := prog([]uint16{op6(2, 1, 8), op6(3, 1, 9)})
