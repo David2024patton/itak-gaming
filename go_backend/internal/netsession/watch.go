@@ -194,7 +194,9 @@ func (s *Session) watchNoteLocked(e envelope) {
 	case "roster":
 		// The server's member list is authoritative for who
 		// holds which seat, and it reaches a mid-match joiner
-		// who missed the hellos entirely.
+		// who missed the hellos entirely. The full list is
+		// also kept for the UI (roster.go).
+		s.noteRosterLocked(e.Members)
 		for _, m := range e.Members {
 			switch m.Role {
 			case "host":
