@@ -77,7 +77,19 @@ func (lc *lineCtx) composite() [Width]uint32 {
 			}
 		}
 		c := top.c
-		if mask&0x20 != 0 {
+		// A translucent 3D BG0 pixel on top blends over the
+		// second candidate with its own per-pixel alpha
+		// (EVA = A/2, EVB = 16 - A/2 in the blend's terms),
+		// independent of BLDCNT and of the window color
+		// effect bit: the documented 3D alpha path.
+		blended3D := false
+		if top.layer == 0 && lc.has3D && second.on {
+			if a := int(lc.alpha3D[x]); a > 0 && a < 31 {
+				c = blend(c, second.c, a/2, 16-a/2)
+				blended3D = true
+			}
+		}
+		if !blended3D && mask&0x20 != 0 {
 			t1 := bld&(1<<uint(top.target)) != 0
 			var t2 bool
 			if second.on {
