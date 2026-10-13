@@ -62,14 +62,19 @@ type Bus interface {
 
 // Cop2 is the interface the CPU uses for the GTE. The
 // system package wires chips/gte into it. Command is
-// the COP2 instruction word; the GTE package decides
-// what (in this slice, deliberately little) it does.
+// the COP2 instruction word; it executes the command
+// and returns the cycles the GTE charges for it (the
+// documented per-command execution time from the
+// psx-spx GTE command table), which Step adds to the
+// instruction's cost. That is this core's coprocessor
+// stall model: command timing at instruction
+// granularity, with no partial-overlap modeling.
 type Cop2 interface {
 	Data(reg uint32) uint32
 	SetData(reg uint32, v uint32)
 	Control(reg uint32) uint32
 	SetControl(reg uint32, v uint32)
-	Command(cmd uint32)
+	Command(cmd uint32) int
 }
 
 // Exception codes for Cause.ExcCode.
@@ -238,6 +243,15 @@ func (c *CPU) commitPending() {
 	}
 	c.pending = pendingLoad{}
 }
+
+// CommitPendingLoad lands the previous instruction's
+// delayed load immediately. The system uses it when
+// it intercepts execution outside the normal Step
+// flow (the BIOS HLE vectors): a load sitting in the
+// delay slot of the call has completed its delay in
+// program order when the callee starts, exactly as
+// enterException treats it.
+func (c *CPU) CommitPendingLoad() { c.commitPending() }
 
 // Step executes one instruction (or takes a pending
 // interrupt) and returns the cycles charged.
