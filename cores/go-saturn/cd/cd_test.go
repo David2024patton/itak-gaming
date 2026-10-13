@@ -100,8 +100,10 @@ func buildISO() []byte {
 	putText(sec0, 0x40, 10, "JTUE")
 	putText(sec0, 0x50, 16, "JOYPAD")
 	putText(sec0, 0x60, 112, "SYNTHETIC TEST")
-	binary.BigEndian.PutUint32(sec0[0xf0:0xf4], 0x06001000)
-	binary.BigEndian.PutUint32(sec0[0xf8:0xfc], 0x06000800)
+	binary.BigEndian.PutUint32(sec0[0xe0:0xe4], 0x1000)
+	binary.BigEndian.PutUint32(sec0[0xe8:0xec], 0x06001000)
+	binary.BigEndian.PutUint32(sec0[0xec:0xf0], 0x06000800)
+	binary.BigEndian.PutUint32(sec0[0xf0:0xf4], 0x06010000)
 
 	// Sector 16: primary volume descriptor.
 	pvd := img[16*2048 : 17*2048]
@@ -207,6 +209,8 @@ func TestOpenBytesAndSaturnHeader(t *testing.T) {
 	check(t, h.Title == "SYNTHETIC TEST", "Title = %q", h.Title)
 	check(t, h.MasterStack == 0x06001000, "MasterStack = %#x, want 0x06001000", h.MasterStack)
 	check(t, h.SlaveStack == 0x06000800, "SlaveStack = %#x, want 0x06000800", h.SlaveStack)
+	check(t, h.IPSize == 0x1000, "IPSize = %#x, want 0x1000", h.IPSize)
+	check(t, h.FirstReadAddress == 0x06010000, "FirstReadAddress = %#x, want 0x06010000", h.FirstReadAddress)
 }
 
 func TestISOListRootAndReadFile(t *testing.T) {
