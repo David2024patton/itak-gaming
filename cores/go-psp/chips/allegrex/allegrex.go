@@ -49,12 +49,29 @@ const (
 	statusERL = 1 << 2
 	statusBEV = 1 << 22
 	statusCU1 = 1 << 29
+
+	// StatusCU1 is the CP0 Status bit that enables the FPU. A
+	// bare reset leaves it clear (CpU on COP1 use); the kernel
+	// sets it in every thread context it creates, matching the
+	// firmware, whose user threads run with the FPU enabled.
+	StatusCU1 = statusCU1
 )
 
 // CPU is the full Allegrex processor state. All state is unexported;
 // the system package drives it through Step and the accessors.
 type CPU struct {
 	bus Bus
+
+	// SyscallHook, when non-nil, is consulted for every SYSCALL
+	// instruction before the Sys exception is raised. It receives
+	// the 20 bit syscall code from the instruction word. Returning
+	// true means the hook handled the call (the result belongs in
+	// $v0, set by the hook through SetReg) and execution continues
+	// with the next instruction; returning false takes the normal
+	// exception path. The hook is not part of the serialized state
+	// and is never cleared by Reset or Deserialize: the kernel in
+	// the kernel package installs it once per machine.
+	SyscallHook func(c *CPU, code uint32) bool
 
 	regs [32]uint32
 	hi   uint32
@@ -85,7 +102,12 @@ type CPU struct {
 	spfxOn  bool
 	tpfxOn  bool
 	dpfxOn  bool
-	cc      uint32 // VFPU condition code
+	// pfxPoison is set while an op whose armed source prefix
+	// selected an out of range lane executes; every source
+	// read of that op returns zero. It is always false
+	// between instructions, so it is not serialized.
+	pfxPoison bool
+	cc        uint32 // VFPU condition code
 
 	llbit  bool
 	lladdr uint32
@@ -129,7 +151,11 @@ func (c *CPU) Reset(entry uint32) {
 	c.ctrl = [32]uint32{}
 	c.mfvcStore = [144]uint32{}
 	c.rngState = [8]uint32{}
-	c.spfxImm, c.tpfxImm, c.dpfxImm = 0, 0, 0
+	// The prefix immediates power on at the identity encoding
+	// 0xE4 (swizzle x,y,z,w, nothing else set); the corpus
+	// prefix_ctrl test reads exactly that back through mfvc
+	// $128..$130 before any prefix is written.
+	c.spfxImm, c.tpfxImm, c.dpfxImm = 0xE4, 0xE4, 0xE4
 	c.spfxOn, c.tpfxOn, c.dpfxOn = false, false, false
 	c.cc = 0
 	c.icReg = [32]uint32{}
@@ -447,6 +473,25 @@ func (c *CPU) branch(taken bool, target uint32) {
 	}
 }
 
+// branchLikely applies a branch likely decision (BEQL, BNEL,
+// BLEZL, BGTZL, BLTZL, BGEZL, BLTZALL, BGEZALL). A taken branch
+// behaves exactly like branch. A branch that is not taken annuls
+// its delay slot: the slot instruction leaves no architectural
+// trace. At execute time pc holds the slot address and nextPC the
+// instruction after it, so the annulment advances the pipeline
+// past the slot; the saved state stays consistent at every step
+// boundary with no extra flag. The annulled fetch costs no cycle
+// in this model, a documented deviation from hardware.
+func (c *CPU) branchLikely(taken bool, target uint32) {
+	if taken {
+		c.branch(true, target)
+		return
+	}
+	c.pc = c.nextPC
+	c.nextPC = c.pc + 4
+	c.inDelaySlot = false
+}
+
 // branchTarget computes a PC relative branch target.
 func (c *CPU) branchTarget(off int32) uint32 {
 	return uint32(int32(c.curPC+4) + off<<2)
@@ -574,3 +619,35 @@ type stateError string
 func (e stateError) Error() string { return string(e) }
 
 const errBadStateSize = stateError("allegrex: serialized state has wrong length")
+
+// ThreadStatus is the CP0 Status value a PSP thread context
+// starts with: the FPU enabled (CU1), user mode, interrupts
+// enabled, and the exception vector in RAM (BEV clear, ERL and
+// EXL clear), so guest exception handlers installed at
+// 0x80000180 receive faults. A bare CPU reset instead carries
+// the boot value BEV|ERL; the pspautotests framework handler
+// (which skips faulting data words embedded in code streams)
+// only works with the thread value, which is how the corpus
+// pinned this down.
+const ThreadStatus = StatusCU1 | 0x11
+
+// SetSR replaces the CP0 Status register. The kernel uses it
+// when building a new thread's context.
+func (c *CPU) SetSR(v uint32) { c.cp0[12][0] = v }
+
+// ClearLL drops any outstanding LL reservation. The kernel calls
+// it at the points where hardware loses the reservation: syscall
+// dispatch (the SYSCALL exception breaks it) and thread switches
+// (the return from the kernel through ERET breaks it). The
+// pspautotests llsc case measures exactly this behavior.
+func (c *CPU) ClearLL() { c.llbit = false }
+
+// DefaultFCSR is the FPU control register value a PSP thread
+// starts with: rounding mode nearest, the overflow, divide by
+// zero and invalid operation enables set (0x00000E00, recorded by
+// the pspautotests fcr test's initial readback).
+const DefaultFCSR = 0x00000E00
+
+// SetFCSR sets the FPU control and status register. The kernel
+// uses it when building a new thread's context.
+func (c *CPU) SetFCSR(v uint32) { c.fcr[31] = v }
