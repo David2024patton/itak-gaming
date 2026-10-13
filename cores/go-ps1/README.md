@@ -13,14 +13,24 @@ and no game images are ever part of this repository.
 
 ## Status
 
-**PS1-3: the SPU with all 24 voices, the full GTE,
-the full CD controller, the MDEC codec, pads and
-memory card, PS-X EXE loading and the HLE BIOS are
-built and gated. PS1-1 (CPU, memory map, CD image
-foundations, machine skeleton) and PS1-2 (GPU
-rasterizer, timers, DMA, interrupt controller) are
-underneath and their gates still pass, with the
-reconciliations listed at the bottom.**
+**PS1-4: the core is complete and app-ready. The
+libretro shell (libretro/main.go, core name "iTaK
+GoPS1") loads discs and PS-X EXEs, boots discs
+through their SYSTEM.CNF the way the console does,
+and drives the machine at its native display size
+with analog pad, rumble and memory card exposed to
+the frontend. The shell passes the repository's
+shared enginetest harness on both payload forms
+(synthetic .cue/.bin disc and bare .exe): ALL
+TESTS PASSED, details in the PS1-4 section below.
+PS1-3 (SPU, GTE, CD controller, MDEC, pads and
+card, BIOS HLE), PS1-2 (GPU, timers, DMA, interrupt
+controller) and PS1-1 (CPU, memory map, CD image
+foundations) are underneath and their gates still
+pass, with the reconciliations listed at the
+bottom. What is NOT proven yet is stated plainly
+in the honesty section: no commercial game has run
+on this core.**
 
 - `chips/r3000a`: the MIPS I R3000A CPU, as in
   PS1-1/PS1-2, plus the PS1-3 coprocessor stall
@@ -199,7 +209,19 @@ reconciliations listed at the bottom.**
   SP and FP = s_addr + s_size when s_addr is
   nonzero, else the documented default stack top
   0x801FFF00; saved-register header fields are
-  ignored. The HLE BIOS (bios.go) intercepts the
+  ignored. Disc boot (PS1-4, boot.go): BootDisc
+  reads the loaded disc's ISO9660 filesystem, takes
+  the executable path from SYSTEM.CNF's BOOT line,
+  and LoadEXEs it, the console's own boot sequence
+  minus the boot ROM; only the BOOT line is
+  honored (TCB, EVENT and STACK lines configure
+  the real kernel's tables, which the HLE allocates
+  on demand). Diagnostics (PS1-4, diag.go):
+  Machine.Diagnostics aggregates the
+  not-implemented tally since machine creation:
+  unimplemented BIOS calls, unknown CD controller
+  commands, and unknown GP1 commands, each with a
+  total count and the distinct offenders. The HLE BIOS (bios.go) intercepts the
   call vectors at 0xA0/0xB0/0xC0 and the
   critical-section syscalls. Implemented calls:
   A(44h) FlushCache, A(48h) SendGP1Command, A(49h)
@@ -230,8 +252,9 @@ reconciliations listed at the bottom.**
   context saved and restored. InitPAD2 buffers are
   filled on VBlank once StartPAD2 has run. The
   slice gate is the enginetest in
-  system/system_ps3_test.go: a generator in the test
-  builds a PS-X EXE from hand-assembled MIPS that
+  system/system_ps3_test.go: the generator in the
+  homebrew package builds a PS-X EXE from
+  hand-assembled MIPS that
   opens and enables the VBlank event through the
   BIOS and counts three deliveries, initializes the
   GPU through GPU_cw, DMA-uploads a texture and
@@ -320,14 +343,154 @@ the documented call vectors are serviced by our own
 HLE implementation (see the system section above).
 User-supplied BIOS files are not read by this core.
 
-## Slice roadmap
+## PS1-4: the libretro shell and app readiness
 
-- PS1-4: the libretro shell, the Android build, and
-  the app swap off PCSX ReARMed, gated on the same
-  proof as the other cores (real games boot and
-  play, save states byte-exact).
+- `libretro`: the shell, core name "iTaK GoPS1",
+  version "0.1", valid extensions cue|bin|iso|exe,
+  loading by path (need_fullpath). Discs boot
+  through BootDisc; a disc with no bootable
+  SYSTEM.CNF is rejected at load. A bare .exe
+  boots through LoadEXE. Video: the GPU framebuffer
+  in XRGB8888, presented at the machine's current
+  native display size each frame with a
+  SET_GEOMETRY notice on size changes; base
+  geometry 320x240, max 640x480, aspect 4:3, 59.94
+  fps. Audio: 44,100 Hz stereo from the SPU, batch
+  callback with per-sample fallback (the iTaK
+  bridge registers only the batch callback). Input:
+  the standard libretro joypad map onto the PS1
+  pad; analog sticks from the libretro analog axes;
+  the pad is forced into analog mode at load (see
+  below). Rumble: SET_RUMBLE_INTERFACE wired to
+  the pad motors when the frontend offers it
+  (weak = small motor on/off, strong = large motor
+  byte times 0x101); the iTaK bridge does not offer
+  the interface, so rumble is inert inside the app
+  for now. Memory: RETRO_MEMORY_SAVE_RAM is the
+  128 KB memory card image, RETRO_MEMORY_SYSTEM_RAM
+  is the 2 MB main RAM. Serialize forwards to the
+  version 3 machine states.
+- Analog mode choice: the shell always presents an
+  analog pad. Frontends of this era assume one;
+  games that poll a digital pad read the same
+  buttons either way, and games that use the
+  sticks need the 73h poll form, which only analog
+  mode produces. The guest can still switch modes
+  itself through the config sequence; a frontend
+  reset restores the shell's choice.
+- `homebrew`: the shared synthetic fixtures: the
+  MIPS assembler, the enginetest guest program as
+  a PS-X EXE, and ISO9660 plus cue/bin disc images
+  carrying it. PS1-3's test generator moved here
+  unchanged in behavior so the system gates, the
+  shell gates and the harness all run the identical
+  guest bytes.
+- Shell enginetest: the repository's shared
+  harness (go_backend/cmd/enginetest, the
+  production Go bridge) ran against the desktop
+  build (builds/libgo_ps1.so, gitignored) with
+  both payloads. Verbatim verdicts: the .exe run
+  reported non-silent audio (48,000 of 48,000
+  samples), a save-point frame hash e25b3a53, and
+  "RESULT: ALL TESTS PASSED"; the .cue disc run
+  reported non-silent audio (48,000 of 48,000
+  samples), a save-point frame hash c2a085d8, a
+  restored frame matching the save point, and
+  "RESULT: ALL TESTS PASSED". Inside the harness's
+  750 frames the disc guest completes all six
+  enginetest stages (its PASS magic is asserted by
+  the in-process gates); the bare-.exe guest has no
+  disc for its CD stage, so it parks in its
+  documented timeout spin after stage 4 with the
+  quad on screen and the tone playing, which is
+  what the harness checks. In-process shell gates
+  (libretro/main_test.go) cover the same loads,
+  the full PASS through the .cue, the state round
+  trip, the memory region sizes, and clean
+  rejection of a bad EXE, a missing cue and an
+  unbootable ISO.
+- Disc boot gate (system/boot_test.go): the
+  synthetic ISO boots end to end (all six guest
+  stages, PASS magic, zero unimplemented BIOS
+  calls, empty diagnostics), and bad discs fail
+  with errors, not hangs.
+- First-real-game diagnostics: at unload (and at
+  retro_deinit, which the iTaK bridge calls without
+  an unload), the shell prints the machine's
+  not-implemented tally through the frontend log
+  interface, once per loaded game, when it is
+  nonzero: the unimplemented BIOS calls by table
+  and function, the unknown CD command bytes, and
+  the unknown GP1 command bytes, each with counts.
+  The iTaK bridge prints core log lines to stderr
+  with a "[core] " prefix. A real game that fails
+  will name what it needs in the log.
+
+## Roadmap: closed
+
+PS1-1 through PS1-4 are done; the core is
+app-ready and the app swap off PCSX ReARMed is
+prepared in the app tree (binding, frontend slot
+and release notes; the swap ships under a build
+number assigned at release time). Future accuracy
+work, none of it blocking: verify the MDEC BS v3
+DC scaling against a real BS v3 stream; replace
+the XA sample-and-hold rate conversion with the
+hardware resampler; restore the documented reverb
+FIR in place of half-rate decimation; real-game
+compatibility passes driven by the diagnostics
+above.
 
 ## Honesty notes
+
+What is proven:
+
+- Every subsystem gate from PS1-1 to PS1-3:
+  documentation-derived suites per package, the
+  GTE differential measurement (UNR max error
+  2.703 quotient units), the SPU measurements
+  (440.0 Hz and 882.0 Hz exact, reverb and ADSR
+  measured), the CD command and timing model, the
+  MDEC codec including its bitstream writer, pad
+  and memory card poll bytes, and the BIOS HLE
+  implemented set.
+- The homebrew enginetest guest completes end to
+  end in-process and through the shell from both a
+  bare PS-X EXE (with a disc attached in-process)
+  and a synthetic disc booted from SYSTEM.CNF,
+  with zero unimplemented BIOS calls, exact
+  framebuffer probes, exactly 440.0 Hz audio, and
+  byte-identical save/restore continuation.
+- The libretro shell loads, runs, saves and
+  restores through the production bridge and the
+  shared harness on both payload forms: ALL TESTS
+  PASSED, twice.
+
+What is NOT proven:
+
+- No commercial game has run on this core. Not
+  one. Every gate above is homebrew, synthetic
+  fixtures, or documentation-derived unit tests.
+- The BIOS HLE covers the calls the homebrew
+  exercises plus the documented implemented set
+  listed in this README. Real games will call
+  more: other A/B/C functions, the CD file API
+  family (CdSearchFile and friends), the pad and
+  card libraries, and kernel paths this HLE does
+  not have. Those calls are logged and return
+  0xFFFFFFFF today; the diagnostics exist so the
+  first real-game failure says which ones matter.
+- Disc boot covers ISO9660 discs with a SYSTEM.CNF
+  BOOT line, the standard retail layout. Discs
+  with subchannel tricks, multi-disc sets, CD-DA
+  heavy layouts, and copy-protection checks are
+  untested territory.
+- The swap decision belongs with a real-game check
+  against a real disc library; the harness results
+  above are necessary evidence, not sufficient
+  evidence.
+
+Standing notes:
 
 - Conformance: the TomHarte/ProcessorTests tree has
   no MIPS or PSX single-step set. The gates are the
