@@ -458,6 +458,13 @@ class MainActivity : FlutterActivity() {
                             call.argument<String>("npPassword")?.let {
                                 intent.putExtra(EmulatorActivity.EXTRA_NP_PASSWORD, it)
                             }
+                            // The tournament name for a hosted
+                            // room (Online screen, optional): the
+                            // game screen's host client reports
+                            // the room's results under it.
+                            call.argument<String>("npTournament")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_TOURNAMENT, it)
+                            }
                             // Optional watch mode (spectator from the
                             // Online screen): mode/server/lobby/token
                             // ride the same extras the netplay launch
