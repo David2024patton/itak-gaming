@@ -10,7 +10,68 @@ dependencies.
 
 ## Status
 
-**SNES-2 (this slice): PPU, DMA/HDMA, and the real machine.**
+**SNES-3 (this slice): the audio unit: SPC700, SMP, and
+S-DSP.**
+
+- `chips/spc700`: the complete SPC700 audio CPU: all 256
+  opcodes with published cycle counts, the direct-page
+  base from the P flag, the page-1 stack, MOVW word
+  operations, the bit operations (SET1/CLR1, TSET1/TCLR1,
+  BBS/BBC, MOV1, AND1/OR1/EOR1/NOT1), CBNE/DBNZ loops,
+  MUL and the documented DIV behavior (overflow flag,
+  half-carry rule, divide by zero), DAA/DAS, TCALL, PCALL,
+  BRK, STOP/SLEEP, and full serialization. Bus access
+  order is modeled (dummy fetches, interleaved
+  read-modify-write, the always-performed bit-op read)
+  because the conformance corpus traces it. Conformance:
+  the Tom Harte SPC700 single-step corpus (256 files,
+  1,000 tests each, 256,000 tests) passes 100%: every
+  register including PSW, every listed final RAM cell,
+  the exact cycle count, and the data-carrying bus access
+  sequence per test. The corpus is local evidence only,
+  under `testroms/tomharte-spc700/`.
+- `apu`: the SMP and the S-DSP. 64 KB of APU RAM, the
+  documented 64-byte IPL ROM running the real boot
+  handshake (0xAA/0xBB on the ports) and the block
+  transfer protocol, the $00F0-$00FF IO window (CONTROL
+  with timer enables, port clear strobes, and the IPL
+  ROM enable; the DSP address/data latch with the bit-7
+  write lockout; both communication port directions;
+  RAM-backed aux ports; the three timers with 8000 Hz
+  and 64000 Hz stage rates and read-clear 4-bit output
+  counters), and the DSP stepped once per output sample
+  at 32000 Hz: BRR sample decoding (all four filters,
+  the range 13-15 sign collapse, end and loop handling
+  with ENDX), Gaussian interpolation from the published
+  512-entry table, ADSR and GAIN envelopes from the
+  published 32-entry rate table, pitch modulation from
+  the previous voice's output, the 15-bit noise LFSR,
+  and the echo ring with its 8-tap FIR filter. Measured
+  proofs, all derived from the documentation rather than
+  another emulator: a looping BRR sine at pitch 0x385
+  measures 439.00 Hz by zero crossings against 440.06
+  expected; timers count exactly 62 (T0, target 128) and
+  640 (T2, target 100) increments in one simulated
+  second; an echo impulse returns at exactly 512
+  samples for EDL 1; and a hand-assembled tone program
+  uploaded through the real IPL protocol posts its
+  magic on the ports and plays.
+- `system`: the APU is wired into the machine.
+  $2140-$2143 read and write the real ports, the APU
+  advances by exact ratio accumulation against the
+  master clock (see the SNES-3 notes), and
+  `AudioBuffer()` drains interleaved stereo samples at
+  32000 Hz (about 534 per frame). Save states are
+  version 2 and carry the full APU (RAM, SPC state,
+  SMP timers and latches, DSP registers and per-voice
+  state, echo position, and the clock ratio remainder):
+  273,229 bytes for a cartridge with 8 KB of SRAM. The
+  machine gate drives the IPL upload from a synthetic
+  65816 program through the actual ports and continues
+  31,920 audio values bit-identically across a
+  mid-frame save and restore.
+
+**SNES-2: PPU, DMA/HDMA, and the real machine.**
 
 - `ppu`: the full PPU register file ($2100-$213F) and renderer.
   VRAM (64K words) with the VMAIN increment and rotate
@@ -48,7 +109,8 @@ dependencies.
   repeat lines, the $00 terminator, mid-frame enable starting
   at the next display line), joypads (auto-read at vblank with
   the busy window, manual serial ports, both pads), and the APU
-  mailboxes as plain latches (the SPC700 itself is SNES-3).
+  mailboxes as plain latches in this slice (SNES-3 makes them
+  the real ports).
   Save states cover the whole machine (CPU, WRAM, SRAM, PPU
   memory and registers, DMA/HDMA channel state, position and
   frame counters): 207,237 bytes for a cartridge with 8 KB of
@@ -123,10 +185,11 @@ dependencies.
   timing model, DMA and HDMA, controller IO, and the real IO
   region. (Done.)
 - **SNES-3**: the SPC700 audio CPU and the S-DSP: the SNES sound
-  engine, plus the APU IO handshake.
-- **SNES-4**: the libretro shell, the Android build, and the app
-  wiring swap (the app keeps shipping the incumbent core until
-  this one passes the same proof, per the project rule).
+  engine, plus the APU IO handshake. (Done.)
+- **SNES-4** (the last SNES slice): the libretro shell, a
+  real-game engine test, and the app wiring swap (the app keeps
+  shipping the incumbent core until this one passes the same
+  proof, per the project rule).
 
 ## SNES-2 rendering and timing model (the honesty notes)
 
@@ -182,10 +245,59 @@ dependencies.
   enable, presented as a level to the CPU's edge-latched NMI
   input, so enabling NMI during vblank with the flag set fires
   an NMI, as on hardware.
-- **APU ports:** $2140-$2143 reads return the power-on zero
-  state (no SPC700 until SNES-3); games polling for the IPL
-  handshake (0xAA/0xBB) will wait, which is expected this
-  slice.
+- **APU ports:** live since SNES-3; see the SNES-3 audio
+  model notes below.
+
+## SNES-3 audio model (the honesty notes)
+
+- **Clock ratio:** the SPC700 runs at exactly 1.024 MHz
+  against the 21.477272 MHz NTSC master clock, accumulated
+  as master clocks x 1024000 / 21477272 with the remainder
+  carried between calls and stored in save states, so the
+  long-term rate and the restore phase are exact. Real SPC
+  oscillators sit near, not on, 1.024 MHz; the documented
+  fixed rate is used.
+- **Sample-stepped DSP:** the DSP evaluates one output
+  sample per 32 SPC cycles. SPC writes to DSP registers
+  take effect at sample granularity, not at the exact SPC
+  cycle of the write. Everything inside a sample (BRR
+  decode, envelopes, pitch modulation, noise, echo) is
+  modeled; sub-sample register timing is not.
+- **KON delay:** a keyed-on voice runs its sample position
+  and envelope from the key-on sample but outputs silence
+  for the first 5 samples, the documented delay figure.
+- **Gaussian rounding:** the four interpolation taps are
+  summed and shifted once (>> 11). The fullsnes text
+  applies a per-tap double shift instead, so interpolated
+  samples can differ by per-tap rounding (a few LSBs at
+  most).
+- **GAIN ramp steps:** linear decrease subtracts 8 per
+  step, linear increase adds 0x20 per step, and bent
+  increase adds 0x20 below 0x600 and 0x10 at or above it.
+  The fullsnes GAIN text gives different step sizes (a
+  linear decrease of 32 per step among them). The values
+  here follow this slice's build specification; the
+  divergence is flagged for a later accuracy pass.
+- **TEST register ($00F0):** writes are stored and reads
+  return 0, but no bit is acted on. The documented effects
+  (timer disables, RAM write protection, a CPU crash bit,
+  added waitstates) are all ignored, matching the
+  documentation's own guidance that software leaves this
+  register at its 0x0A default.
+- **Timers:** a CONTROL write that changes a timer's
+  enable bit reloads that timer's stage divider; disabling
+  a timer also clears its output counter.
+- **ENDX:** a voice's bit is set when decoding of an end
+  block starts, per the fullsnes note; any write to $7C
+  clears all bits, and a looping end block leaves its bit
+  set until then.
+- **Echo at EDL 0** uses a one-frame ring: the hardware's
+  zero-length buffer reads and writes a single address,
+  and a one-frame ring reproduces that addressing while
+  still advancing.
+- **DSP register latches:** writes to DSP addresses with
+  bit 7 set are ignored, as documented; ENDX, ENVX, and
+  OUTX read back live state.
 
 Coprocessor chips (SA-1, SuperFX, DSP-1 and family, and the rest)
 are out of scope until the base machine is proven end to end.
@@ -277,8 +389,10 @@ prose. This core matches the corpus; the notable cases:
 
 ```text
 chips/w65c816/   the CPU, its conformance gate, and its tests
+chips/spc700/    the SPC700 audio CPU, its gate, and its tests
 cart/            header parsing and the console memory map
 ppu/             the PPU: registers, memory, and the renderer
+apu/             the SMP (IO, timers, IPL) and the S-DSP
 system/          the whole machine: timing, DMA/HDMA, IO
 libretro/        placeholder for the SNES-4 shell
 testroms/        local-only conformance corpora (gitignored)
@@ -290,6 +404,8 @@ testroms/        local-only conformance corpora (gitignored)
 GOTOOLCHAIN=auto GOPROXY=off PATH=$HOME/goroot/go/bin:$PATH go test ./...
 ```
 
-The conformance gate skips itself when the corpus is absent.
-To fetch the corpus, clone TomHarte/ProcessorTests and copy
-`65816/v1/*.json` into `testroms/tomharte/` (about 3 GB).
+The conformance gates skip themselves when a corpus is
+absent. To fetch the corpora, clone TomHarte/ProcessorTests
+and copy `65816/v1/*.json` into `testroms/tomharte/` (about
+3 GB) and `spc700/v1/*.json` into `testroms/tomharte-spc700/`
+(about 81 MB).
