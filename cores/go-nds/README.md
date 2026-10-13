@@ -12,11 +12,15 @@ video engines with VRAM bank assignment and display capture,
 timers, both DMA engines, IPC, per-CPU interrupt controllers,
 the game card command model, the documented minimal stubs
 (touchscreen, RTC, AUX SPI save memory, and a generated
-firmware image), and the full direct boot. DS-3 (this slice)
-adds the 3D geometry and rendering engine feeding engine A's
-BG0, the 16-channel sound unit with capture, and the
-microphone path through the touchscreen ADC. Wireless stays
-a documented stub (roadmap below).
+firmware image), and the full direct boot. DS-3 added the
+3D geometry and rendering engine feeding engine A's BG0,
+the 16-channel sound unit with capture, and the
+microphone path through the touchscreen ADC. DS-4 (this
+slice) completes the core: the libretro shell, the
+full-stack enginetest through guest ARM9 and ARM7
+programs and through the built shell library in the
+shared harness, and the android-64bit app wiring
+preparation. Wireless stays a documented stub (below).
 
 ## Package layout
 
@@ -115,9 +119,29 @@ a documented stub (roadmap below).
   (top, bottom); `SetButtons` and `SetTouch` drive the
   KEYINPUT/EXTKEYIN registers, the keypad interrupt, the
   touchscreen ADC, and the pen-down interrupt; `Serialize`
-  and `Deserialize` implement version 2 save states of
-  5,129,781 bytes (version 1 states are rejected; each CPU
-  state is 8,388 bytes).
+  and `Deserialize` implement version 3 save states of
+  6,071,376 bytes (version 2 states are rejected; each CPU
+  state is 8,388 bytes); `SaveRAM` and `SetSaveRAM` expose
+  the AUX SPI save backing.
+- `libretro`: the shell (DS-4). Core name "iTaK GoDS",
+  extension nds, in the family C ABI shape. Both screens
+  are presented in one 256x384 XRGB8888 frame, top screen
+  in rows 0-191 and bottom screen in rows 192-383, in
+  `Framebuffer` order (which already honors the POWCNT1
+  display swap); the app crops or scales as it likes.
+  The declared rate is the machine's own quotient,
+  33,513,982 Hz over 560,190 ARM9 cycles per frame =
+  59.8261 fps, and the audio rate is the sound unit's
+  32,768 Hz. The libretro pointer device drives the
+  touchscreen: coordinates span the presented frame, a
+  press in the bottom half becomes `SetTouch` pixel
+  coordinates in the bottom screen, and a press in the
+  top half (or no press) lifts the pen. The microphone
+  is not wired to a frontend source; `SetMicrophone`
+  remains available to in-process hosts. SAVE_RAM is the
+  512-byte AUX SPI EEPROM backing and SYSTEM_RAM is
+  main RAM. A reset re-runs the direct boot from the
+  loaded image. Load accepts a path or content.
 
 ## Conformance gates
 
@@ -426,13 +450,59 @@ state, and any other command returns a zero-filled block.
 ## Roadmap
 
 - DS-2: done.
-- DS-3: done (this slice).
-- DS-4: libretro shell plus enginetest (a synthetic GX
-  program run through the shell), and app wiring: a new DS
-  slot in the android-64bit build (the app ships no DS core
-  today; the 64-bit slot is wired like the other 64-bit
-  cores). Wifi stays a documented stub with no source
-  behind its interrupt bit.
+- DS-3: done.
+- DS-4: done (this slice). The libretro shell is built
+  as `libgo_ds.so` (see the `libretro` package notes
+  above for the presentation, pointer, and rate
+  contract). The enginetest gate
+  (`system.TestDS4EngineGate`) runs synthetic guest
+  programs on both CPUs: the ARM9 boots through the
+  real direct boot (milestone 1), uploads VRAM data
+  and programs both 2D engines plus a GX scene (a
+  textured far quad under a flat near quad, with a 2D
+  text tile composited over the 3D layer) and swaps
+  buffers (2), starts a PCM loop tone on the ARM7 via
+  the IPC FIFO (3), and has the ARM7 poll the
+  touchscreen over SPI (4). The milestone log reads
+  [1 2 3 4] in order; the touch ADC values are exactly
+  0x67D and 0x565 for a pen at (100, 60); stacked
+  frame probes are exact (2D tile magenta over the 3D
+  layer, textured texels red and green at their
+  documented positions, near quad green, engine B tile
+  white over a black backdrop); the tone measures
+  442.37 Hz against the 442.28 Hz the documented
+  channel formula predicts; a mid-run save restores to
+  byte-identical framebuffers, continuation audio, and
+  state bytes. The same ROM then went through the
+  shared harness (`go_backend/cmd/enginetest`) against
+  the built shell library: ALL TESTS PASSED (256x384
+  non-blank video, non-silent audio, save state of
+  exactly 6,071,376 bytes, restore hash equal to the
+  save-point hash). App wiring preparation (nothing
+  pushed): the DS slot in
+  `go_backend/internal/core/types.go` and the DS entry
+  in `flutter_ui/lib/main.dart` now name iTaK GoDS and
+  `libgo_ds.so`; `tools/autobuild-server.sh` has no
+  64-bit branch or core list yet, so the script side
+  waits on the parent's pipeline branch. The core is
+  complete. Remaining honest gaps: wifi is a documented
+  stub with no source behind its interrupt bit; the
+  retail encrypted card protocol (KEY1/KEY2 secure
+  area) is out of scope and the card model stays in
+  the plain command state; the GX executes commands
+  eagerly and draws the whole list at the swap rather
+  than per scanline (DS-3 model); lighting is computed
+  in float64 and rounded to 5-bit color (possible
+  1-LSB differences from hardware fixed point); the
+  ARM9 CPU cannot write the 0x06000000 BG VRAM window
+  (CPU VRAM writes go through the LCDC window, a DS-1
+  bus simplification the DS-4 guest is written
+  against). The DS-2 boot gate failure DS-3 observed
+  once at `system/ds2_test.go:151` has not reproduced:
+  DS-4 ran the system package at `-count=10` (ten
+  consecutive full passes including the boot gate),
+  on top of DS-3's and the parent's earlier green
+  runs.
 
 ## Running the gates
 
