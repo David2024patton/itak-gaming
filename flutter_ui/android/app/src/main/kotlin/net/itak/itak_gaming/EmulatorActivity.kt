@@ -42,6 +42,8 @@ class EmulatorActivity : Activity(), TextureListener {
         const val EXTRA_NP_LOBBY = "np_lobby"
         const val EXTRA_NP_TOKEN = "np_token"
         const val EXTRA_NP_SERVER = "np_server"
+        const val EXTRA_NP_MODE = "np_mode"
+        const val EXTRA_NP_PLAYER = "np_player"
         private const val TAG = "iTaKEmu"
 
         // Global leaderboard server. Must match kServerBase in
@@ -76,6 +78,29 @@ class EmulatorActivity : Activity(), TextureListener {
     @Volatile private var npCancelled = false
     @Volatile private var localMask = 0
     private val netplay: Boolean get() = npRole.isNotEmpty()
+
+    // ----- Watch mode (spectator) -----
+    // Launched from the Online screen's Watch action with its own
+    // extras: no seat, no local input. The same core and game load
+    // locally, and the Go watch session reconstructs the match
+    // from both players' input streams: NetplayWatchStep applies
+    // both masks and runs the frame inside the engine, so this
+    // screen never touches buttons or calls runFrame itself.
+    private var npMode: String = ""
+    private var npPlayer: String = ""
+    private val watching: Boolean get() = npMode == "watch"
+    @Volatile private var watchStarted = false
+    @Volatile private var watchFailed: String? = null
+    private var watchBanner: TextView? = null
+    private var watchWaitLine: TextView? = null
+    private var watchEndShown = false
+    private val watchTicker = object : Runnable {
+        override fun run() {
+            if (!watching || isFinishing) return
+            updateWatchBanner()
+            uiHandler.postDelayed(this, 300)
+        }
+    }
 
     // ----- Waiting room overlay (online games) -----
     // Shown over the (still black) game view until the room's
@@ -126,6 +151,21 @@ class EmulatorActivity : Activity(), TextureListener {
             if (!netplay || isFinishing) {
                 pauseBanner?.visibility = View.GONE
                 return
+            }
+            // Host duty: spectators ask for a snapshot when they
+            // join mid-match or fall behind (watch_sync). The poll
+            // hands each waiting name out exactly once; guests
+            // never answer. Best effort: failures stay silent.
+            if (npReady && npRole == "host") {
+                try {
+                    var guard = 0
+                    while (guard < 4) {
+                        val name = Mobile.netplayPollWatchSync()
+                        if (name.isEmpty()) break
+                        Mobile.netplayAnswerWatchSync(name)
+                        guard++
+                    }
+                } catch (e: Exception) { /* silent */ }
             }
             val banner = pauseBanner
             if (banner != null) {
@@ -318,6 +358,8 @@ class EmulatorActivity : Activity(), TextureListener {
         npLobby = intent.getStringExtra(EXTRA_NP_LOBBY) ?: ""
         npToken = intent.getStringExtra(EXTRA_NP_TOKEN) ?: ""
         npServer = intent.getStringExtra(EXTRA_NP_SERVER) ?: ""
+        npMode = intent.getStringExtra(EXTRA_NP_MODE) ?: ""
+        npPlayer = intent.getStringExtra(EXTRA_NP_PLAYER) ?: ""
         if (netplay) {
             Log.i(TAG, "netplay role=$npRole lobby=$npLobby")
             myName = currentPlayer()
@@ -338,10 +380,34 @@ class EmulatorActivity : Activity(), TextureListener {
                 }
             }
         }
+        // Watch launch? Same screen, spectator extras. The game
+        // above is already loaded; starting the watch joins the
+        // room and the game loop reconstructs the match from the
+        // two input streams.
+        if (watching) {
+            Log.i(TAG, "watch lobby=$npLobby")
+            myName = npPlayer.ifEmpty { currentPlayer() }
+            buildWatchBanner(rootFrame)
+            uiHandler.post(watchTicker)
+            thread(name = "watch-connect") {
+                val err = Mobile.netplayStartWatch(
+                    npServer, npLobby, npToken,
+                    java.io.File(romPath).name, myName
+                )
+                if (err.isEmpty()) {
+                    watchStarted = true
+                    Log.i(TAG, "watch session started")
+                } else {
+                    watchFailed = err
+                    Log.w(TAG, "watch start failed: $err")
+                }
+            }
+        }
         // Cheats for this game (bundled list + the codes left on last
         // time). Applied before the first frame runs. Never in an
-        // online session: both sides must run the identical game.
-        if (!netplay) {
+        // online session or while watching: every side must run the
+        // identical game.
+        if (!netplay && !watching) {
             loadCheatDb()
             if (enabledCheats.isNotEmpty()) applyEnabledCheats()
         }
@@ -518,6 +584,95 @@ class EmulatorActivity : Activity(), TextureListener {
 
     private fun hideRoom() {
         roomOverlay?.visibility = View.GONE
+    }
+
+    // ----- Watch mode UI -----
+
+    /** The WATCHING banner (top) and the waiting line (center). */
+    private fun buildWatchBanner(root: FrameLayout) {
+        val banner = TextView(this)
+        banner.text = "WATCHING"
+        banner.textSize = 20f
+        banner.setTypeface(null, android.graphics.Typeface.BOLD)
+        banner.setTextColor(Color.WHITE)
+        banner.setBackgroundColor(Color.argb(205, 20, 20, 32))
+        banner.setPadding(36, 18, 36, 18)
+        banner.gravity = Gravity.CENTER
+        val bannerParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        bannerParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        bannerParams.topMargin = 28
+        root.addView(banner, bannerParams)
+        watchBanner = banner
+
+        val wait = TextView(this)
+        wait.text = "Waiting for the match to start"
+        wait.textSize = 28f
+        wait.setTypeface(null, android.graphics.Typeface.BOLD)
+        wait.setTextColor(Color.WHITE)
+        wait.gravity = Gravity.CENTER
+        val waitParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        waitParams.gravity = Gravity.CENTER
+        root.addView(wait, waitParams)
+        watchWaitLine = wait
+    }
+
+    /** Poll the watch state: banner names, waiting line, the end. */
+    private fun updateWatchBanner() {
+        val raw = try { Mobile.netplayWatchInfo() } catch (e: Exception) { return }
+        val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return }
+        val phase = obj.optString("phase", "waiting")
+        val host = obj.optString("host", "")
+        val guest = obj.optString("guest", "")
+        watchBanner?.text =
+            if (host.isNotEmpty() && guest.isNotEmpty()) {
+                "WATCHING  ·  $host vs $guest"
+            } else {
+                "WATCHING"
+            }
+        val waiting = phase != "playing" && phase != "ended"
+        watchWaitLine?.visibility = if (waiting) View.VISIBLE else View.GONE
+        if (waiting) {
+            watchWaitLine?.text =
+                if (host.isNotEmpty() && guest.isNotEmpty()) {
+                    "Waiting for the match to start\n$host vs $guest"
+                } else {
+                    "Waiting for the match to start"
+                }
+        }
+        if (phase == "ended" && !watchEndShown) {
+            watchEndShown = true
+            val err = obj.optString("error", "")
+            AlertDialog.Builder(this)
+                .setTitle("Watch ended")
+                .setMessage(if (err.isNotEmpty()) err else "The match is over.")
+                .setPositiveButton("OK") { _, _ -> finish() }
+                .setOnDismissListener { finish() }
+                .show()
+        }
+    }
+
+    /**
+     * One watch tick on the game thread. The engine applies both
+     * players' masks and runs the frame itself when the next
+     * frame's inputs are both in; the p1/p2 in the reply are
+     * informational only, so there is nothing to re-apply here.
+     * Returns true when a frame actually ran.
+     */
+    private fun watchStepOnce(): Boolean {
+        val raw = try { Mobile.netplayWatchStep() } catch (e: Exception) {
+            return false
+        }
+        return try {
+            org.json.JSONObject(raw).optBoolean("ok", false)
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ----- Netplay chat UI -----
@@ -756,6 +911,31 @@ class EmulatorActivity : Activity(), TextureListener {
         var tRun = 0L
         Log.i(TAG, "gameLoop start fps=$fps")
 
+        // Watch session: hold until the room join lands (it does
+        // not wait on the match itself; WatchStep just reports no
+        // frame until play is underway). A join failure ends with
+        // a message instead of a frozen black screen.
+        if (watching) {
+            while (running && !watchStarted && watchFailed == null) {
+                Thread.sleep(50)
+            }
+            val failed = watchFailed
+            if (!running) return
+            if (failed != null) {
+                if (isFinishing) return
+                runOnUiThread {
+                    AlertDialog.Builder(this)
+                        .setTitle("Could not watch this game")
+                        .setMessage(failed)
+                        .setPositiveButton("OK") { _, _ -> finish() }
+                        .setOnDismissListener { finish() }
+                        .show()
+                }
+                return
+            }
+            Log.i(TAG, "watch: stepping frames")
+        }
+
         // Online session: hold the game until the handshake finishes
         // (the guest may still be joining). Failure ends the game
         // with a message instead of a frozen black screen.
@@ -828,7 +1008,14 @@ class EmulatorActivity : Activity(), TextureListener {
             }
             pauseAck = false
             val start = System.nanoTime()
-            if (netplay) {
+            // In watch mode most ticks run no frame at all (the
+            // next frame's inputs are still in flight); those ticks
+            // idle and leave the last frame on screen.
+            var ranFrame = true
+            if (watching) {
+                ranFrame = watchStepOnce()
+                if (!ranFrame) Thread.sleep(10)
+            } else if (netplay) {
                 val err = Mobile.netplayStep(localMask.toLong())
                 if (err.isNotEmpty()) {
                     Log.w(TAG, "netplay ended: $err")
@@ -846,23 +1033,26 @@ class EmulatorActivity : Activity(), TextureListener {
             } else {
                 Mobile.runFrame()
             }
-            val elapsed = (System.nanoTime() - start) / 1_000_000
-            tRun += elapsed
-            frameCount++
-            // Steady 30 draws every other frame; the core still runs
-            // (and sounds) at full speed.
-            if (FilterSettings.displayMode == 0 || frameCount % 2L == 0L) {
-                glView.requestRender()
-            }
-            if (frameCount % 600 == 0L) {
-                Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
-                tRun = 0
+            if (ranFrame) {
+                val elapsed = (System.nanoTime() - start) / 1_000_000
+                tRun += elapsed
+                frameCount++
+                // Steady 30 draws every other frame; the core still runs
+                // (and sounds) at full speed.
+                if (FilterSettings.displayMode == 0 || frameCount % 2L == 0L) {
+                    glView.requestRender()
+                }
+                if (frameCount % 600 == 0L) {
+                    Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
+                    tRun = 0
+                }
             }
             // Auto-save once a minute into the player's save slot, so
             // progress survives even if nobody remembers to save. Runs
             // here on the game thread, between frames, never racing
-            // the core.
-            if (autoSaveEnabled && !netplay &&
+            // the core. Never while watching: the reconstructed game
+            // is not this player's to save.
+            if (autoSaveEnabled && !netplay && !watching &&
                 System.currentTimeMillis() - lastAutoSaveMs > 60_000) {
                 lastAutoSaveMs = System.currentTimeMillis()
                 try {
@@ -1103,6 +1293,22 @@ class EmulatorActivity : Activity(), TextureListener {
         // Label/action pairs, so entries can slot in (Chat, online
         // only) without renumbering a when block.
         val entries = mutableListOf<Pair<String, () -> Unit>>()
+        if (watching) {
+            // Spectator menu: no save state, no resume entry, no
+            // exit-with-save flow. The game on screen belongs to
+            // the two players; the watcher only leaves. Chat rides
+            // the same pause panel the players use.
+            entries.add("Chat" to {
+                keepPaused = true
+                window.decorView.postDelayed({ showChatPanel() }, 200)
+            })
+            entries.add("Picture: $filterName" to { cycleFilter() })
+            entries.add("Display: $displayName" to { toggleDisplay() })
+            entries.add("Leave" to {
+                try { Mobile.netplayStopWatch() } catch (e: Exception) { /* already gone */ }
+                finish()
+            })
+        } else {
         entries.add("Resume" to { }) // resume via dismiss
         if (netplay) {
             entries.add("Chat" to {
@@ -1128,6 +1334,7 @@ class EmulatorActivity : Activity(), TextureListener {
             keepPaused = true
             window.decorView.postDelayed({ confirmExit() }, 200)
         })
+        }
         // Note: setMessage + setItems together renders an empty list on
         // this TV's dialog theme, so the player rides in the title.
         AlertDialog.Builder(this)
@@ -1371,6 +1578,11 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         val btn = mapButton(keyCode)
         if (btn != null) {
+            if (watching) {
+                // A spectator's controller never reaches the game:
+                // both seats come from the players' input streams.
+                return true
+            }
             if (netplay) {
                 // In an online game every local device plays the
                 // local player; the engine feeds the mask to the
@@ -1390,6 +1602,9 @@ class EmulatorActivity : Activity(), TextureListener {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         val btn = mapButton(keyCode)
         if (btn != null) {
+            if (watching) {
+                return true
+            }
             if (netplay) {
                 localMask = localMask and (1 shl btn.toInt()).inv()
                 return true
@@ -1407,6 +1622,7 @@ class EmulatorActivity : Activity(), TextureListener {
         uiHandler.removeCallbacks(roomTicker)
         uiHandler.removeCallbacks(pauseTicker)
         uiHandler.removeCallbacks(chatTicker)
+        uiHandler.removeCallbacks(watchTicker)
         try {
             val im = getSystemService(android.content.Context.INPUT_SERVICE)
                 as android.hardware.input.InputManager
@@ -1414,6 +1630,9 @@ class EmulatorActivity : Activity(), TextureListener {
         } catch (e: Exception) { /* already gone */ }
         if (netplay) {
             try { Mobile.netplayStop() } catch (e: Exception) { /* already gone */ }
+        }
+        if (watching) {
+            try { Mobile.netplayStopWatch() } catch (e: Exception) { /* already gone */ }
         }
         statsEnd()
         running = false
