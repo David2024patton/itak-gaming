@@ -349,6 +349,34 @@ disconnect. The host disconnecting also triggers the server's
 recorded locally by each client exactly as for a local game, credited
 to the local player.
 
+### 4.7 Text chat
+
+The two players can exchange short text messages at any point after
+the signaling socket is up, in the waiting room (section 4.0) and
+during play alike:
+
+```json
+{ "type": "chat", "text": "good game, ready when you are" }
+```
+
+Rules:
+
+- `text` is the whole message. Senders trim surrounding whitespace
+  and refuse empty messages and messages over **500 runes**; nothing
+  is sent in those cases. A receiver trims too, drops empties, and
+  cuts anything longer to 500 runes (a misbehaving peer cannot flood
+  the log; the socket's own 256 KB cap in section 3 still applies).
+- Chat rides the signaling socket like `hello` and `ready` do. The
+  server does not parse it; it is relayed verbatim like every other
+  client message (section 3).
+- Chat is **excluded from lockstep**: it is not an input, it is
+  never hashed, and it must not touch frame counters, the input
+  maps, or the session phase. A client keeps a local, capped log
+  (the reference client keeps the last 200 messages) purely for
+  display.
+- There is no delivery receipt and no history: a message sent
+  before the peer's socket joined is simply lost, like `hello`.
+
 ---
 
 ## 5. Security notes
