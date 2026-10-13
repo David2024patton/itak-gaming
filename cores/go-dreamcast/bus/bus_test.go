@@ -79,22 +79,34 @@ func TestRAMMirror(t *testing.T) {
 
 func TestVRAMWindowsAlias(t *testing.T) {
 	b := New()
-	// A write through the 32-bit view reads back through the
-	// 64-bit view: both windows share one backing store.
+	// Both windows share one backing store. The 32-bit window is
+	// the plain linear view; the 64-bit window interleaves the two
+	// 4 MB banks (DC-2): an 8-byte unit at window offset a takes
+	// its low word from bank 0 and its high word from bank 1
+	// (backing offset +0x400000) at the same row. Window offset 8
+	// is row 1 of bank 0, backing offset 4.
 	b.Write32(0x04000004, 0xCAFEBABE)
-	if got := b.Read32(0x05000004); got != 0xCAFEBABE {
-		t.Errorf("VRAM 64-bit view = %#08x, want 0xCAFEBABE", got)
+	if got := b.Read32(0x05000008); got != 0xCAFEBABE {
+		t.Errorf("VRAM 64-bit view of backing 4 = %#08x, want 0xCAFEBABE", got)
 	}
-	// And the other direction.
+	// A 64-bit write lands split across the banks: the low word
+	// at backing offset 8 (row 2), the high word at 0x400008.
 	b.Write64(0x05000010, 0x0123456789ABCDEF)
-	if got := b.Read64(0x04000010); got != 0x0123456789ABCDEF {
-		t.Errorf("VRAM 32-bit view = %#016x, want 0x0123456789ABCDEF", got)
+	if got := b.Read32(0x04000008); got != 0x89ABCDEF {
+		t.Errorf("VRAM 64-bit write low word = %#08x, want 0x89ABCDEF", got)
+	}
+	if got := b.Read32(0x04400008); got != 0x01234567 {
+		t.Errorf("VRAM 64-bit write high word = %#08x, want 0x01234567", got)
+	}
+	// And it reads back whole through the 64-bit window.
+	if got := b.Read64(0x05000010); got != 0x0123456789ABCDEF {
+		t.Errorf("VRAM 64-bit readback = %#016x, want 0x0123456789ABCDEF", got)
 	}
 	// Each window also mirrors across its own 16 MB span.
 	if got := b.Read32(0x04800004); got != 0xCAFEBABE {
 		t.Errorf("VRAM 32-bit window mirror = %#08x, want 0xCAFEBABE", got)
 	}
-	if got := b.Read32(0x05800004); got != 0xCAFEBABE {
+	if got := b.Read32(0x05800008); got != 0xCAFEBABE {
 		t.Errorf("VRAM 64-bit window mirror = %#08x, want 0xCAFEBABE", got)
 	}
 }
@@ -148,12 +160,14 @@ func TestRegisterStubs(t *testing.T) {
 	if got := b.Read16(0x005F7010); got != 0x3CA5 {
 		t.Errorf("GD stub half readback = %#04x, want 0x3CA5", got)
 	}
-	// Each stub range keeps its own storage.
-	b.Write32(0x005F8400, 0x11111111)
+	// Each stub range keeps its own storage. (The PowerVR ranges
+	// at 0x005F8000 are device-owned since DC-2 and are covered by
+	// the pvr package tests, not here.)
+	b.Write32(0x00700004, 0x11111111)
 	b.Write32(0x00703FF0, 0x22222222)
 	b.Write32(0x006FFFF0, 0x33333333)
-	if got := b.Read32(0x005F8400); got != 0x11111111 {
-		t.Errorf("TA stub = %#08x, want 0x11111111", got)
+	if got := b.Read32(0x00700004); got != 0x11111111 {
+		t.Errorf("AICA stub low = %#08x, want 0x11111111", got)
 	}
 	if got := b.Read32(0x00703FF0); got != 0x22222222 {
 		t.Errorf("AICA stub = %#08x, want 0x22222222", got)
