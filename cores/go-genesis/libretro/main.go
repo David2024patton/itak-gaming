@@ -39,7 +39,7 @@ static int16_t gg_input_state(unsigned port, unsigned dev, unsigned idx, unsigne
 
 static const char *gg_get_name() { return "iTaK GoGenesis"; }
 static const char *gg_get_version() { return "0.1"; }
-static const char *gg_get_exts() { return "bin|gen|md|smd"; }
+static const char *gg_get_exts() { return "bin|gen|md|smd|cue|iso"; }
 
 struct gg_system_info { const char *library_name; const char *library_version; const char *valid_extensions; bool need_fullpath; bool block_extract; };
 struct gg_game_geometry { unsigned base_width; unsigned base_height; unsigned max_width; unsigned max_height; float aspect_ratio; };
@@ -86,6 +86,11 @@ var sys *system.System
 // Genesis games switch to H40 during boot, so before the first frame the
 // honest default geometry is 320 wide.
 var ranFrames bool
+
+// discTempPath is the temp file written when a frontend hands us disc
+// bytes with no path (the routeDiscData route). retro_unload_game
+// deletes it.
+var discTempPath string
 
 func main() {}
 
@@ -152,11 +157,15 @@ func retro_get_region() C.unsigned { return regionNTSC }
 
 //export retro_load_game
 func retro_load_game(info *C.struct_gg_game_info) C.bool {
+	var path string
+	if info.path != nil {
+		path = C.GoString(info.path)
+	}
 	var data []byte
 	if info.data != nil && info.size > 0 {
 		data = C.GoBytes(info.data, C.int(info.size))
 	} else if info.path != nil {
-		b, err := os.ReadFile(C.GoString(info.path))
+		b, err := os.ReadFile(path)
 		if err != nil {
 			return false
 		}
@@ -167,8 +176,37 @@ func retro_load_game(info *C.struct_gg_game_info) C.bool {
 	if sys == nil {
 		sys = system.New()
 	}
-	if err := sys.LoadGame(data); err != nil {
-		return false
+	switch routeFor(path, data) {
+	case routeDiscPath:
+		if err := sys.LoadDisc(path); err != nil {
+			return false
+		}
+	case routeDiscData:
+		// LoadDisc works on files, so park the bytes in a temp ISO
+		// first. retro_unload_game deletes it.
+		f, err := os.CreateTemp("", "itak-disc-*.iso")
+		if err != nil {
+			return false
+		}
+		tmpPath := f.Name()
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return false
+		}
+		if err := f.Close(); err != nil {
+			os.Remove(tmpPath)
+			return false
+		}
+		if err := sys.LoadDisc(tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return false
+		}
+		discTempPath = tmpPath
+	default:
+		if err := sys.LoadGame(data); err != nil {
+			return false
+		}
 	}
 	// Ask the frontend for RGB565 frames (what the VDP produces).
 	fmt565 := C.uint32_t(pixelFormatRGB565)
@@ -177,7 +215,14 @@ func retro_load_game(info *C.struct_gg_game_info) C.bool {
 }
 
 //export retro_unload_game
-func retro_unload_game() { sys = system.New(); ranFrames = false }
+func retro_unload_game() {
+	if discTempPath != "" {
+		os.Remove(discTempPath)
+		discTempPath = ""
+	}
+	sys = system.New()
+	ranFrames = false
+}
 
 //export retro_reset
 func retro_reset() {
