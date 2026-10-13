@@ -429,6 +429,14 @@ func (m *mmc3) mirror() (Mirror, bool) {
 
 func (m *mmc3) ramEnabled() bool { return m.ramEnable }
 
+// clockA12 advances the IRQ counter on one filtered A12
+// rising edge. The counter reloads from the latch when a
+// reload is pending (a $C001 write) or when it sits at zero;
+// otherwise it decrements. The IRQ asserts whenever the
+// counter is at zero after the clock and IRQs are enabled:
+// on a decrement into zero, on a reload that loads zero,
+// and on a clock that finds the counter resting at zero
+// (the revision B behavior the test suites pin).
 func (m *mmc3) clockA12() {
 	if m.irqReload || m.irqCounter == 0 {
 		m.irqCounter = m.irqLatch
