@@ -287,13 +287,17 @@ func (s *System) runSubLine(line int) {
 	for i := 0; i < 32; i++ {
 		cur := s.scpu.Cycles()
 		if cur >= target {
-			return
+			break
 		}
 		s.scpu.StepCycles(int(target - cur))
 		if s.scpu.Cycles() == cur {
-			return
+			break
 		}
 	}
+	// SCD-4: service any sub BIOS request the stepping above
+	// queued (see scd BIOSPending and BIOSService). The service
+	// runs once per line, after the sub CPU has had its cycles.
+	s.cd.BIOSService()
 }
 
 // runZ80Line advances the Z80 by one scanline of cycles, honoring the
@@ -561,47 +565,72 @@ func (s *System) Serialize(buf []byte) error {
 }
 
 // Deserialize restores a state written by Serialize.
+//
+// SCD-4 legacy rule: a CD state written before the sub BIOS
+// sections existed is exactly scd.BRAMSize + scd.BIOSStateSize
+// bytes shorter than a current CD state. When a disc is
+// attached and the buffer has exactly that legacy length, the
+// missing sections are treated as zero: the state is expanded
+// with zero bytes and the normal path runs. The state format
+// carries no mode flag byte; the attachment plus the exact
+// legacy length identifies a legacy CD state (no cartridge
+// state has this length). The expansion inserts the zeros at the
+// end of the CD unit block, which is where Serialize appends the
+// unit growth; the unit block is not quite the end of the whole
+// state, because the 8 byte sub CPU cycle trailer follows it, so
+// a plain append at the end of the buffer would misalign both
+// the unit block and the trailer. Every other length mismatch
+// keeps failing exactly as before.
 func (s *System) Deserialize(buf []byte) error {
 	if !s.loaded {
 		return errors.New("system: no game loaded")
 	}
-	if len(buf) < s.SerializeSize() {
+	data := buf
+	if s.cd != nil && len(buf) == s.SerializeSize()-(scd.BRAMSize+scd.BIOSStateSize) {
+		expanded := make([]byte, 0, s.SerializeSize())
+		insertAt := len(buf) - 8 // end of the CD unit block, before the cycle trailer
+		expanded = append(expanded, buf[:insertAt]...)
+		expanded = append(expanded, make([]byte, scd.BRAMSize+scd.BIOSStateSize)...)
+		expanded = append(expanded, buf[insertAt:]...)
+		data = expanded
+	}
+	if len(data) < s.SerializeSize() {
 		return errors.New("system: state too small")
 	}
 	off := 0
-	readM68kState(buf[off:], s.cpu)
+	readM68kState(data[off:], s.cpu)
 	off += m68kStateSize
 
-	if err := s.zcpu.Deserialize(buf[off:]); err != nil {
+	if err := s.zcpu.Deserialize(data[off:]); err != nil {
 		return err
 	}
 	off += z80.SerializeSize
-	if err := s.bus.Deserialize(buf[off:]); err != nil {
+	if err := s.bus.Deserialize(data[off:]); err != nil {
 		return err
 	}
 	off += s.bus.SerializeSize()
-	if err := s.vdp.Deserialize(buf[off:]); err != nil {
+	if err := s.vdp.Deserialize(data[off:]); err != nil {
 		return err
 	}
 	off += s.vdp.SerializeSize()
-	if err := s.sound.Deserialize(buf[off:]); err != nil {
+	if err := s.sound.Deserialize(data[off:]); err != nil {
 		return err
 	}
 	off += s.sound.SerializeSize()
-	s.frame = binary.LittleEndian.Uint64(buf[off:])
+	s.frame = binary.LittleEndian.Uint64(data[off:])
 	// SetState zeroed the CPU's cycle counter; put it back so the frame
 	// timing base and the counter agree again.
-	s.cpu.AddCycles(binary.LittleEndian.Uint64(buf[off+8:]))
-	s.audioAcc = math.Float64frombits(binary.LittleEndian.Uint64(buf[off+16:]))
+	s.cpu.AddCycles(binary.LittleEndian.Uint64(data[off+8:]))
+	s.audioAcc = math.Float64frombits(binary.LittleEndian.Uint64(data[off+16:]))
 	off += trailerSize
 	if s.cd != nil {
-		readM68kState(buf[off:], s.scpu)
+		readM68kState(data[off:], s.scpu)
 		off += m68kStateSize
-		if err := s.cd.Deserialize(buf[off:]); err != nil {
+		if err := s.cd.Deserialize(data[off:]); err != nil {
 			return err
 		}
 		off += s.cd.SerializeSize()
-		s.scpu.AddCycles(binary.LittleEndian.Uint64(buf[off:]))
+		s.scpu.AddCycles(binary.LittleEndian.Uint64(data[off:]))
 	}
 	return nil
 }
