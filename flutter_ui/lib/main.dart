@@ -253,6 +253,18 @@ const List<SystemInfo> kSystems = [
         'https://thumb.wikimedia.org/wikipedia/commons/thumb/1/19/Sega-Genesis-NA-Mk2-Console-Set.png/1280px-Sega-Genesis-NA-Mk2-Console-Set.png',
   ),
   SystemInfo(
+    id: 'segacd',
+    name: 'Sega CD',
+    tagline: 'Sega CD · 1991',
+    color: Color(0xFF0D47A1),
+    core: 'libgo_genesis.so',
+    dir: 'SegaCD',
+    exts: ['.cue', '.iso', '.bin'],
+    thumbRepo: 'Sega_-_Mega-CD_-_Sega_CD',
+    imageUrl:
+        'https://commons.wikimedia.org/wiki/Special:FilePath/Sega-CD-Model2-Console.png?width=900',
+  ),
+  SystemInfo(
     id: 'gameboy',
     name: 'Game Boy',
     tagline: 'Game Boy · 1989',
