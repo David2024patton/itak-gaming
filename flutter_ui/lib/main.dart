@@ -257,7 +257,7 @@ const List<SystemInfo> kSystems = [
     name: 'Game Boy',
     tagline: 'Game Boy · 1989',
     color: Color(0xFF9E9E9E),
-    core: 'libgambatte.so',
+    core: 'libgo_gameboy.so',
     dir: 'GameBoy',
     exts: ['.gb', '.gbc'],
     thumbRepo: 'Nintendo_-_Game_Boy',
