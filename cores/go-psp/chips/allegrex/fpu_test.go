@@ -18,11 +18,13 @@ func encMTC1(rt, fs uint32) uint32 { return 0x11<<26 | 4<<21 | rt<<16 | fs<<11 }
 func encCFC1(rt, fs uint32) uint32 { return 0x11<<26 | 2<<21 | rt<<16 | fs<<11 }
 func encCTC1(rt, fs uint32) uint32 { return 0x11<<26 | 6<<21 | rt<<16 | fs<<11 }
 
-// encBC1 builds a BC1 branch: cc in bits 20..18, tf bit 17, nd bit 16.
+// encBC1 builds a BC1 branch: cc in bits 20..18, nd (likely)
+// bit 17, tf bit 16 (the hardware layout; an earlier version of
+// this helper had tf and nd swapped to match a swapped decoder).
 func encBC1(cc uint32, tf bool, off uint32) uint32 {
 	w := 0x11<<26 | 8<<21 | cc<<18 | (off & 0xFFFF)
 	if tf {
-		w |= 1 << 17
+		w |= 1 << 16
 	}
 	return w
 }
@@ -113,16 +115,44 @@ func TestFPUSpecialValues(t *testing.T) {
 	if got := h.c.FReg(3); got != 0x7FC00000 {
 		t.Errorf("0/0 = %#08x, want canonical NaN", got)
 	}
-	// Denormal result flushes: 2^-70 * 2^-70 = 2^-140, which is a
-	// denormal in single precision; the result must be flushed to
-	// signed zero instead.
+	// Denormal results follow the FCSR FS bit (pinned by the
+	// pspautotests fpu matrix): with FS clear the product
+	// 2^-70 * 2^-70 = 2^-140 keeps its denormal bits, with FS
+	// set it flushes to signed zero.
 	h = newFPUHarness()
 	h.c.SetFReg(1, 0x1C800000) // 2^-70
 	h.c.SetFReg(2, 0x1C800000) // 2^-70
 	h.r.load(0, encFP(2, 1, 3, 0x02))
 	h.run(1)
+	if got := h.c.FReg(3); got != 0x00000200 {
+		t.Errorf("denormal product (FS=0) = %#08x, want 0x00000200", got)
+	}
+	h = newFPUHarness()
+	h.c.SetFCSR(0x01000000) // FS set
+	h.c.SetFReg(1, 0x1C800000)
+	h.c.SetFReg(2, 0x1C800000)
+	h.r.load(0, encFP(2, 1, 3, 0x02))
+	h.run(1)
 	if got := h.c.FReg(3); got != 0 {
-		t.Errorf("denormal product = %#08x, want flushed 0", got)
+		t.Errorf("denormal product (FS=1) = %#08x, want flushed 0", got)
+	}
+	// A NaN operand propagates its own quieted bits (roundmode
+	// matrix), it is not canonicalized.
+	h = newFPUHarness()
+	h.c.SetFReg(1, 0xFFC00000) // negative quiet NaN
+	h.c.SetFReg(2, 0x3F800000) // 1.0
+	h.r.load(0, encFP(2, 1, 3, 0x00))
+	h.run(1)
+	if got := h.c.FReg(3); got != 0xFFC00000 {
+		t.Errorf("add.s NaN propagation = %#08x, want 0xffc00000", got)
+	}
+	h = newFPUHarness()
+	h.c.SetFReg(1, 0x7F800001) // signaling NaN, payload 1
+	h.c.SetFReg(2, 0x3F800000)
+	h.r.load(0, encFP(2, 1, 3, 0x02))
+	h.run(1)
+	if got := h.c.FReg(3); got != 0x7FC00001 {
+		t.Errorf("mul.s sNaN propagation = %#08x, want 0x7fc00001", got)
 	}
 }
 
@@ -164,14 +194,26 @@ func TestFPUConvertModes(t *testing.T) {
 			t.Errorf("fn %#x of -2.5 = %#08x, want %#08x", tc.fn, got, tc.want)
 		}
 	}
-	// CVT.W.S of NaN is 0x7FFFFFFF, and so is a huge value.
-	for _, in := range []uint32{0x7FC00000, 0x4F000000 /* 2^31 */} {
+	// CVT.W.S saturates by sign (Allegrex behavior, per the
+	// pspautotests roundmode and fpu matrices): positive
+	// overflow gives 0x7FFFFFFF, negative overflow gives
+	// 0x80000000, and NaN of either sign gives 0x7FFFFFFF.
+	for _, tc := range []struct {
+		in, want uint32
+	}{
+		{0x7FC00000, 0x7FFFFFFF}, // positive NaN
+		{0xFFC00000, 0x7FFFFFFF}, // negative NaN
+		{0x4F000000, 0x7FFFFFFF}, // exactly 2^31
+		{0x7F800000, 0x7FFFFFFF}, // +Inf
+		{0xCF000001, 0x80000000}, // negative, out of range
+		{0xFF800000, 0x80000000}, // -Inf
+	} {
 		h := newFPUHarness()
-		h.c.SetFReg(1, in)
+		h.c.SetFReg(1, tc.in)
 		h.r.load(0, encFP(0, 1, 2, 0x24))
 		h.run(1)
-		if got := h.c.FReg(2); got != 0x7FFFFFFF {
-			t.Errorf("cvt.w.s %#08x = %#08x, want 0x7FFFFFFF", in, got)
+		if got := h.c.FReg(2); got != tc.want {
+			t.Errorf("cvt.w.s %#08x = %#08x, want %#08x", tc.in, got, tc.want)
 		}
 	}
 	// CVT.S.W of -3 is -3.0.
@@ -225,13 +267,15 @@ func TestFPUCompareAndBranch(t *testing.T) {
 	if h.c.Reg(9) != 1 || h.c.Reg(8) != 0 || h.c.Reg(10) != 7 {
 		t.Errorf("bc1f flow: r8=%d r9=%d r10=%d", h.c.Reg(8), h.c.Reg(9), h.c.Reg(10))
 	}
-	// Unordered compare: NaN operand with the unordered bit (cond
-	// 8|4) is true; ordered less (cond 4) is false.
+	// Unordered compare: C.ULT.S (cond 5: unordered or less) with
+	// a NaN operand is true; ordered C.LT.S (cond 4) is false.
+	// (PSP-1 encoded the predicates with the unordered term on
+	// bit 3; the hardware condition field puts it on bit 0.)
 	h = newFPUHarness()
 	h.c.SetFReg(1, 0x7FC00000) // NaN
 	h.c.SetFReg(2, fOne)
 	h.r.load(0,
-		encFP(2, 1, 0, 0x30|8|4),  // c.ult style: lt or unordered
+		encFP(2, 1, 0, 0x30|5),    // c.ult.s
 		encFP(2, 1, 1<<2, 0x30|4), // c.lt.s into fcc1 via cc bits
 	)
 	h.run(1)
@@ -253,7 +297,7 @@ func TestFPUMovesAndControl(t *testing.T) {
 		encI(0x09, 0, 10, 2), // addiu r10, r0, 2 (rounding RP)
 		encCTC1(10, 31),      // ctc1 r10, fcsr
 		encCFC1(11, 31),      // cfc1 r11, fcsr
-		encCFC1(12, 0),       // cfc1 r12, fcr0 = 0
+		encCFC1(12, 0),       // cfc1 r12, fcr0 = implementation ID
 	)
 	h.run(6)
 	if got := h.c.FReg(1); got != fOne5 {
@@ -265,8 +309,8 @@ func TestFPUMovesAndControl(t *testing.T) {
 	if got := h.c.Reg(11); got != 2 {
 		t.Errorf("cfc1 fcsr = %#08x, want 2", got)
 	}
-	if got := h.c.Reg(12); got != 0 {
-		t.Errorf("cfc1 fcr0 = %#08x, want 0", got)
+	if got := h.c.Reg(12); got != 0x00003351 {
+		t.Errorf("cfc1 fcr0 = %#08x, want 0x00003351", got)
 	}
 	// LWC1 and SWC1 round trip through memory.
 	h = newFPUHarness()
