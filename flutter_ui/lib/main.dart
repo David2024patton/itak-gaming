@@ -2182,15 +2182,19 @@ class _OnlineScreenState extends State<OnlineScreen> {
   static const _channel = MethodChannel('net.itak/emu');
   final FocusNode _focusNode = FocusNode();
   List<dynamic> _lobbies = [];
+  List<dynamic> _friends = [];
   String _status = 'Connecting to the lobby server...';
   bool _online = false;
-  // Focus rows: 0 = Create, 1 = Refresh, 2.. = lobbies, last = Back.
+  // Focus rows: 0 = Create, 1 = Refresh, then one row per friend,
+  // then one row per lobby, last = Back. The Friends and Open
+  // lobbies section labels sit between the rows in the list but are
+  // not selectable, so they own no focus index.
   int _sel = 0;
   Timer? _ticker;
   final ScrollController _listScroll = ScrollController();
   final Map<int, GlobalKey> _rowKeys = {};
 
-  int get _itemCount => _lobbies.length + 3;
+  int get _itemCount => _lobbies.length + _friends.length + 3;
 
   @override
   void initState() {
@@ -2249,6 +2253,9 @@ class _OnlineScreenState extends State<OnlineScreen> {
   }
 
   Future<void> _refresh() async {
+    // Friends ride the same cadence as the lobby list: loaded on
+    // open (initState calls _refresh) and on every timed refresh.
+    _loadFriends();
     try {
       final data = await _api('GET', '/lobbies');
       if (!mounted) return;
@@ -2267,6 +2274,51 @@ class _OnlineScreenState extends State<OnlineScreen> {
         _status = 'Cannot reach the lobby server. It may be offline.';
       });
     }
+  }
+
+  // Friends of the current player, from the same server the
+  // leaderboard uses. A failed load just leaves the section as it
+  // was (empty on first open): no error noise over the lobby list.
+  Future<void> _loadFriends() async {
+    try {
+      final player = await _playerName();
+      final data = await _api(
+          'GET', '/friends?player=${Uri.encodeQueryComponent(player)}');
+      if (!mounted) return;
+      setState(() {
+        _friends = (data['friends'] as List?) ?? [];
+        if (_sel >= _itemCount) _sel = _itemCount - 1;
+      });
+    } catch (_) {}
+  }
+
+  // OK on a friend row. Someone in a lobby joins that lobby through
+  // the normal join flow when the open lobby list has it (matched
+  // by host or guest name); anything else just notes it in the
+  // status line and stays on this screen.
+  void _tapFriend(Map<String, dynamic> f) {
+    final name = (f['name'] ?? '').toString();
+    if (f['status'] != 'in_lobby') {
+      setState(() => _status = '$name is not in a lobby right now');
+      return;
+    }
+    Map<String, dynamic>? found;
+    for (final l in _lobbies) {
+      final m = l as Map<String, dynamic>;
+      if (m['hostPlayer']?.toString() == name ||
+          m['guestPlayer']?.toString() == name ||
+          m['guest']?.toString() == name) {
+        found = m;
+        break;
+      }
+    }
+    if (found == null) {
+      // The friend is in a lobby the open list cannot offer (full,
+      // already started, or private): say so and stay here.
+      setState(() => _status = 'That lobby is not joinable right now');
+      return;
+    }
+    _joinLobby(found);
   }
 
   Future<String> _playerName() async {
@@ -2460,8 +2512,11 @@ class _OnlineScreenState extends State<OnlineScreen> {
       _refresh();
     } else if (_sel == _itemCount - 1) {
       Navigator.pop(context);
+    } else if (_sel < 2 + _friends.length) {
+      _tapFriend(_friends[_sel - 2] as Map<String, dynamic>);
     } else {
-      _joinLobby(_lobbies[_sel - 2] as Map<String, dynamic>);
+      _joinLobby(
+          _lobbies[_sel - 2 - _friends.length] as Map<String, dynamic>);
     }
   }
 
@@ -2658,6 +2713,171 @@ class _OnlineScreenState extends State<OnlineScreen> {
     );
   }
 
+  // Section label over a group of rows in the list, with a count
+  // chip. Labels are visual only: they own no focus index.
+  Widget _sectionHeader(String label, int count) {
+    return Row(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(width: 10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.white10,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Text(
+            '$count',
+            style: const TextStyle(fontSize: 13.5, color: Colors.white70),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _friendRow(int index, Map<String, dynamic> f) {
+    final focused = _sel == index;
+    final name = (f['name'] ?? 'Player').toString();
+    final display = (f['display'] ?? '').toString();
+    final region = (f['region'] ?? '').toString();
+    final inLobby = f['status'] == 'in_lobby';
+    final game = (f['game'] ?? '').toString();
+    return GestureDetector(
+      onTap: () {
+        setState(() => _sel = index);
+        _tapFriend(f);
+      },
+      child: AnimatedContainer(
+        key: _rowKeys.putIfAbsent(index, () => GlobalKey()),
+        duration: const Duration(milliseconds: 120),
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        decoration: BoxDecoration(
+          color: focused
+              ? const Color(0xFF23233A)
+              : const Color(0xFF1B1B28),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: focused ? Colors.white : Colors.white12,
+            width: focused ? 3 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            PlayerAvatar(name: name, size: 46),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          display.isNotEmpty ? display : name,
+                          style: const TextStyle(
+                              fontSize: 20, fontWeight: FontWeight.bold),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (region.isNotEmpty) ...[
+                        const SizedBox(width: 9),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white10,
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Text(
+                            region,
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.white70),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      Icon(Icons.circle,
+                          size: 11,
+                          color: inLobby
+                              ? const Color(0xFF00E676)
+                              : Colors.white38),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          inLobby
+                              ? (game.isNotEmpty
+                                  ? 'In lobby: $game'
+                                  : 'In a lobby')
+                              : 'Offline',
+                          style: TextStyle(
+                              fontSize: 15,
+                              color: inLobby
+                                  ? Colors.white70
+                                  : Colors.white54),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            if (inLobby)
+              const Icon(Icons.play_circle_outline,
+                  size: 26, color: Color(0xFF00E676)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // The lobby empty state, sized to live inside the shared list
+  // under the Open lobbies label.
+  Widget _noLobbies() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withOpacity(0.05),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: const Icon(Icons.sports_esports,
+                size: 34, color: Colors.white38),
+          ),
+          const SizedBox(height: 14),
+          const Text('No open lobbies right now',
+              style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white70)),
+          const SizedBox(height: 6),
+          const Text(
+            'Create one above and tell a friend to join. '
+            'Both of you need the same game file.',
+            style: TextStyle(fontSize: 15, color: Colors.white54),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2739,75 +2959,46 @@ class _OnlineScreenState extends State<OnlineScreen> {
                   ],
                 ),
                 const SizedBox(height: 22),
-                // Section header over the lobby list.
-                Row(
-                  children: [
-                    const Text(
-                      'Open lobbies',
-                      style: TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(width: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 9, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.white10,
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Text(
-                        '${_lobbies.length}',
-                        style: const TextStyle(
-                            fontSize: 13.5, color: Colors.white70),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Container(height: 1, color: Colors.white10),
-                const SizedBox(height: 14),
+                // One scrolling list: the Friends section over the
+                // Open lobbies section. Section labels and empty
+                // lines are list children too, but they are not
+                // selectable and own no focus index.
                 Expanded(
-                  child: _lobbies.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: 96,
-                                height: 96,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white.withOpacity(0.05),
-                                  border:
-                                      Border.all(color: Colors.white12),
-                                ),
-                                child: const Icon(Icons.sports_esports,
-                                    size: 46, color: Colors.white38),
-                              ),
-                              const SizedBox(height: 18),
-                              const Text('No open lobbies right now',
-                                  style: TextStyle(
-                                      fontSize: 21,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white70)),
-                              const SizedBox(height: 7),
-                              const Text(
-                                'Create one above and tell a friend to join. '
-                                'Both of you need the same game file.',
-                                style: TextStyle(
-                                    fontSize: 15.5, color: Colors.white54),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
+                  child: ListView(
+                    controller: _listScroll,
+                    children: [
+                      _sectionHeader('Friends', _friends.length),
+                      const SizedBox(height: 6),
+                      Container(height: 1, color: Colors.white10),
+                      const SizedBox(height: 14),
+                      if (_friends.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 6),
+                          child: Text(
+                            'No friends yet. Open the Leaderboard and '
+                            'press OK on a player to add them.',
+                            style: TextStyle(
+                                fontSize: 15.5, color: Colors.white54),
                           ),
                         )
-                      : ListView.builder(
-                          controller: _listScroll,
-                          itemCount: _lobbies.length,
-                          itemBuilder: (_, i) => _lobbyRow(
-                              i + 2, _lobbies[i] as Map<String, dynamic>),
-                        ),
+                      else
+                        for (var i = 0; i < _friends.length; i++)
+                          _friendRow(2 + i,
+                              _friends[i] as Map<String, dynamic>),
+                      const SizedBox(height: 12),
+                      _sectionHeader('Open lobbies', _lobbies.length),
+                      const SizedBox(height: 6),
+                      Container(height: 1, color: Colors.white10),
+                      const SizedBox(height: 14),
+                      if (_lobbies.isEmpty)
+                        _noLobbies()
+                      else
+                        for (var i = 0; i < _lobbies.length; i++)
+                          _lobbyRow(2 + _friends.length + i,
+                              _lobbies[i] as Map<String, dynamic>),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -4402,11 +4593,17 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       _gRecent = [];
   bool _gLoaded = false;
   bool _gFailed = false;
+  // Friend names for the current player, from the server's friends
+  // store. Players rows carry a Friend chip when their name is in
+  // here, and OK on a Players row toggles membership.
+  Set<String> _friendNames = {};
+  String _myName = '';
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadFriends();
     PlayerInfoStore.load().then((_) {
       if (mounted) setState(() {});
     });
@@ -4545,6 +4742,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         } else {
           _setScope(_barIndex - 1);
         }
+      } else if (_zone == 2 && event is KeyDownEvent) {
+        // OK on a Players row adds that player as a friend of the
+        // current player, or removes them if they already are one.
+        // Only on the fresh press: a held OK must not toggle twice.
+        // Your own row does nothing (checked in _toggleFriend).
+        final name = _selectedPlayerName();
+        if (name != null) _toggleFriend(name);
       }
       return KeyEventResult.handled;
     }
@@ -4565,6 +4769,81 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     } finally {
       client.close();
     }
+  }
+
+  Future<dynamic> _postJson(String path, Map<String, dynamic> body) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 6);
+    try {
+      final req = await client.postUrl(Uri.parse('$kServerBase$path'));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode(body));
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      final text = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode >= 400) throw Exception('HTTP ${resp.statusCode}');
+      return text.isEmpty ? null : jsonDecode(text);
+    } finally {
+      client.close();
+    }
+  }
+
+  // The current player, resolved the same way the rest of the app
+  // resolves it: the current_player pref.
+  Future<String> _currentPlayerName() async {
+    final p = await Prefs.get('current_player');
+    return (p == null || p.isEmpty) ? 'Player 1' : p;
+  }
+
+  void _applyFriends(dynamic data) {
+    final list = (data is Map ? data['friends'] : null) as List?;
+    if (list == null) return;
+    final names = <String>{};
+    for (final e in list) {
+      if (e is Map) {
+        final n = (e['name'] ?? '').toString();
+        if (n.isNotEmpty) names.add(n);
+      }
+    }
+    _friendNames = names;
+  }
+
+  // The friend set comes from the server, never from local play
+  // stats: it belongs to the account name, not to this box.
+  Future<void> _loadFriends() async {
+    try {
+      final me = await _currentPlayerName();
+      _myName = me;
+      final data =
+          await _getJson('/friends?player=${Uri.encodeQueryComponent(me)}');
+      if (!mounted) return;
+      setState(() => _applyFriends(data));
+    } catch (_) {
+      // Friends are a bonus: a failed load just shows no chips.
+    }
+  }
+
+  Future<void> _toggleFriend(String name) async {
+    if (name.isEmpty) return;
+    if (_myName.isEmpty) _myName = await _currentPlayerName();
+    if (name == _myName) return;
+    try {
+      final path =
+          _friendNames.contains(name) ? '/friends/remove' : '/friends';
+      await _postJson(path, {'player': _myName, 'friend': name});
+      // Re-read the set so the chips always match the server copy.
+      await _loadFriends();
+    } catch (_) {
+      // Leave the chips as they are on any failure.
+    }
+  }
+
+  // The player name behind the selected row, Players mode only.
+  // Rows in the other modes are games or activity, not people.
+  String? _selectedPlayerName() {
+    if (_mode != 0) return null;
+    final list = _scope == 1 ? _gPlayers : _players;
+    if (_selIndex < 0 || _selIndex >= list.length) return null;
+    return list[_selIndex].name;
   }
 
   Future<void> _fetchGlobal() async {
@@ -4702,6 +4981,36 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     );
   }
 
+  // Trailing marker on a Players row whose name is in the current
+  // player's friend set. Styled like the lobby list's Open chip.
+  Widget _friendChip() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF00E676).withOpacity(0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: const Color(0xFF00E676).withOpacity(0.55),
+        ),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.person, size: 13, color: Color(0xFF00E676)),
+          SizedBox(width: 4),
+          Text(
+            'Friend',
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF00E676),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _playerCard(int rank, _PlayerStat p, {bool global = false}) {
     final fav = p.favorite;
     final region = _regionOf(p, global);
@@ -4772,6 +5081,10 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               ],
             ),
           ),
+          if (_friendNames.contains(p.name)) ...[
+            const SizedBox(width: 10),
+            _friendChip(),
+          ],
         ],
       ),
     );
