@@ -75,6 +75,8 @@ type envelope struct {
 	EndsAt int64  `json:"endsAt,omitempty"`
 	// pause
 	Paused bool `json:"paused,omitempty"`
+	// chat
+	Text string `json:"text,omitempty"`
 	// snapshot
 	Bytes  int    `json:"bytes,omitempty"`
 	Chunks int    `json:"chunks,omitempty"`
@@ -143,6 +145,11 @@ type Session struct {
 	peerReady     bool
 	localReady    bool
 	countdownEnds time.Time
+
+	// chat log (chat.go): every message sent or received this
+	// session, oldest first, capped. Guarded by mu like the rest.
+	chatLog []ChatMessage
+	chatSeq int // seq of the most recent log entry, 0 when empty
 
 	// pause state: while either side is paused, lockstep stalls
 	// by design and the silence limit does not apply.
