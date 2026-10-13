@@ -522,10 +522,11 @@ func TestExceptionEntry(t *testing.T) {
 		t.Fatalf("illegal: PC=%#x SRR1=%#x", c.PC, c.SRR1)
 	}
 
-	// Floating point in GCN-1 always raises FP unavailable.
+	// Floating point with MSR[FP] clear raises FP
+	// unavailable (GCN-2 executes it when MSR[FP] is set;
+	// that path is covered in fp_test.go).
 	bus = newRAM()
 	c = New(bus)
-	c.MSR |= MSRFP
 	prog(c, bus, 0x1000, 63<<26|3<<21|4<<16|5<<11|21<<1) // fadd-class word
 	steps(c, 1)
 	if c.PC != 0xFFF00000+VecFPUnavail {
