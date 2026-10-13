@@ -565,3 +565,71 @@ func NetplayPollSeatAssign() string {
 	}
 	return string(b)
 }
+
+// NetplayStartNextMatch runs the waiting room and the session
+// handshake again on the session a match end returned to the
+// room (PROTOCOL.md 4.9), so the next match starts on the same
+// connection with whoever holds the seats now. It blocks like
+// NetplayStart until both players are ready to step frames,
+// so call it from a background thread. While it runs, the
+// session sits in the pending slot and NetplayPhase reports
+// the room again. Returns "" on success or an error.
+func NetplayStartNextMatch() string {
+	if npSession == nil {
+		return "no netplay session"
+	}
+	sess := npSession
+	npSession = nil
+	npPending = sess
+	if err := sess.StartNextMatch(); err != nil {
+		npPending = nil
+		npErr = err.Error()
+		return npErr
+	}
+	npPending = nil
+	npErr = ""
+	npSession = sess
+	return ""
+}
+
+// NetplayLeaveSeat drops the player session WITHOUT the
+// polite session_end envelope NetplayStop sends: the socket
+// simply closes, so the room sees a peer_left and the host's
+// waiting room treats the seat as emptied. Seat rotation uses
+// this when the host names someone else for seat 2: the
+// outgoing guest falls back to watching, and a session_end
+// would end the host's session along with the guest's, room
+// and all. A plain quit still goes through NetplayStop.
+func NetplayLeaveSeat() {
+	if npPending != nil {
+		npPending.Close()
+		npPending = nil
+	}
+	if npSession != nil {
+		npSession.Close()
+		npSession = nil
+	}
+}
+
+// rosterJSON is the wire shape NetplayRosterJSON hands the
+// UI: the room's members as the server's roster notice named
+// them, or the session's synthesis (session participants
+// only) before the first notice lands.
+type rosterJSON struct {
+	Members []netsession.RosterMember `json:"members"`
+}
+
+// NetplayRosterJSON returns the room roster as JSON:
+// {"members":[{"name":"...","role":"host|guest|spectator"}]}.
+// With no session of any kind it returns an empty list.
+func NetplayRosterJSON() string {
+	out := rosterJSON{Members: []netsession.RosterMember{}}
+	if s := npActive(); s != nil {
+		out.Members = s.Roster()
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return `{"members":[]}`
+	}
+	return string(b)
+}
