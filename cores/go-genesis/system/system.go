@@ -21,8 +21,8 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/sound"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/vdp"
 
-	m68k "github.com/user-none/go-chip-m68k"
-	"github.com/user-none/go-chip-z80"
+	m68k "github.com/davidpatton/itak-gaming/cores/go-genesis/chips/m68k"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/chips/z80"
 )
 
 const (
@@ -243,7 +243,7 @@ const m68kStateSize = 80 // D[8]+A[8] u32, PC u32, SR u16, USP u32, SSP u32, IR 
 // trailerSize holds the machine-level bookkeeping appended after the
 // component states: frame counter (u64), 68000 cycle counter (u64) and
 // the audio fraction accumulator (f64 bits). The cycle counter MUST be
-// saved: the CPU library's SetState zeroes it, and this system's frame
+// saved: the CPU's SetState zeroes it, and this system's frame
 // timing is derived from it, so losing it fast-forwards the machine on
 // the first frame after a restore.
 const trailerSize = 24
@@ -273,7 +273,7 @@ func (s *System) Serialize(buf []byte) error {
 	}
 	off := 0
 	r := s.cpu.Registers()
-	// The CPU library's SetState ignores the A[7] slot and derives the
+	// The CPU's SetState ignores the A[7] slot and derives the
 	// active stack pointer from SSP (supervisor) or USP (user) instead,
 	// while its Registers() can report a stale SSP/USP next to the live
 	// A[7]. Fold the live A[7] into whichever stack pointer is active so
