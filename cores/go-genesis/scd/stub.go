@@ -194,6 +194,37 @@ func (a *asm) jmpAbs(addr uint32) {
 	a.emit32(addr)
 }
 
+func (a *asm) rte() { a.emit16(0x4E73) }
+
+// movemRegToAbs emits MOVEM.L <mask>, addr.l (register to memory,
+// absolute long destination): opcode 0x48F9, mask word, address.
+func (a *asm) movemRegToAbs(mask uint16, addr uint32) {
+	a.emit16(0x48F9)
+	a.emit16(mask)
+	a.emit32(addr)
+}
+
+// movemAbsToReg emits MOVEM.L addr.l, <mask> (memory to register,
+// absolute long source): opcode 0x4CF9, mask word, address.
+func (a *asm) movemAbsToReg(mask uint16, addr uint32) {
+	a.emit16(0x4CF9)
+	a.emit16(mask)
+	a.emit32(addr)
+}
+
+// tstbAbs emits TST.B addr.l (absolute long): opcode 0x4A39.
+func (a *asm) tstbAbs(addr uint32) {
+	a.emit16(0x4A39)
+	a.emit32(addr)
+}
+
+// moveToCCRFromAbs emits MOVE addr.l, CCR (absolute long source):
+// opcode 0x44F9.
+func (a *asm) moveToCCRFromAbs(addr uint32) {
+	a.emit16(0x44F9)
+	a.emit32(addr)
+}
+
 func (a *asm) movewAbsToDn(addr uint32, dn int) {
 	a.emit16(0x3039 | uint16(dn)<<9)
 	a.emit32(addr)
@@ -202,6 +233,12 @@ func (a *asm) movewAbsToDn(addr uint32, dn int) {
 func (a *asm) cmpiw(v uint16, dn int) {
 	a.emit16(0x0C40 | uint16(dn))
 	a.emit16(v)
+}
+
+// cmpil emits CMPI.L #imm32, Dn.
+func (a *asm) cmpil(v uint32, dn int) {
+	a.emit16(0x0C80 | uint16(dn))
+	a.emit32(v)
 }
 
 func (a *asm) notw(dn int) { a.emit16(0x4640 | uint16(dn)) }
@@ -235,9 +272,18 @@ func bootStubCode(sigAddr uint32) []byte {
 	a.cmpbDn(1, 0)
 	a.branch(ccBNE, "fail")
 	a.dbra(3, "chk")
-	a.movelAbsToDn(0x00020430, 0) // D0 = IP start LBA (header offset 0x30)
-	a.movelAbsToDn(0x00020434, 4) // D4 = IP size in bytes (offset 0x34)
-	a.movelImm(0x00026000, 2)     // D2 = IP destination address
+	// Copy sector 0 into Word RAM offset 0, so the main program in
+	// the boot sector user bytes from offset 0x200 onward lands at
+	// main window address 0x200200. For DDT 2 the destination latch
+	// is a Word RAM offset, not a bus address.
+	a.movebImmToAbs(0x10, 0xFF8003) // CDC destination = Word RAM
+	a.moveq(0, 0)                   // D0 = LBA 0
+	a.moveq(0, 2)                   // D2 = Word RAM offset 0
+	a.bsr("readsec")
+	a.movebImmToAbs(0x08, 0xFF8003) // CDC destination = PRG-RAM again
+	a.movelAbsToDn(0x00020430, 0)   // D0 = IP start LBA (header offset 0x30)
+	a.movelAbsToDn(0x00020434, 4)   // D4 = IP size in bytes (offset 0x34)
+	a.movelImm(0x00026000, 2)       // D2 = IP destination address
 	a.mark("load")
 	a.tstL(4)
 	a.branch(ccBLE, "done")
@@ -266,30 +312,151 @@ func bootStubCode(sigAddr uint32) []byte {
 	return a.finish()
 }
 
+// BIOS mailbox addresses in PRG-RAM (sub CPU absolute). The
+// trampolines below save the caller register image here, and the
+// Go BIOS services in bios.go read it and write the result block.
+const (
+	mbRequestAddr = 0x00025A00 // request byte: 0 idle, 1 pending
+	mbFamilyAddr  = 0x00025A01 // family byte: 0 cdbios, 1 buram, 2 cdboot
+	mbImageAddr   = 0x00025A04 // 15 longs: D0..D7, A0..A6
+	mbResultAddr  = 0x00025A40 // 4 longs: D0, D1, A0, A1
+	mbCCRAddr     = 0x00025A50 // result CCR word (low byte is the CCR)
+)
+
+// handlerStubCode assembles the BIOS handler block that lives
+// right after the boot code and its signature string in the stub
+// image: an RTE stub, an RTS stub, a fatal stub (sets the sub
+// flag to 0xEE and spins, mirroring the boot fail path), and the
+// three family trampolines for the jump table. A trampoline
+// saves D0-D7/A0-A6 into the mailbox register image with MOVEM,
+// stores its family byte, sets the request byte last, spins on
+// the request byte until the Go service clears it, restores
+// D0/D1/A0/A1 from the result block with MOVEM, loads the saved
+// CCR word into CCR (MOVEM does not touch CCR, so the CCR load
+// comes last), and returns. The block uses only relative branches
+// and absolute mailbox addresses, so its bytes do not depend on
+// where it is placed; base is still passed for label resolution.
+// It returns the code and the absolute addresses of each stub.
+func handlerStubCode(base int) (code []byte, rteAddr, rtsAddr, fatalAddr uint32, trampAddrs [3]uint32) {
+	a := newAsm(base)
+	a.mark("rte")
+	a.rte()
+	a.mark("rts")
+	a.rts()
+	a.mark("fatal")
+	a.movebImmToAbs(0xEE, 0xFF800F) // sub flag: fatal stub entry
+	a.branch(ccBRA, "fatal")
+	spinNames := [3]string{"spin0", "spin1", "spin2"}
+	trampNames := [3]string{"tramp0", "tramp1", "tramp2"}
+	for fam := 0; fam < 3; fam++ {
+		a.mark(trampNames[fam])
+		a.movemRegToAbs(0x7FFF, mbImageAddr) // save D0-D7/A0-A6
+		a.movebImmToAbs(uint8(fam), mbFamilyAddr)
+		a.movebImmToAbs(0x01, mbRequestAddr) // request byte set last
+		a.mark(spinNames[fam])
+		a.tstbAbs(mbRequestAddr)
+		a.branch(ccBNE, spinNames[fam])
+		a.movemAbsToReg(0x0303, mbResultAddr) // restore D0/D1/A0/A1
+		a.moveToCCRFromAbs(mbCCRAddr)
+		a.rts()
+	}
+	code = a.finish()
+	rteAddr = a.addr("rte")
+	rtsAddr = a.addr("rts")
+	fatalAddr = a.addr("fatal")
+	for fam := 0; fam < 3; fam++ {
+		trampAddrs[fam] = a.addr(trampNames[fam])
+	}
+	return code, rteAddr, rtsAddr, fatalAddr, trampAddrs
+}
+
+// JumpTableBase is the sub CPU address of the BIOS jump table in
+// the stub image. The table holds 14 six byte JMP absolute long
+// entries from 0x5EE0 to 0x5F33, and the RAM overlay window the
+// Unit serves for it spans 0x5EE0 to 0x5F3F (jumpTableSize
+// bytes). The _buram entry at 0x5F16 and the _cdbios entry at
+// 0x5F22 are the documented hard addresses real software calls.
+const JumpTableBase = 0x5EE0
+
+const jumpTableSize = 0x60 // 96 bytes: 0x5EE0..0x5F3F
+
 // BootStubImage builds the sub CPU boot stub image based at sub
-// CPU address 0. The image is 0x1000 bytes: vectors at 0 (SSP =
-// 0x000A0000, at the top of PRG-RAM) and 4 (PC = 0x00000200), code
-// at offset 0x200, and the 14 byte signature string SEGADISCSYSTEM
-// embedded right after the code. Everything else is zero.
+// CPU address 0. The image is 0x6000 bytes: vectors at 0 (SSP =
+// 0x000A0000, at the top of PRG-RAM) and 4 (PC = 0x00000200), an
+// ASCII ID string at 0x100, the boot code at offset 0x200 with
+// the 14 byte signature string SEGADISCSYSTEM embedded right
+// after it, the BIOS handler block (RTE and RTS stubs, a fatal
+// stub, and the three family trampolines) after the signature,
+// and the BIOS jump table at 0x5EE0. Vectors 2..23 and 32..63
+// point at the fatal stub, vector 24 (spurious) points at the
+// RTE stub, and autovectors 25..31 point at the jump table
+// level entries. Everything else is zero.
 //
 // The program is our own hand-written boot code, not a copy of
 // any Sega BIOS: it programs the CDC for PRG-RAM destination,
 // reads sector 0 into a PRG-RAM scratch page, verifies the
 // SEGADISCSYSTEM signature from the sector against its embedded
-// copy, loads the IP (initial program) sectors named by the
+// copy, copies sector 0 into Word RAM offset 0 with the CDC
+// destination set to Word RAM and then restored to PRG-RAM,
+// loads the IP (initial program) sectors named by the
 // sector 0 header fields at offsets 0x30 (start LBA) and 0x34
 // (size in bytes) to sub address 0x026000, sets the sub comm flag
 // to 1 and comm status 0 to 0xB007, and jumps to the IP. On a
 // signature mismatch it sets the sub flag to 0xEE and spins.
 func BootStubImage() []byte {
-	img := make([]byte, 0x1000)
+	img := make([]byte, 0x6000)
 	binary.BigEndian.PutUint32(img[0:], 0x000A0000)
 	binary.BigEndian.PutUint32(img[4:], 0x00000200)
+	copy(img[0x100:], "iTaK CD BIOS")
+
 	measure := bootStubCode(0)
 	sigAddr := uint32(0x200 + len(measure))
+	handlerBase := int(sigAddr) + len("SEGADISCSYSTEM")
+	hcode, rteAddr, rtsAddr, fatalAddr, trampAddrs := handlerStubCode(handlerBase)
+
+	putVec := func(n int, addr uint32) {
+		binary.BigEndian.PutUint32(img[n*4:], addr)
+	}
+	for v := 2; v <= 23; v++ {
+		putVec(v, fatalAddr)
+	}
+	putVec(24, rteAddr) // spurious interrupt: just return
+	levelEntries := [7]uint32{0x5EE0, 0x5EE6, 0x5EEC, 0x5EF2, 0x5EF8, 0x5EFE, 0x5F04}
+	for i, entry := range levelEntries {
+		putVec(25+i, entry) // autovectors 25..31: levels 1..7
+	}
+	for v := 32; v <= 63; v++ {
+		putVec(v, fatalAddr)
+	}
+
 	code := bootStubCode(sigAddr)
 	copy(img[0x200:], code)
 	copy(img[sigAddr:], "SEGADISCSYSTEM")
+	copy(img[handlerBase:], hcode)
+
+	// Jump table at 0x5EE0: JMP absolute long entries.
+	entries := [14]uint32{
+		rteAddr,       // 0x5EE0 _level1
+		rteAddr,       // 0x5EE6 _level2
+		rteAddr,       // 0x5EEC _level3
+		rteAddr,       // 0x5EF2 _level4
+		rteAddr,       // 0x5EF8 _level5
+		rteAddr,       // 0x5EFE _level6
+		rteAddr,       // 0x5F04 _level7
+		rtsAddr,       // 0x5F0A _usercall0
+		rtsAddr,       // 0x5F10 _usercall1
+		trampAddrs[1], // 0x5F16 _buram (hard address)
+		rtsAddr,       // 0x5F1C _usercall2
+		trampAddrs[0], // 0x5F22 _cdbios (hard address)
+		trampAddrs[2], // 0x5F28 _cdboot
+		rtsAddr,       // 0x5F2E _usercall3
+	}
+	for i, target := range entries {
+		off := JumpTableBase + i*6
+		img[off] = 0x4E
+		img[off+1] = 0xF9
+		binary.BigEndian.PutUint32(img[off+2:], target)
+	}
 	return img
 }
 
@@ -301,7 +468,16 @@ func BootStubImage() []byte {
 // (gate array RES = 1 at 0xA12000), waits for comm status 0 at
 // 0xA12020 to read 0x600D (the running IP), echoes the inverted
 // comm status 1 word into comm command 0 at 0xA12010, sets the
-// main comm flag at 0xA1200E, and idles.
+// main comm flag at 0xA1200E, and then hands over to a disc main
+// program when one is present, otherwise it idles.
+//
+// Disc main program convention for this synthesized stub: the
+// main program lives at boot sector offset 0x200, which is the
+// documented boot sector layout. The boot stub copies sector 0
+// into Word RAM, so that program sits at main window address
+// 0x200200. This stub requires the 8 byte marker ITAKMAIN at
+// 0x200200 before jumping to the program entry at 0x200208, so
+// discs without the marker keep the legacy idle behavior.
 func MainStubROM() []byte {
 	rom := make([]byte, 0x10000)
 	binary.BigEndian.PutUint32(rom[0:], 0x00FFFE00)
@@ -319,6 +495,13 @@ func MainStubROM() []byte {
 	a.notw(0)
 	a.movewDnToAbs(0, 0xA12010)     // comm command 0 = inverted status 1
 	a.movebImmToAbs(0x01, 0xA1200E) // main comm flag = 1
+	a.movelAbsToDn(0x00200200, 0)   // D0 = first marker longword
+	a.cmpil(0x4954414B, 0)          // "ITAK"
+	a.branch(ccBNE, "idle")
+	a.movelAbsToDn(0x00200204, 0) // D0 = second marker longword
+	a.cmpil(0x4D41494E, 0)        // "MAIN"
+	a.branch(ccBNE, "idle")
+	a.jmpAbs(0x00200208) // disc main program entry
 	a.mark("idle")
 	a.branch(ccBRA, "idle")
 	copy(rom[0x200:], a.finish())
