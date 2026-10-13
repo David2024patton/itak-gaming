@@ -3,7 +3,8 @@
 // A friend edge is one-directional: player A follows player B.
 // Following is how a player keeps track of people they play with,
 // so the app can show those people first and say whether any of
-// them are in a lobby right now. There is no consent handshake in
+// them are in a lobby or online with the app open right now.
+// There is no consent handshake in
 // this version: player names are already public on the global
 // leaderboard, so following a name reveals nothing that the board
 // does not already show. A follow is not mutual unless both
@@ -29,15 +30,19 @@ const (
 	MaxNameChars = 40
 )
 
-// Status values for a friend's presence.
+// Status values for a friend's presence, in precedence order:
+// in_lobby beats online beats offline.
 const (
 	// StatusInLobby means the friend is the host or a guest of a
 	// lobby that exists in the lobby registry right now.
 	StatusInLobby = "in_lobby"
-	// StatusOffline means the friend is not in any live lobby.
-	// This version of the service has no app-open presence, so
-	// offline says nothing about whether the friend's app is
-	// running; it only means "not in a lobby".
+	// StatusOnline means the friend's app pinged the presence
+	// endpoint within PresenceWindow (see presence.go) but the
+	// friend is not in a lobby.
+	StatusOnline = "online"
+	// StatusOffline means the friend is not in any live lobby
+	// and their app has not pinged recently: either it is closed
+	// or it has never pinged since the server started.
 	StatusOffline = "offline"
 )
 
