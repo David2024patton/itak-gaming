@@ -4,8 +4,9 @@ A from-scratch Sega Saturn emulator core in Go, written from
 published hardware documentation (the SH-2 and SH7604 manuals,
 the Saturn hardware and CD block references). Zero third-party
 dependencies. No BIOS bytes are used or shipped anywhere in
-this module; the eventual boot path is HLE (load the game's
-initial program and jump to its entry).
+this module; the boot path is HLE (system.BootDisc loads
+the game's initial program per the documented header
+fields and enters it, SAT-4).
 
 ## What exists in SAT-1
 
@@ -104,8 +105,16 @@ walk, and single-extent file reads. The Saturn IP header
 parse validates the exact 16-byte SEGA SEGASATURN
 signature and reads maker ID, product number, version,
 release date, device info, area symbols, peripheral list,
-title, and the master and slave stack addresses at 0xF0
-and 0xF8.
+title, the IP size at 0xE0, the master and slave stack
+addresses at 0xE8 and 0xEC, and the first read address
+and size at 0xF0 and 0xF4. SAT-4 corrected those
+offsets: the SAT-1 parse read the stack fields at
+0xF0 and 0xF8, which the published System ID layout
+(Sega's disc format documentation, as tabulated in
+the public Sega Retro reference) shows are the first
+read fields; the stack fields live at 0xE8 and 0xEC
+and the IP size at 0xE0 was not parsed at all before
+SAT-4.
 
 Gate: 11 test functions, 121 assertions over cue parsing,
 sector math, pregap handling, ISO9660 on a synthetic
@@ -543,6 +552,126 @@ assertions use the StateSize method, and the bad state
 test truncates a real snapshot, because version 3
 states are variable size.
 
+## SAT-4: HLE boot, libretro shell, enginetest (core complete)
+
+### system: BootDisc, the documented HLE boot
+
+BootDisc replaces the boot ROM with its documented
+transfers, and no boot ROM bytes are read or embedded
+(the BIOS window keeps reading zero). The attached
+image's System ID is re-verified, the IP named by the
+header IP size field is loaded from the start of the
+data area to Work RAM-H at 0x06002000, the boot ROM's
+own copies are made (the System ID at 0x06000C00 and
+the 32 parameter bytes at 0x060002A0), and the machine
+is left in the documented post boot state: the master
+SH-2 enters the IP at 0x06002100 (the first byte after
+the System ID) with the Stack-M stack pointer, the
+slave SH-2 resets to the same entry with the Stack-S
+pointer and stays held until the IP releases it with
+SMPC SSHON, the SMPC reports its power on status, and
+the sound chip and CD block wait for their SMPC ON
+commands with the CD block holding the image at
+standby. A zero stack field falls back to the
+conventional 0x06001000 power on stack (some published
+headers leave the fields zero). The host button mask
+survives BootDisc's internal reset: buttons are host
+input state, not machine state. The old power on
+seeding in Reset is kept for the device gates;
+BootDisc is the real path, and the enginetest below
+boots only through it.
+
+### libretro: the shell
+
+libretro/main.go follows the family pattern: core
+name "iTaK GoSaturn", extensions cue|iso, content by
+path only, booted through BootDisc. The framebuffer
+is presented at the machine's current TVMD size with
+SET_GEOMETRY on a change; base geometry 320x224, max
+640x480, aspect 4:3. Timing is declared 60.0 fps (the
+machine runs 477,273 master cycles per frame at
+28.6364 MHz, the NTSC rate; PAL is out of scope) and
+44,100 Hz stereo from the SCSP, pixel format
+XRGB8888. The pad maps the libretro standard ids to
+the Saturn digital pad letter for letter where the
+letters exist; Saturn C sits on R2 and Z on L2, and
+Select is unmapped (the Saturn pad has none).
+RETRO_MEMORY_SAVE_RAM is the backup RAM's logical
+32 KiB store, exposed directly from the bus.
+RETRO_MEMORY_SYSTEM_RAM is Work RAM Low followed by
+Work RAM High as one 2 MiB mirror cache with the GBA
+shell's hash sync discipline. Serialize goes through
+the version 3 system states. retro_reset resets and
+re-boots the loaded disc, because a bare reset parks
+the CPUs with no program.
+
+### enginetest: the full stack gate
+
+The enginetest package builds a synthetic 24 sector
+ISO (IP size 0x4000) whose IP is hand assembled SH-2
+(a small two pass assembler is part of the fixture).
+Booted only through BootDisc, the IP: releases the
+slave with SSHON and completes the 42/43 handshake;
+opens the CD block, walks the ISO root through the
+data port (reads synchronized one word per scanline
+on the SCU HBlank-IN status bit), reads PAYLOAD.BIN
+into Work RAM-L and checksums it against the fixture;
+programs the SAT-2 gate's VDP2 NBG0 plus VDP1 polygon
+display; uploads a 512 byte 68EC000 driver and a sine
+table through sound RAM, releases the sound CPU with
+SNDON, and the driver keys a PCM slot playing the
+table; reads the pad once through SMPC INTBACK; and
+round trips 32 bytes through the backup RAM odd byte
+path. Milestones land in order in a Work RAM-H block.
+
+Gate results (TestEnginetestDiscFullStack): all 7
+milestones set in order within 15 frames; framebuffer
+probes exact ((0,0) green, (1,0) red, (105,55) white,
+(99,55) black); the tone measures a period of exactly
+256.0 samples, 172.27 Hz, the table rate at unity
+pitch; the guest payload checksum equals the fixture
+checksum and the size reads 1000; the INTBACK report
+for the host set mask (Up, A, R, Start) is exactly
+F1 02 E3 7F; the backup read back is byte exact; a
+mid run save taken just after the sound starts (state
+size 4,241,176 bytes) restores to a byte identical
+continuation of state, framebuffer, and 44,100 audio
+samples. The same disc through the built desktop
+libgo_saturn.so in the shared go_backend enginetest
+harness reports ALL TESTS PASSED. The shell has its
+own in-process gates in libretro/main_test.go.
+
+Two defects were found and fixed on the way, both
+verified against the published documentation. The
+SAT-1 header parse read the stack fields at the
+first read offsets (above, in the cd section). And
+the SH-2 core executed opcode 0x0009 as MOVT R0: the
+manual gives MOVT the 0x0n29 encoding and 0x0009 is
+NOP, changing no register. The SAT-1 behavior was a
+directed choice of that slice; it corrupts R0 across
+every NOP delay slot whenever the T flag is set,
+which breaks real code, so SAT-4 corrects it to the
+manual (the one SAT-1 hand test pinning the old
+behavior now asserts the manual behavior; the corpus
+gates pass unchanged).
+
+### App wiring state
+
+Prepared locally, not pushed (the parent ships):
+go_backend/internal/core/types.go's Cores64BitOnly
+Saturn entry is now "Go Saturn" with libgo_saturn.so
+and extensions cue|iso, and the hardcoded Dart system
+grid in flutter_ui/lib/main.dart names libgo_saturn.so
+with exts .cue and .iso (.chd dropped: this core does
+not read it). tools/autobuild-server.sh has no 64-bit
+branch at all (it builds android-arm only and keeps no
+explicit core list), so there is nothing to add there
+yet: shipping any 64-bit core in the android-64bit
+build waits on the parent creating that pipeline
+branch (gomobile bind for android/arm64, a flutter
+build for android-arm64, and arm64 core asset
+staging).
+
 ## Slice roadmap
 
 - SAT-2: done. VDP2 backgrounds plus the VDP1 sprite
@@ -551,13 +680,37 @@ states are variable size.
 - SAT-3: done. SCU DMA, DSP, and timers with two-CPU
   delivery, SCSP audio with its 68EC000, the CD block
   command layer, SMPC behavior, and version 3 states.
-- SAT-4: BIOS HLE boot, libretro shell, real-game
-  engine test, and app wiring for the android-64bit
-  build.
+- SAT-4: done. HLE boot through BootDisc, the libretro
+  shell, the full stack enginetest gate, and the
+  android-64bit wiring preparation. The core is
+  complete; the remaining gaps are the honesty notes
+  below.
 
 ## Honesty notes
 
-- No BIOS bytes anywhere; HLE boot arrives in SAT-4.
+- No BIOS bytes anywhere; the boot is the documented
+  HLE in system/boot.go.
+- The SCSP DSP executes a project subset encoding:
+  the FH-1 microprogram encoding is not published in
+  ST-77, so real game FH-1 microcode will not run on
+  it (SAT-3 note, unchanged).
+- CD block Put Sector Data is rejected and Copy and
+  Move Sector are unimplemented (SAT-3 note,
+  unchanged).
+- The m68ec000 corpus gate stays deferred: no Tom
+  Harte 680x0 corpus exists in this workspace or the
+  SingleStepTests tree, and the ProcessorTests
+  repository's 680x0 tree did not fetch (two HTTPS
+  tarball attempts against the public repo path
+  returned Not Found). The chip is gated by 21 hand
+  vector tests and the pinned address error frame.
+- PAL timing is out of scope: the shell declares the
+  NTSC 60.0 fps frame and the machine runs the NTSC
+  cycle budget.
+- The shell's SYSTEM_RAM is a mirror cache over the
+  two disjoint Work RAM regions, and its retro_reset
+  re-boots the disc (see the SAT-4 section for both
+  choices and the pad map choice).
 - The SH-2 caches are not simulated; CCR is stored only.
 - Bus arbitration is round robin and flat.
 - The divide unit answers instantly; its hardware
