@@ -5,13 +5,22 @@ package arm7tdmi
 func (c *CPU) Step() int {
 	// A pending IRQ is taken at the instruction boundary,
 	// before the instruction in the execute stage runs, and
-	// also while the core is halted (an interrupt is what
-	// ends a halt on hardware). The link value follows the
-	// exception convention: it is the address of the
-	// instruction that was about to execute, plus 4, so the
-	// handler returns with SUBS PC, LR, #4 to exactly that
-	// instruction.
+	// also while the core is halted: an accepted interrupt
+	// is what ends a halt on hardware, so the entry clears
+	// Halted and the IRQ handler code actually runs. That
+	// matters beyond the halt itself: a BIOS wait (Halt,
+	// IntrWait) completes through the BIOS dispatcher, and
+	// the dispatcher is IRQ handler code, so leaving
+	// Halted set here would freeze the core inside the
+	// exception entry with the dispatcher unreachable and
+	// the wait undecidable (found by the Anguna gate: the
+	// game sat halted in IRQ mode at the vector forever).
+	// The link value follows the exception convention: it
+	// is the address of the instruction that was about to
+	// execute, plus 4, so the handler returns with SUBS PC,
+	// LR, #4 to exactly that instruction.
 	if c.IRQLine && c.CPSR&BitI == 0 {
+		c.Halted = false
 		if c.Thumb() {
 			return c.exception(0x18, ModeIRQ, c.R[15])
 		}
