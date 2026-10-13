@@ -22,6 +22,13 @@
 // it steps only the YM2612 timers, in master clocks, so the system
 // can move them at scanline boundaries; Produce accounts for the
 // stepped time through a serialized ledger (see AdvanceClocks).
+//
+// RenderYMTo(clock int64) was added for timestamped register
+// writes: it renders the pending FM span up to an emulated moment
+// (YM2612 master clocks since power-on), so a write that lands
+// right after it, driven by the bus with a CPU clock, takes
+// effect at its true position inside the frame instead of at
+// frame end. DAC sample streams depend on it.
 package sound
 
 import (
@@ -58,11 +65,17 @@ type Sound struct {
 	// FM resampler state: fmBuf holds native-rate stereo samples,
 	// fmPrev is the last native sample of the previous batch and
 	// fmAcc is how far (in native samples, 0..1) the next output
-	// frame's position has advanced past it.
-	fmBuf   []float32
-	fmPrevL float32
-	fmPrevR float32
-	fmAcc   float64
+	// frame's position has advanced past it. preRendered counts
+	// the samples at the head of fmBuf that timestamped writes
+	// (RenderYMTo) already generated for the next Produce window;
+	// it is always zero between frames, when states are taken, so
+	// it is not serialized (the samples themselves are regenerated
+	// identically from the serialized engine and stream state).
+	fmBuf       []float32
+	fmPrevL     float32
+	fmPrevR     float32
+	fmAcc       float64
+	preRendered int
 
 	psgWrites int // diagnostic counters: chip register writes seen
 	ymWrites  int
@@ -120,7 +133,11 @@ func (s *Sound) WritePSG(val uint8) { s.psgWrites++; s.psg.Write(val) }
 //	advLedger i64(8): timer clocks the system stepped ahead of the
 //	render loop (see AdvanceClocks); without it a restore would
 //	step that span of timer time a second time or not at all.
-const serializeSize = 1928
+//	genClock i64(8): emulated time the render stream has reached
+//	(see RenderYMTo); without it a restore could not place
+//	timestamped writes against the stream and would skip or
+//	double-render the span around the save point.
+const serializeSize = 1936
 
 // psgStateOffset is the offset of the PSG state region in the layout.
 const psgStateOffset = 520
@@ -195,6 +212,29 @@ func (s *Sound) AdvanceClocks(cycles uint32) {
 	s.ym.advLedger += int64(cycles)
 }
 
+// RenderYMTo renders the FM stream forward to the given emulated
+// moment, in YM2612 master clocks since power-on (on the Genesis
+// the YM2612 clock equals the 68000 clock). The bus calls this
+// with the writing CPU's current time just before a register
+// write lands, so the pending span is rendered with the register
+// values that were in force during it and the write takes effect
+// at its true position inside the frame. Without it, a DAC
+// stream writing register 0x2A hundreds of times per frame would
+// be heard as only its last byte, held for the whole frame.
+// Rendering happens in whole native samples (144 clocks); a
+// sub-sample remainder stays pending for the next call, so many
+// small advances cost nothing until a full sample is owed.
+// Timers ride along through the render loop's ledger accounting,
+// exactly as if Produce had generated the span. A clock at or
+// behind the rendered position renders nothing.
+func (s *Sound) RenderYMTo(clock int64) {
+	pending := clock - s.ym.genClock
+	if pending < 144 {
+		return
+	}
+	s.ymGenerate(int(pending / 144))
+}
+
 // Produce advances both chips by the time owed for frames output
 // frames and returns exactly frames interleaved stereo pairs. The
 // PSG runs as it always has (native samples at the output rate,
@@ -215,17 +255,21 @@ func (s *Sound) Produce(frames int) []int16 {
 	buf, count := s.psg.GetBuffer()
 	s.psg.ResetBuffer()
 
-	// Generate the native-rate FM samples this call spans. The
-	// next output frame sits at native position -fmAcc relative to
-	// the first new sample, with the previous batch's last sample
-	// at position -1.
+	// Generate the native-rate FM samples this call spans, on top
+	// of any already rendered into the head of the buffer by
+	// timestamped writes (RenderYMTo). The next output frame sits
+	// at native position -fmAcc relative to the first sample of
+	// the window, with the previous batch's last sample at
+	// position -1.
 	n := 0
 	if frames > 0 {
 		n = int(float64(frames)*ymRatio-s.fmAcc) + 1
 		if n < 0 {
 			n = 0
 		}
-		s.ymGenerate(n)
+		if s.preRendered < n {
+			s.ymGenerate(n - s.preRendered)
+		}
 	}
 
 	need := frames * 2
@@ -269,6 +313,16 @@ func (s *Sound) Produce(frames int) []int16 {
 		s.fmPrevL = s.fmBuf[2*(n-1)]
 		s.fmPrevR = s.fmBuf[2*(n-1)+1]
 		s.fmAcc = float64(n) + s.fmAcc - float64(frames)*ymRatio
+		// Samples the timestamped writes rendered past this
+		// window (their emulated moment falls inside the next
+		// one) carry over as the head of the next window; the
+		// rest of the buffer is scratch.
+		if left := s.preRendered - n; left > 0 {
+			copy(s.fmBuf, s.fmBuf[2*n:2*(n+left)])
+			s.preRendered = left
+		} else {
+			s.preRendered = 0
+		}
 	}
 	return s.out
 }
@@ -356,6 +410,7 @@ func (s *Sound) Serialize(buf []byte) error {
 		}
 	}
 	binary.LittleEndian.PutUint64(b[off:off+8], uint64(s.ym.advLedger))
+	binary.LittleEndian.PutUint64(b[off+8:off+16], uint64(s.ym.genClock))
 	return nil
 }
 
@@ -411,5 +466,11 @@ func (s *Sound) Deserialize(buf []byte) error {
 		}
 	}
 	s.ym.advLedger = int64(binary.LittleEndian.Uint64(b[off : off+8]))
+	s.ym.genClock = int64(binary.LittleEndian.Uint64(b[off+8 : off+16]))
+	// fmBuf content is scratch and preRendered is always zero at
+	// frame boundaries, where states are taken; make that true
+	// here too so a mid-stream restore cannot resurrect stale
+	// pending samples.
+	s.preRendered = 0
 	return nil
 }
