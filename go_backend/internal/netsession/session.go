@@ -51,9 +51,11 @@ type Config struct {
 	SilenceLimit time.Duration
 }
 
-// rosterMember is one entry of the server's roster notice
-// (PROTOCOL.md section 3): a room member's name and role.
-type rosterMember struct {
+// RosterMember is one entry of the server's roster notice
+// (PROTOCOL.md section 3): a room member's name and role
+// ("host", "guest", or "spectator"). Exported because the
+// mobile bridge hands the list to the UI (roster.go).
+type RosterMember struct {
 	Name string `json:"name"`
 	Role string `json:"role"`
 }
@@ -81,7 +83,7 @@ type envelope struct {
 	Cheats   []string `json:"cheats,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 	// roster notice (server minted)
-	Members []rosterMember `json:"members,omitempty"`
+	Members []RosterMember `json:"members,omitempty"`
 	// input
 	Frame   int    `json:"frame,omitempty"`
 	Buttons uint16 `json:"buttons,omitempty"`
@@ -221,6 +223,11 @@ type Session struct {
 	matchEndReason string
 	matchEndSet    bool
 	seatAssigns    []SeatAssign
+
+	// roster is the latest member list the server sent
+	// (roster.go), guarded by mu like the rest. Empty until
+	// the first roster notice lands.
+	roster []RosterMember
 
 	// started reports whether Start has launched the reader;
 	// StartNextMatch refuses to run without it.
