@@ -15,12 +15,18 @@ No third-party Go dependencies.
 + system skeleton.** The processor runs real MIPS code
 with full address translation.
 
-**N64-2 (this slice): the RSP.** The signal processor is
-a full second computer: its own scalar MIPS I core, its
-SP DMA engine, and the complete vector unit, all wired
-into the bus and the system interleave. Nothing renders
-yet, and games cannot boot until the PIF/CIC slice
-lands.
+**N64-2: the RSP.** The signal processor is a full
+second computer: its own scalar MIPS I core, its SP DMA
+engine, and the complete vector unit, all wired into
+the bus and the system interleave.
+
+**N64-3 (this slice): the RDP, VI, and AI.** The display
+processor consumes display lists from RDRAM or RSP DMEM
+and rasterizes into RDRAM; the VI presents the
+programmed color image as the system framebuffer; the
+AI streams stereo audio from RDRAM at the programmed
+DAC rate. Games still cannot boot until the PIF/CIC
+slice lands.
 
 - `chips/r4300`: the VR4300 (MIPS III + 64-bit
   extensions). Full integer set including the 64-bit loads
@@ -83,11 +89,79 @@ lands.
   documented start-element rotation, and SWV. Microcode
   is cart-supplied data that this processor executes;
   none is embedded.
+- `rdp`: the Reality Display Processor. A command
+  processor executes 64-bit display-list words from
+  RDRAM (DP_START/DP_END), or from RSP DMEM when the
+  XBUS/DMEM bit in DP_STATUS is set; the DP registers
+  are reachable both on the bus page and through the
+  RSP's CP0 window (registers 8..15), and execution is
+  synchronous, completing inside the DP_END write.
+  FULLSYNC raises the DP interrupt through MI; the
+  pipe, tile, and load syncs are ordering no-ops in this
+  model. The full state command set is implemented
+  (image and tile registers, all color registers,
+  scissor, primitive depth, convert and key registers,
+  other modes and combine mode as the single merged
+  register the RDP receives). TMEM is 4 KB with eight
+  tile descriptors; LOADBLOCK (with the DxT source-line
+  walk), LOADTILE, and LOADTLUT (with the documented
+  palette quadrication) feed it, and Load Block and
+  Load Tile produce identical TMEM for identical
+  content. Texture sampling covers RGBA 16/32, YUV 16
+  (the documented two-stage conversion through the
+  programmed K coefficients), CI 4/8 through the TLUT
+  (RGBA or IA palette type), IA 3/4/8/16, and I 4/8,
+  with wrap, mirror, and clamp addressing per axis and
+  the tile shift fields. The rasterizer walks
+  triangles in the documented coefficient format (edge
+  slopes 16.16, Y in 11.2 subpixel units), evaluates
+  shade, texture, and z with the exact plane equations,
+  applies perspective division through the W
+  coefficient, and runs the documented per-pixel
+  pipeline: z compare in the four z modes over an
+  18-bit internal depth, chroma key, the two-cycle
+  color combiner with the full documented mux tables,
+  and the blender (the documented (P*A + M*B) / (A + B)
+  equation over the documented input selects) with
+  coverage algebra per the cvg_dest mode. Texture
+  rectangles (both orientations) and fill rectangles
+  follow the documented inclusive/exclusive corner
+  rules per cycle mode; the fill color uses the
+  documented multi-pixel packing for 8 and 16-bit
+  images.
+- `vi`: the video interface. The full register set
+  (control, origin, width, interrupt line, burst and
+  sync timing, video windows, and the 2.10 fixed-point
+  X/Y scales) with an exact rational half-line counter:
+  a field lasts exactly the 1,562,500-cycle system
+  frame spread over the programmed half-line total,
+  the VI interrupt fires once per field at VI_INTR
+  (writing VI_V_CURRENT clears it), and the field bit
+  toggles in interlaced totals. Present() scales the
+  programmed RGBA5551 or RGBA8888 color image to the
+  video window as XRGB8888, with the documented square
+  root gamma table applied when gamma is enabled;
+  the resampling filters, dither, and divot are not
+  applied (their registers are stored).
+- `ai`: the audio interface. DRAM address, length,
+  control, status, DAC rate, and bit rate registers
+  with the documented read mirrors (write-only
+  registers read back the current remaining length)
+  and the two-deep transfer queue. Sample rate is the
+  NTSC video clock over (DACRATE + 1); consumption is
+  exact rational accumulation from the CPU clock.
+  Following the hardware-test documentation, the AI
+  interrupt fires when a transfer STARTS (so software
+  can queue the next buffer early) and is acknowledged
+  by writing STATUS. Samples are big-endian signed
+  16-bit stereo read from RDRAM at consumption time.
 - `bus`: the physical map. RDRAM (4 MB, or 8 MB with the
   Expansion Pak option) with mirroring, RDRAM register
   page, the SP memory window, SP registers, and SP PC
   routed to the real RSP (its interrupt output drives
-  the MI SP bit), DP/VI/AI/RI/SI
+  the MI SP bit), the DP page routed to the RDP, the
+  VI and AI pages routed to their devices (each device
+  interrupt drives its MI bit), RI/SI
   register storage, MI with the documented paired-bit
   mask semantics and the interrupt line wired to the CPU,
   and the PI with real DMA between the cartridge window
@@ -101,13 +175,17 @@ lands.
   checksum values. No boot code or CIC seed data is
   embedded anywhere in this core.
 - `system`: the machine. LoadROM, RunFrame with a
-  93.75 MHz / 60 frame budget (1,562,500 cycles), a blank
-  320x240 XRGB8888 framebuffer, SetButtons in the
-  standard controller bit layout, and versioned
-  Serialize/Deserialize. Version 2 states add the full
-  RSP block, the MI interrupt and mask registers, and
-  the interleave remainder (4,205,131 bytes with 4 MB;
-  8,399,435 with 8 MB). While the RSP is not halted it
+  93.75 MHz / 60 frame budget (1,562,500 cycles), the
+  framebuffer presented by the VI (blank 320x240 when
+  the VI is off), AudioBuffer draining the AI at the
+  programmed rate, SetButtons in the standard
+  controller bit layout, and versioned
+  Serialize/Deserialize. Version 3 states add the RDP
+  block (registers, tiles, TMEM, and the hidden
+  coverage store), the VI block, and the AI queue block
+  (6,307,239 bytes with 4 MB; 12,598,695 with 8 MB).
+  The VI and AI advance on the cycles each RunCycles
+  call actually consumed. While the RSP is not halted it
   executes interleaved with the CPU: 2 RSP cycles per 3
   CPU cycles (62.5 MHz against 93.75 MHz), credited
   exactly after every CPU step at system step
@@ -163,6 +241,39 @@ it, and the RSP computes an 8-lane dot product
 the MI SP interrupt, and a state saved while the RSP
 was mid-program restores and finishes byte-identically.
 
+The RDP, VI, and AI are gated at two levels. Package
+tests pin the DP register and freeze behavior, the
+FULLSYNC interrupt, fill packing for 8, 16, and 32-bit
+images, Load Block versus Load Tile TMEM equality,
+combiner arithmetic (including the documented 255/256
+scaling), the blender equation against worked values,
+scissor clipping, CI4 TLUT lookup, IA and I expansion,
+YUV conversion of the classic red sample to exactly
+(255, 0, 0), the three-texel filter's diagonal weights,
+the primitive-depth path, and state round trips. The
+VI tests pin the NTSC 240p interrupt (exactly once per
+field), V_CURRENT behavior, and presentation probes;
+the AI tests pin the start-of-transfer interrupt, the
+length mirror reads, and a 32,006 Hz sine measured from
+drained samples. System gates run a hand-built display
+list through the DP registers on the real CPU: a
+filled background, a shaded z-tested triangle (probe
+0xC88D at (60,50) with the gradient reading exactly
+20), a closer magenta triangle winning the overlap at
+(100,80), a farther green one losing it, a
+LOADBLOCK-fed textured rect (texel probes 0x29E1 and
+0xFFE1), a DP interrupt counted by the CPU's handler,
+and VI framebuffer probes matching the color image.
+The same style of list runs out of RSP DMEM through
+the RSP's CP0 DP window. The AI system gate plays a
+1 kHz sine through two queued transfers: 997.69 Hz
+measured against the 1000.19 Hz ideal, exactly two
+interrupts (one per transfer start), and a decreasing
+LENGTH readback. A determinism gate executes the scene
+with audio playing, saves mid-run, restores into a
+fresh machine, and requires byte-identical state,
+framebuffer, and continuation audio.
+
 The open-source n64-systemtest homebrew ROM would be a
 useful extra gate, but its official GitHub has no
 releases and no committed binary (it is a Rust project
@@ -175,8 +286,6 @@ not a gate today.
 
 ## Roadmap
 
-- **N64-3:** RDP software rasterizer (its own command
-  processor), VI output, AI audio.
 - **N64-4:** PIF/CIC boot (the CIC seed exchange
   implemented from documentation, no dumped boot code),
   the libretro shell, a real-game enginetest, and app
@@ -254,3 +363,73 @@ not a gate today.
   bits low and the greater-or-equal bits high (the
   register-format figure and the Operation sections,
   against one chapter sentence).
+- RDP execution is synchronous: a list runs to
+  completion inside the DP_END write (or inside the
+  status write that clears freeze on a pending list),
+  so the DP busy bits always read clear, DP_CURRENT
+  reads START before and END after, and DP_CLOCK is an
+  activity counter (total command words processed)
+  rather than a wall clock. Flush is stored and
+  reported but has no separate effect.
+- Rasterizer coverage is computed from horizontal
+  fractional coverage in eighths; vertical coverage is
+  treated as full because the model snaps edges to
+  scanlines. Attribute interpolation evaluates the
+  exact plane equations (Dx and Dy derivatives anchored
+  at the top vertex) instead of stepping the De
+  derivatives along the major edge as hardware does;
+  the planes are the same for well-formed coefficient
+  sets.
+- The texture filter in 2x2 sample mode is the
+  documented three-texel triangle blend, not a
+  four-sample bilinear average. The mid-texel mode
+  applies its half-texel offset only (the stored
+  register behavior beyond that is not modeled).
+  Sharpen and detail texture modes fall back to the
+  LOD path. LOD level selection uses derivative
+  magnitudes at the top vertex and the primitive's LOD
+  fraction, clamped by the Set Prim Color minimum
+  level; texel1 in 2-cycle mode is the next tile
+  descriptor.
+- Depth: the stored RDRAM word keeps (z18 >> 2) in the
+  high 14 bits and a 2-bit dz code decoded through the
+  table {16, 64, 256, 1024} in z18 units, so dz is
+  exact only at those four magnitudes. Interpenetrating
+  and decal z modes share the (z <= stored + dz) test
+  in this model.
+- Coverage for 16-bit color images lives in a side
+  store inside the RDP (serialized with its state)
+  rather than in RDRAM, so RDRAM pixels stay pure
+  RGBA5551; hardware hides three coverage bits in the
+  pixel's low bits. For 32-bit images the coverage
+  rides the stored alpha's low bits under the clamp,
+  wrap, and zap cvg_dest modes, as on hardware.
+- The documented TMEM odd-line 32-bit half interleave
+  is not reproduced: loads write the logical texel
+  layout and fetches read it back, which keeps Load
+  Block and Load Tile in exact agreement and sampling
+  exact for normal images; only software that pokes
+  TMEM and expects the interleave pattern back would
+  notice.
+- The combiner NOISE input and the noise dither modes
+  use a deterministic per-pixel hash in place of the
+  hardware's free-running noise counter, so save and
+  restore stay bit-identical. RGB dither applies the
+  standard Bayer and magic-square matrices as a
+  threshold offset before 5-bit quantization, an
+  approximation of the hardware dither.
+- VI presentation samples with the programmed scales
+  but applies no resampling filter: the dedither,
+  divot, and gamma-dither stages are stored, not
+  applied; gamma uses a square root table (the
+  documented curve is approximately gamma 2.0). The
+  interlaced odd-field one-line-early interrupt quirk
+  is not modeled.
+- AI: the documented delayed-carry quirk (a transfer
+  ending exactly on an 8 KiB page boundary bumps the
+  next transfer's address) is not modeled. A LENGTH
+  write while both queue slots are full replaces the
+  pending transfer (hardware ignores it). The STATUS
+  COUNT field reads a DAC counter approximation. The
+  undrained output buffer is not part of the save
+  state; drain before saving.
