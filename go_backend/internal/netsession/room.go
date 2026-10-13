@@ -30,7 +30,7 @@ func (s *Session) roomPhase() error {
 		s.mu.Lock()
 		s.localReady = true
 		s.mu.Unlock()
-		_ = s.sendEnv(envelope{Type: "hello", Player: s.cfg.PlayerName})
+		_ = s.sendEnv(s.helloEnv())
 		_ = s.sendEnv(envelope{Type: "ready"})
 		return nil
 	}
@@ -38,7 +38,7 @@ func (s *Session) roomPhase() error {
 	if countdown <= 0 {
 		countdown = defaultCountdown
 	}
-	_ = s.sendEnv(envelope{Type: "hello", Player: s.cfg.PlayerName})
+	_ = s.sendEnv(s.helloEnv())
 	deadline := time.Now().Add(600 * time.Second)
 	var helloAt, readyAt time.Time
 	for {
@@ -86,7 +86,7 @@ func (s *Session) roomPhase() error {
 		// the peer's socket finished joining are lost.
 		if present && name == "" && time.Since(helloAt) > time.Second {
 			helloAt = time.Now()
-			_ = s.sendEnv(envelope{Type: "hello", Player: s.cfg.PlayerName})
+			_ = s.sendEnv(s.helloEnv())
 		}
 		s.mu.Lock()
 		lr := s.localReady
