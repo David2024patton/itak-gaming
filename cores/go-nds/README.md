@@ -7,13 +7,16 @@ bundles no BIOS, no firmware, and no game data, and it has zero
 third-party Go dependencies.
 
 DS-1 delivered both CPUs, the dual bus, cartridge header
-foundations, and the system skeleton. DS-2 (this slice) adds
-both 2D video engines with VRAM bank assignment and display
-capture, timers, both DMA engines, IPC, per-CPU interrupt
-controllers, the game card command model, the documented
-minimal stubs (touchscreen, RTC, AUX SPI save memory, and a
-generated firmware image), and the full direct boot. Audio,
-the 3D engine, and wireless are later slices (roadmap below).
+foundations, and the system skeleton. DS-2 added both 2D
+video engines with VRAM bank assignment and display capture,
+timers, both DMA engines, IPC, per-CPU interrupt controllers,
+the game card command model, the documented minimal stubs
+(touchscreen, RTC, AUX SPI save memory, and a generated
+firmware image), and the full direct boot. DS-3 (this slice)
+adds the 3D geometry and rendering engine feeding engine A's
+BG0, the 16-channel sound unit with capture, and the
+microphone path through the touchscreen ADC. Wireless stays
+a documented stub (roadmap below).
 
 ## Package layout
 
@@ -55,19 +58,44 @@ the 3D engine, and wireless are later slices (roadmap below).
   write-1-to-acknowledge IF), four GBA-style timers per CPU
   (prescalers, cascade, IRQ), ARM9 DMA (immediate, VBlank,
   HBlank, display-start, main-memory-display, card, GBA cart,
-  and geometry FIFO timing; GX FIFO words land in a counting
-  sink exposed for DS-3), ARM7 DMA (GBA modes; the special
+  and geometry FIFO timing; the FIFO port itself is claimed
+  by the system hook for the gx package since DS-3), ARM7 DMA (GBA modes; the special
   timing has no source in this module and completes cleanly),
   IPCSYNC and the 16-word IPC FIFOs with their IRQ
   conditions, the game card command unit (see the card note
   under Honesty), an AUX SPI 512-byte EEPROM save memory
   exposed as `Machine.SaveRAM()`, the ARM7 SPI bus (power
-  stub, generated firmware flash, touchscreen ADC), and the
-  RTC stub.
+  stub, generated firmware flash, touchscreen ADC whose aux
+  channel 6 is the microphone input since DS-3), and the RTC
+  stub.
+- `gx`: the 3D geometry and rendering engine (DS-3). The
+  packed GXFIFO port and the direct command ports feed a
+  256-entry FIFO plus 4-entry pipe drained by an executor
+  implementing the full documented command set: the matrix
+  unit (four current matrices, projection and texture stacks
+  of 1, position/vector stacks of 31 plus the documented
+  entry-31 overflow behavior), polygon and vertex assembly
+  (2048 polygons, 6144 vertices, with the GXSTAT and
+  RAM_COUNT overflow reporting), the 4-light lighting model
+  evaluated per vertex at NORMAL time, all eight texture
+  formats including 4x4 compressed, and the test commands
+  with their result readbacks. SWAP_BUFFERS defers to the
+  next VBlank, where the rendering engine draws the swapped
+  list into a 256x192 layer (clipping, viewport, per-span
+  perspective texture interpolation, 24-bit depth, the
+  documented translucent blending and fog) that the video
+  package consumes as engine A's BG0 through the `Line3D`
+  provider.
+- `audio`: the DS sound unit (DS-3) on the ARM7 IO page: 16
+  channels (PCM8, PCM16, IMA ADPCM with the documented step
+  and index tables, PSG squares on channels 8 to 13, noise
+  on 14 and 15), the stereo mixer at 32,768 Hz with master
+  volume, per-side source selects, and SOUNDBIAS, and the
+  two sound capture units writing the mix back to memory.
 - `video`: both 2D engines and display capture. Engines fetch
   through the VRAMCNT bank assignment layer (BG A/B, OBJ A/B,
-  and extended palette spaces built from the VRAMCNT bytes;
-  texture slots are DS-3). Text, affine, affine-extended, and
+  extended palette spaces, and the texture spaces, all built
+  from the VRAMCNT bytes). Text, affine, affine-extended, and
   bitmap backgrounds including the mode 6 large bitmap, OBJ
   with bitmap sprites and extended palettes, windows, alpha
   blending and brightness, per-engine master brightness, the
@@ -163,6 +191,32 @@ under `testroms/` (gitignored, never committed).
   a mid-run save, and a restored continuation with identical
   dual framebuffers and identical state bytes.
 
+- DS-3 gates (all synthetic): identity clip matrix readback
+  bit-exact against the loaded matrix, POS_TEST matching a
+  hand-computed transform, matrix stack pointer and overflow
+  behavior across 32 pushes, packed GXFIFO command decode,
+  FIFO IRQ mode conditions, RAM_COUNT and the swap pause, a
+  red triangle covering the screen center and not a corner,
+  textured quads sampling exact texels (256-color palette,
+  A3I5 alpha blended over the clear color to the documented
+  values, a 4x4 compressed block rendering its four
+  hand-computed colors), nearer-quad depth wins, the
+  equal-depth flag drawing a second polygon the plain case
+  rejects, wireframe edges with a transparent interior, toon
+  table shading, fog at full density, the clear image bitmap
+  rear plane, a PCM16 loop tone measured within 2 percent,
+  ADPCM decode of an encoded sine with bounded error, a PSG
+  square pitch measured within 2 percent, pan full-left
+  zeroing the right channel, capture RAM matching the drained
+  output sample for sample, microphone ADC values through
+  the SPI path including the idle center, and the DS-3
+  determinism gate: two quads (flat translucent near,
+  textured far) with fog on, a PCM loop tone plus a PSG
+  square, a mid-run save, and a restored continuation with
+  identical dual framebuffers, identical next 2,048 stereo
+  audio samples (4,382 int16 values compared), and identical
+  state bytes.
+
 ## Boot approach: no BIOS, ever
 
 No DS BIOS or firmware image is shipped, needed, or accepted
@@ -243,12 +297,14 @@ state, and any other command returns a zero-filled block.
   address latched by the DISP_MMEM_FIFO register; the display
   FIFO itself is not modeled. Capture source A is engine A's
   composed line before master brightness (the hardware's
-  3D+2D mix, here 2D only until DS-3); source B is read from
-  a VRAM bank at the same coordinates the write offset
-  addresses; capture completes at the end of the last
-  captured line. On engine A a BG0 selected as the 3D layer
-  (DISPCNT bit 3) renders transparent and the condition is
-  exposed as `Video.BG0Is3D` until the DS-3 engine lands.
+  3D+2D mix; since DS-3 the 3D layer takes part through the
+  same BG0 composition); source B is read from a VRAM bank
+  at the same coordinates the write offset addresses;
+  capture completes at the end of the last captured line. On
+  engine A a BG0 selected as the 3D layer (DISPCNT bit 3) is
+  filled by the gx package through the `Video.Line3D`
+  provider, and the condition stays exposed as
+  `Video.BG0Is3D`.
   Mode 6 on engine B behaves as mode 5, and the mode 6 large
   bitmap reads from BG space offset 0. Mosaic quantizes the
   fetch coordinates (a simplification of the hardware's
@@ -257,6 +313,93 @@ state, and any other command returns a zero-filled block.
   The published VRAMCNT tables for banks F and G carry
   overlapping mode encodings; the resolution used here is
   documented in `video/vram.go`.
+- Correction found in DS-3: DS-2 decoded the VRAMCNT byte
+  layout shifted by one bit (its enable was bit 0 and its
+  MST bits 1-2, with fixtures written in that same private
+  convention, so its gates passed self-consistently). The
+  published GBATEK bank table puts MST at bits 0-2, OFS at
+  bits 3-4, and the enable at bit 7 (a BG A texture bank is
+  0x81, not 0x03). DS-3 rewrote the decode and the fixtures
+  to the published layout, including bank C MST 4 (BG B),
+  bank D MST 4 (OBJ B), the F/G extended-palette slot pairs,
+  banks A/B MST 2 (OBJ A only, at the OFS-selected 128 KB),
+  and bank I MST 2 (OBJ B at offset 0). Published
+  documentation wins over the earlier code, per this
+  module's standing rule.
+- DS-3 geometry and rendering model choices: the geometry
+  engine executes commands eagerly as they are written (the
+  hardware's execution timing is not modeled); the
+  rendering engine draws the whole display list at the
+  VBlank swap rather than per scanline, so mid-frame GX
+  register changes apply from the next frame. Clipping is
+  standard homogeneous clipping against the six view-volume
+  planes (the hardware's near-plane behavior simplified, as
+  briefed); a polygon crossing the far plane with
+  POLYGON_ATTR bit 12 clear is dropped whole, and clipped
+  strip remainders stay part of their polygon. RAM_COUNT
+  counts the buffer being built (the counts reset at the
+  swap, as documented). TEXIMAGE_PARAM and PLTT_BASE latch
+  into each polygon at BEGIN_VTXS. Lighting evaluates the
+  documented equations in float64 with 0..1 components and
+  rounds to 5-bit (the hardware's fixed-point rounding may
+  differ by one LSB); with the shininess table disabled the
+  raw squared specular level is used, which GBATEK
+  describes as equivalent to the table holding linearly
+  increasing values. Shadow shading mode falls back to
+  modulation. EDGE_COLOR is stored only (edge marking is
+  not drawn); DISP_1DOT_DEPTH drives the documented 1-dot
+  polygon rule (a failing 1-dot polygon is skipped whole;
+  the hardware nuance of rendering it with its first
+  vertex's attributes is not implemented). The equal-depth
+  tolerance is GBATEK's fixed plus/minus 0x200 of the 24-bit
+  depth (it is not derived from DISP_1DOT_DEPTH; the DS-3
+  brief's guess there was wrong and the document wins).
+  SWAP_BUFFERS bit 1 follows GBATEK (0 selects Z depth, 1
+  selects W depth), the reverse of the brief's reading; the
+  Z depth is ((z+w) times 0xFFFFFF)/(2w) and the W depth is
+  w shifted left 8 (W = 1.0 maps to 0x100000), both clamped
+  to 24 bits. Translucent Y-sorting uses the polygon's
+  maximum screen Y ascending, stable for ties. The span
+  rules follow GBATEK's polygon-size notes: opaque polygons
+  without edge marking or anti-aliasing exclude their lower
+  and right edges; translucent, edge-marked, and
+  anti-aliased polygons render full size; anti-aliasing
+  itself is not computed (it changes only the size rule).
+  GXSTAT bit 15 written set clears the stack error and
+  resets the projection and texture stack pointers (GBATEK
+  says the projection pointer, probably also texture).
+  SHININESS (command 0x34) is implemented: GBATEK's
+  invalid-command list omits it while its own command table
+  documents it, and the table wins.
+- DS-3 audio model choices: SAD, TMR, PNT, and LEN latch at
+  channel start (volume, pan, duty, format, and repeat are
+  read live). The channel sample value is held between
+  steps with no interpolation. Channel rates use GBATEK's
+  formula 16,756,991/(65536 minus TMR) exactly with a
+  rational step accumulator (the brief's halved formula was
+  wrong). The mixer produces exactly 32,768 samples per
+  16,756,991 cycles (GBATEK's nominal figure; the raw clock
+  division gives 32,728.5, a 0.12 percent discrepancy inside
+  GBATEK's rounded numbers, stated rather than hidden).
+  SOUNDBIAS carries only the bias on the DS (the amplitude
+  bits the brief mentioned are a GBA feature). The output
+  source selects name channels 1 and 3 (the brief said 1
+  and 2; the document wins), and capture pairs are channel
+  0 (capture 0) and channel 2 (capture 1) with the
+  associated channel added in. Capture runs at the mixer
+  rate (GBATEK times it from the channel 1 and 3 timers;
+  that sharing is not modeled), captures the final post-bias
+  output for the mixer source (so captured samples equal the
+  drained output exactly under this model), clamps instead
+  of emulating the two documented hardware capture bugs,
+  and stores PCM8 captures as byte(value shifted right 8
+  plus 128). Noise polarity: positive when the LFSR output
+  bit is 0. The output buffer is capped at 65,536 stereo
+  samples and drops new samples on overflow. The sound unit
+  raises no interrupts (there is no per-channel IRQ). The
+  microphone consumes one host sample per SPI aux-channel
+  read; with no stream (or an exhausted one) the ADC reads
+  the idle center value 0x800.
 - DS-2 device simplifications: immediate DMA transfers run
   synchronously inside the register write. The ARM7 DMA
   special timing (sound FIFO and card/wifi triggers) has no
@@ -282,12 +425,14 @@ state, and any other command returns a zero-filled block.
 
 ## Roadmap
 
-- DS-2: done (this slice).
-- DS-3: 3D engine (geometry FIFO drained for real, rasterizer
-  feeding engine A's BG0) plus audio (PSG and PCM channels)
-  and a microphone stub.
-- DS-4: libretro shell, enginetest, and app wiring for the
-  android-64bit build. Wifi stays a documented stub.
+- DS-2: done.
+- DS-3: done (this slice).
+- DS-4: libretro shell plus enginetest (a synthetic GX
+  program run through the shell), and app wiring: a new DS
+  slot in the android-64bit build (the app ships no DS core
+  today; the 64-bit slot is wired like the other 64-bit
+  cores). Wifi stays a documented stub with no source
+  behind its interrupt bit.
 
 ## Running the gates
 
