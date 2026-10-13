@@ -92,6 +92,26 @@ type CPU struct {
 	// in the serialized state for future slices).
 	Halted bool
 
+	// IRQLine is the level sensitive interrupt request input.
+	// The system drives it from its interrupt controller: while
+	// it is set and the CPSR I bit is clear, Step enters the IRQ
+	// exception instead of executing the next instruction. It is
+	// an external input, not processor state, so it is not
+	// serialized.
+	IRQLine bool
+
+	// SWIHook, when non-nil, intercepts software interrupts
+	// before the SWI exception is taken. It receives the raw SWI
+	// comment field (the full 24-bit field in ARM state, the
+	// 8-bit field in Thumb state) and reports the cycle count and
+	// whether it handled the call. A hook that handles the call
+	// is responsible for arranging the continuation, normally by
+	// calling Jump with the return address (the SWI address + 4
+	// in ARM state, + 2 in Thumb state), or by setting Halted for
+	// the calls that wait. It is system wiring, not processor
+	// state, so it is not serialized.
+	SWIHook func(c *CPU, imm uint32) (int, bool)
+
 	// Executing is the instruction word currently in the execute
 	// stage. It is not serialized; it is reloaded from Pipe state
 	// on Deserialize via ExecutingValid.
