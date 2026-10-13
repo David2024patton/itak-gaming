@@ -59,3 +59,22 @@ retro_* exports are present.
    SEGA jingle, drums).
 6. Netplay note: Genesis netplay state hashes change with the core;
    both ends must run the new build, same as the same-core rule today.
+
+## Sega CD update (SCD-4, 2026-10-13)
+
+The catch above is resolved. The Go Genesis core now covers Sega CD
+in-house (SCD-1..4: sub 68000, CDD, CD-DA, RF5C164 PCM, graphics ASIC,
+sub BIOS call services, BURAM). Swap preparation is done locally:
+
+- go_backend/internal/core/types.go: the SystemSegaCD row now names
+  'Go Genesis' / libgo_genesis.so with extensions .cue/.iso/.bin.
+- flutter_ui/lib/main.dart: a Sega CD SystemInfo entry (id 'segacd',
+  core libgo_genesis.so, dir 'SegaCD') sits after the Genesis entry.
+- The Kotlin activities and tools/autobuild-server.sh never named a
+  core for Sega CD (the core name flows from Dart through the
+  registry), so they needed no edit.
+
+Remaining ship step (parent, at Sega CD ship time): delete
+libgenesis_plus_gx.so from the assets/cores directory on the server
+build tree and the local workspace copy, bump pubspec, publish. No
+pubspec change is part of SCD-4 (GBA-4 holds build 53).
