@@ -74,6 +74,12 @@ type Video struct {
 	A   []uint32 // engine A framebuffer, XRGB8888
 	B   []uint32 // engine B framebuffer, XRGB8888
 
+	// Line3D, when set, fills one scanline of the 3D layer
+	// for engine A BG0: rgb6 colors with the 5-bit alpha in
+	// bits 18-22; a zero entry is fully transparent. The
+	// system installs the gx package's provider (DS-3).
+	Line3D func(y int, dst *[Width]uint32)
+
 	bgA, bgB   *space
 	objA, objB *space
 	extBG      [2]*space
@@ -138,9 +144,8 @@ func (v *Video) powcnt() uint16 { return v.rd16(0x304) }
 func (v *Video) Swapped() bool { return v.powcnt()&0x8000 != 0 }
 
 // BG0Is3D reports whether engine A's BG0 is selected as the 3D
-// layer (DISPCNT bit 3). The 3D engine is DS-3; in this slice
-// a selected BG0 renders transparent and this flag exposes the
-// condition.
+// layer (DISPCNT bit 3). The gx package renders the layer
+// through the Line3D provider.
 func (v *Video) BG0Is3D() bool { return v.rd32(0)&8 != 0 }
 
 // DISPSTAT returns the composed DISPSTAT halfword: live flags
