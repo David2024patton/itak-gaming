@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /lobbies", s.handleCreateLobby)
 	mux.HandleFunc("GET /lobbies", s.handleListLobbies)
 	mux.HandleFunc("POST /lobbies/{id}/join", s.handleJoinLobby)
+	mux.HandleFunc("POST /lobbies/{id}/watch", s.handleWatchLobby)
 	mux.HandleFunc("GET /ws", s.handleWS)
 	return mux
 }
@@ -191,6 +192,52 @@ func (s *Server) handleJoinLobby(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWatchLobby admits a spectator. Same request shape and the
+// same password brake as a guest join; the difference is the seat:
+// a spectator gets a spectator token, never a player seat.
+func (s *Server) handleWatchLobby(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.join.allow(clientIP(r) + ":" + id) {
+		writeError(w, http.StatusTooManyRequests, "too many join attempts; slow down")
+		return
+	}
+	var req joinLobbyRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Player) == 0 || len(req.Player) > 32 {
+		writeError(w, http.StatusBadRequest, "player must be 1-32 characters")
+		return
+	}
+
+	token, err := s.store.Watch(id, req.Player, req.Password)
+	switch {
+	case errors.Is(err, lobby.ErrNotFound):
+		writeError(w, http.StatusNotFound, "lobby not found")
+		return
+	case errors.Is(err, lobby.ErrBadPassword):
+		writeError(w, http.StatusUnauthorized, "wrong password")
+		return
+	case errors.Is(err, lobby.ErrSpectatorsFull):
+		writeError(w, http.StatusConflict, "spectator seats are full")
+		return
+	case errors.Is(err, lobby.ErrNameTaken):
+		writeError(w, http.StatusConflict, "that name is already in the lobby")
+		return
+	case err != nil:
+		s.log.Printf("watch lobby: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not watch lobby")
+		return
+	}
+	public, _ := s.store.Public(id)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"spectatorToken": token,
+		"wsUrl":          wsURL(id, token),
+		"lobby":          public,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket signaling relay
 // ---------------------------------------------------------------------------
@@ -203,11 +250,12 @@ func (s *Server) handleJoinLobby(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	lobbyID := r.URL.Query().Get("lobby")
 	token := r.URL.Query().Get("token")
-	role, ok := s.store.Authenticate(lobbyID, token)
+	self, ok := s.store.LookupMember(lobbyID, token)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "invalid lobby or token")
 		return
 	}
+	role := self.Role
 	ip := clientIP(r)
 	if !s.wsCount.acquire(ip, maxWSPerIP) {
 		writeError(w, http.StatusTooManyRequests, "too many connections from this address")
@@ -220,12 +268,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.log.Printf("ws upgrade from %s: %v", ip, err)
 		return
 	}
-	p := &peer{conn: conn, lobbyID: lobbyID, role: role, token: token}
+	p := &peer{conn: conn, lobbyID: lobbyID, role: role, player: self.Name, token: token}
 
 	count := s.hub.add(p)
 	s.store.SetPeers(lobbyID, count)
 	s.log.Printf("ws: %s joined lobby %s (%d peers)", role, lobbyID, count)
-	s.hub.broadcastOthers(p, controlMsg("peer_joined", role))
+	// Spectators get their own arrival notice. peer_joined stays
+	// player-only: player clients read it as "my opponent is here",
+	// and a watcher is not an opponent. Everyone then gets the full
+	// roster, the new arrival included.
+	if role == lobby.RoleSpectator {
+		s.hub.broadcastOthers(p, playerMsg("spectator_joined", p.player))
+	} else {
+		s.hub.broadcastOthers(p, controlMsg("peer_joined", role))
+	}
+	s.sendRoster(p)
 
 	defer s.teardown(p)
 	s.servePeer(p)
@@ -270,11 +327,15 @@ func (s *Server) servePeer(p *peer) {
 
 // teardown handles a peer's socket going away.
 //
-// Host leaving ends the session: the guest is told the lobby closed,
-// its socket is closed, and the lobby is deleted. A guest leaving
-// frees their slot: the host is notified, the guest's membership token
-// is revoked, and the lobby stays open for a replacement guest (the
-// reaper collects it later if the host abandons it too).
+// Host leaving ends the session for everyone, spectators included:
+// the room is told the lobby closed, every socket is closed, and
+// the lobby is deleted. A guest leaving frees their slot: the host
+// is notified, the guest's membership token is revoked, and the
+// lobby stays open for a replacement guest (the reaper collects it
+// later if the host abandons it too). A spectator leaving is the
+// quiet case: their token is revoked and the room hears about it,
+// but no seat frees and the session carries on untouched. Guests
+// and spectators both end with a fresh roster for the room.
 func (s *Server) teardown(p *peer) {
 	remaining := s.hub.remove(p)
 	p.conn.Close()
@@ -292,8 +353,31 @@ func (s *Server) teardown(p *peer) {
 
 	s.store.RemoveMemberByToken(p.lobbyID, p.token)
 	s.store.SetPeers(p.lobbyID, remaining)
+	if p.role == lobby.RoleSpectator {
+		s.hub.broadcastOthers(p, playerMsg("spectator_left", p.player))
+		s.sendRoster(p)
+		s.log.Printf("ws: spectator left lobby %s (%d peers)", p.lobbyID, remaining)
+		return
+	}
 	s.hub.broadcastOthers(p, controlMsg("peer_left", p.role))
+	s.sendRoster(p)
 	s.log.Printf("ws: guest left lobby %s (%d peers)", p.lobbyID, remaining)
+}
+
+// sendRoster delivers the room's current roster to every socket in
+// p's room. It runs on every membership change so all clients,
+// players and watchers alike, render the same room. The roster comes
+// from lobby membership (names and roles), not from socket state:
+// someone who joined over HTTP is on it before their socket lands.
+func (s *Server) sendRoster(p *peer) {
+	members, ok := s.store.Members(p.lobbyID)
+	if !ok {
+		return
+	}
+	msg := rosterMsg(members)
+	for _, q := range s.hub.all(p) {
+		s.hub.notify(q, msg)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +389,20 @@ func (s *Server) teardown(p *peer) {
 // minted by the server.
 func controlMsg(kind string, role lobby.Role) []byte {
 	b, _ := json.Marshal(map[string]string{"type": kind, "role": string(role)})
+	return b
+}
+
+// playerMsg builds a server-generated envelope naming one member,
+// used by the spectator arrival and departure notices.
+func playerMsg(kind string, player string) []byte {
+	b, _ := json.Marshal(map[string]string{"type": kind, "player": player})
+	return b
+}
+
+// rosterMsg builds the roster notice: the room's full member list,
+// names and roles, in join order.
+func rosterMsg(members []lobby.Member) []byte {
+	b, _ := json.Marshal(map[string]any{"type": "roster", "members": members})
 	return b
 }
 
