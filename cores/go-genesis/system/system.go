@@ -208,6 +208,16 @@ func (s *System) RunFrame() {
 	// must be too: base this frame's targets on the frames already run.
 	base := s.frame * masterFrame / 7
 	s.vdp.BeginFrame()
+	// clocked is the cumulative 68000-cycle target the YM2612
+	// timers have been advanced to. The YM2612 clock equals the
+	// 68000 clock (both master / 7), so line-target deltas are YM
+	// master clocks one to one. Advancing at each line boundary
+	// lets a CPU polling the YM status port see timer flags flip
+	// mid-frame; Produce accounts for the stepped time through the
+	// sound section's ledger and never steps it twice. The deltas
+	// depend only on the line number, not the frame base, so a
+	// restored machine replays the exact same advance sequence.
+	clocked := base
 	for line := 0; line < linesTotal; line++ {
 		if line == 0 {
 			s.vdp.ExitVBlank()
@@ -215,6 +225,9 @@ func (s *System) RunFrame() {
 		}
 		s.run68k(base + m68kTarget(line))
 		s.runZ80Line()
+		target := base + m68kTarget(line)
+		s.sound.AdvanceClocks(uint32(target - clocked))
+		clocked = target
 		if line < h {
 			if s.vdp.LineIRQ(line) {
 				s.cpu.RequestInterrupt(4, nil)
