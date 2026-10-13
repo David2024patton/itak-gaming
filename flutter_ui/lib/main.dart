@@ -2567,7 +2567,8 @@ class _OnlineScreenState extends State<OnlineScreen> {
   Future<void> _launchOnline(LocalGame game,
       {required String role,
       required String lobbyId,
-      required String token}) async {
+      required String token,
+      String password = ''}) async {
     await PlayStats.record(game.file.path);
     await _channel.invokeMethod('launch', {
       'core': game.system.core,
@@ -2576,6 +2577,9 @@ class _OnlineScreenState extends State<OnlineScreen> {
       'npLobby': lobbyId,
       'npToken': token,
       'npServer': kServerBase,
+      // The game screen keeps the password so a seat rotation
+      // can re-enter the room (watch or join) on its own.
+      'npPassword': password,
     });
   }
 
@@ -2611,7 +2615,7 @@ class _OnlineScreenState extends State<OnlineScreen> {
       }
       appLog('lobby created: $lobbyId for ${game.fileName} by $player');
       await _launchOnline(game,
-          role: 'host', lobbyId: lobbyId, token: token);
+          role: 'host', lobbyId: lobbyId, token: token, password: password);
     } catch (e) {
       appLog('create lobby failed: $e');
       _showMessage('Could not create the lobby', '$e');
@@ -2657,7 +2661,10 @@ class _OnlineScreenState extends State<OnlineScreen> {
       appLog(
           'lobby joined: ${lobby['id']} for ${match.fileName} by $player');
       await _launchOnline(match,
-          role: 'guest', lobbyId: lobby['id'].toString(), token: token);
+          role: 'guest',
+          lobbyId: lobby['id'].toString(),
+          token: token,
+          password: password);
     } catch (e) {
       appLog('join lobby failed: $e');
       _showMessage('Could not join', '$e');
@@ -2715,6 +2722,7 @@ class _OnlineScreenState extends State<OnlineScreen> {
         'lobbyId': lobby['id'].toString(),
         'token': token,
         'playerName': player,
+        'npPassword': password,
       });
     } catch (e) {
       appLog('watch lobby failed: $e');
