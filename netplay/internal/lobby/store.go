@@ -49,6 +49,10 @@ type Store interface {
 	List() []PublicLobby
 	// Public returns the public view of one lobby.
 	Public(id string) (PublicLobby, bool)
+	// PlayerLobby returns the public view of the live lobby the
+	// named player belongs to as host or guest, if any. It backs
+	// presence lookups ("is this player in a game right now").
+	PlayerLobby(player string) (PublicLobby, bool)
 	// Join adds a player and returns their bearer token.
 	Join(id, player, password string) (string, error)
 	// Authenticate resolves a bearer token to a role in a lobby.
@@ -189,6 +193,27 @@ func (s *MemoryStore) Public(id string) (PublicLobby, bool) {
 		return PublicLobby{}, false
 	}
 	return l.Public(), true
+}
+
+// PlayerLobby finds the live lobby the named player belongs to.
+// The host is a member too, so one pass over the members covers
+// both roles; the host name check is belt and braces for a lobby
+// observed mid-create. Lobbies are few (hundreds at most), so a
+// scan beats keeping a second index in sync.
+func (s *MemoryStore) PlayerLobby(player string) (PublicLobby, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, l := range s.lobbies {
+		if l.HostPlayer == player {
+			return l.Public(), true
+		}
+		for _, m := range l.members {
+			if m.player == player {
+				return l.Public(), true
+			}
+		}
+	}
+	return PublicLobby{}, false
 }
 
 func (s *MemoryStore) Join(id, player, password string) (string, error) {
