@@ -12,12 +12,22 @@
 // translation, the time base and decrementer, and full
 // serialization.
 //
-// The floating point unit is deliberately NOT implemented in
-// this slice: FPRs exist as storage, but every floating point
-// or paired-single instruction raises the floating point
-// unavailable exception, regardless of MSR[FP]. The FPU and
-// paired singles are slice GCN-2. See the module README for
-// the full honesty list, including the translation scope.
+// Slice GCN-2 adds the floating point unit and the paired
+// single unit in fp.go and ps.go: scalar double and single
+// arithmetic with exact rounding and FPSCR reporting, the
+// FPSCR move instructions, paired single arithmetic, and
+// the quantized paired loads and stores driven by the GQRs.
+//
+// FPR representation (mixed view, used throughout): an FPR
+// is one uint64. A scalar double operand or result is the
+// full uint64 read as an IEEE double. A scalar single result
+// is stored widened to the double value of that single. A
+// paired single value packs its PS0 lane in the high 32 bits
+// and its PS1 lane in the low 32 bits, each lane an IEEE
+// single. Which view an instruction uses is fixed by the
+// instruction, exactly as on hardware, and code that reads
+// an FPR through the wrong view gets the corresponding
+// reinterpretation.
 package gekko
 
 import (
@@ -94,6 +104,13 @@ const (
 
 	SPRIBAT0U = 528
 	SPRDBAT0U = 536
+
+	// GQR0 to GQR7. The task wiring for this slice is SPR
+	// 896..903. The Gekko manual also names 912..919 for the
+	// same registers, so both ranges are wired to the same
+	// storage in GetSPR and SetSPR.
+	SPRGQR0    = 896
+	SPRGQR0Alt = 912
 )
 
 // PVR value for the GameCube Gekko (read-only).
@@ -116,16 +133,27 @@ type Bus interface {
 	Write32(addr uint32, v uint32)
 }
 
-// CPU is the Gekko integer core.
+// CPU is the Gekko core.
 type CPU struct {
 	GPR [32]uint32
-	FPR [32]uint64 // storage only in this slice
+	FPR [32]uint64 // see the mixed view note in the package comment
 	CR  uint32
 	XER uint32 // SO=1<<31, OV=1<<30, CA=1<<29, string byte count in low 7 bits
 	LR  uint32
 	CTR uint32
 	PC  uint32
 	MSR uint32
+
+	// FPSCR is the floating point status and control
+	// register. Bit constants use PowerPC bit numbering in
+	// fp.go; the stored uint32 keeps the conventional layout
+	// in which PowerPC bit 0 is the value bit 1<<31.
+	FPSCR uint32
+
+	// GQR holds the eight graphics quantization registers
+	// used by the paired single quantized loads and stores.
+	// Field layout is defined in ps.go.
+	GQR [8]uint32
 
 	SRR0  uint32
 	SRR1  uint32
@@ -170,7 +198,8 @@ func New(bus Bus) *CPU {
 
 // Reset restores the documented power-on state: exceptions
 // prefixed to 0xFFF00000, translation off, interrupts off,
-// PC at the reset vector.
+// PC at the reset vector. The wholesale struct replacement
+// also clears FPSCR and all GQRs to zero.
 func (c *CPU) Reset() {
 	*c = CPU{
 		bus: c.bus,
@@ -499,6 +528,12 @@ func (c *CPU) GetSPR(spr int) uint32 {
 	case SPRPVR:
 		return PVRGekko
 	}
+	if spr >= SPRGQR0 && spr < SPRGQR0+8 {
+		return c.GQR[spr-SPRGQR0]
+	}
+	if spr >= SPRGQR0Alt && spr < SPRGQR0Alt+8 {
+		return c.GQR[spr-SPRGQR0Alt]
+	}
 	if spr >= SPRIBAT0U && spr < SPRIBAT0U+8 {
 		n := spr - SPRIBAT0U
 		return c.ibat[n/2][n%2]
@@ -543,6 +578,14 @@ func (c *CPU) SetSPR(spr int, v uint32) {
 	case SPRTBUWR:
 		c.TB = (c.TB & 0x00000000FFFFFFFF) | uint64(v)<<32
 	default:
+		if spr >= SPRGQR0 && spr < SPRGQR0+8 {
+			c.GQR[spr-SPRGQR0] = v
+			return
+		}
+		if spr >= SPRGQR0Alt && spr < SPRGQR0Alt+8 {
+			c.GQR[spr-SPRGQR0Alt] = v
+			return
+		}
 		if spr >= SPRIBAT0U && spr < SPRIBAT0U+8 {
 			n := spr - SPRIBAT0U
 			c.ibat[n/2][n%2] = v
@@ -560,8 +603,11 @@ func (c *CPU) SetSPR(spr int, v uint32) {
 // SerializeSize is the fixed save-state size of the CPU:
 // GPRs 128, FPRs 256, twelve registers 48, TB 8, segment
 // registers 64, SPRGs 16, IBATs 32, DBATs 32, the generic
-// SPR file 4096, reservation address 4, flags 4.
-const SerializeSize = 128 + 256 + 48 + 8 + 64 + 16 + 32 + 32 + 4096 + 4 + 4
+// SPR file 4096, reservation address 4, flags 4, and the
+// GCN-2 tail: FPSCR 4 plus the eight GQRs 32. The GCN-2
+// tail is appended after the flags word so every GCN-1
+// field keeps its offset; only the total size grew, by 36.
+const SerializeSize = 128 + 256 + 48 + 8 + 64 + 16 + 32 + 32 + 4096 + 4 + 4 + 4 + 32
 
 // Serialize writes the complete CPU state.
 func (c *CPU) Serialize() []byte {
@@ -625,6 +671,11 @@ func (c *CPU) Serialize() []byte {
 	}
 	flags |= c.tbRem << 8
 	put32(flags)
+	// GCN-2 appended tail: FPSCR, then GQR0 through GQR7.
+	put32(c.FPSCR)
+	for _, g := range c.GQR {
+		put32(g)
+	}
 	if off != SerializeSize {
 		panic("gekko: serialize size mismatch")
 	}
@@ -690,5 +741,10 @@ func (c *CPU) Deserialize(in []byte) error {
 	c.decPending = flags&4 != 0
 	c.reservValid = flags&8 != 0
 	c.tbRem = (flags >> 8) & 3
+	// GCN-2 appended tail: FPSCR, then GQR0 through GQR7.
+	c.FPSCR = get32()
+	for i := range c.GQR {
+		c.GQR[i] = get32()
+	}
 	return nil
 }
