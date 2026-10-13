@@ -45,11 +45,14 @@ func (s *Session) appendChatLocked(from, text string, mine bool) {
 	}
 }
 
-// notePeerChat records a chat message from the peer. Called by
-// the reader with s.mu held. Empty messages are dropped; an
-// over-long one from a misbehaving peer is cut to the cap
-// rather than trusted.
-func (s *Session) notePeerChat(text string) {
+// notePeerChat records a chat message from someone in the
+// room. The reader resolves who: the envelope's "from" stamp
+// when present, else the peer's name (older clients carry no
+// stamp, and in a two-person room the only other speaker is
+// the peer). Called by the reader with s.mu held. Empty
+// messages are dropped; an over-long one from a misbehaving
+// sender is cut to the cap rather than trusted.
+func (s *Session) notePeerChat(from, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
@@ -57,7 +60,7 @@ func (s *Session) notePeerChat(text string) {
 	if utf8.RuneCountInString(text) > chatMaxRunes {
 		text = string([]rune(text)[:chatMaxRunes])
 	}
-	s.appendChatLocked(s.peerName, text, false)
+	s.appendChatLocked(from, text, false)
 }
 
 // SendChat sends a chat message to the other player and records
