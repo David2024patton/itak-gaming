@@ -48,6 +48,11 @@ type Unit struct {
 	pcm *PCM
 	cdd *CDD
 
+	// asic is the graphics rotation and scaling engine state
+	// (asic.go): its register file at sub offsets 0x58 to 0x67
+	// and the latched draw state.
+	asic asicState
+
 	// Gate array state.
 	control    uint8 // offset 0x00: bit0 RES, bit1 BRQ (bits 0-1 only)
 	resetArmed bool  // one-shot sub CPU reset notification pending
@@ -57,7 +62,7 @@ type Unit struct {
 	subHalf    int   // 1M mode: which 128 KB half the sub CPU owns (0 or 1)
 	retMain    bool  // offset 0x02 RET flag as read by the main CPU
 	retSub     bool  // offset 0x02 RET flag as read by the sub CPU
-	reg03      uint8 // offset 0x03: bit0 H-INT enable, bit1 CDD IRQ mask, bit2 CDC IRQ mask, bits 3-4 CDC destination
+	reg03      uint8 // offset 0x03: bit0 H-INT enable, bit1 CDD IRQ mask, bit2 CDC IRQ mask, bits 3-4 CDC destination, shared with the ASIC priority mode (asic.go)
 	reg04      uint8 // offset 0x04: H-INT interval in scanlines
 	reg05      uint8 // offset 0x05: H-INT vector byte, 0 = autovector
 	mainFlag   uint8 // offset 0x0E: main CPU communication flag
@@ -429,6 +434,9 @@ func (u *Unit) CDDDisplayStatus() uint8 { return u.cddEngine().DisplayStatus() }
 // a combined MODE plus DMNA write enters the new mode and performs
 // that mode transfer in one step.
 func (u *Unit) writeMemMode(v uint8, fromMain bool) {
+	// A memory mode write can hand Word RAM to the sub CPU,
+	// which releases a latched ASIC draw (asic.go).
+	defer u.tryASIC()
 	// The PRG-RAM bank (bits 7:6) is a plain latch shared by both
 	// writers. The write protect field (bits 4:2) is main CPU side
 	// only: only a main write changes it.
@@ -608,6 +616,9 @@ func (u *Unit) subRegRead(off uint8) uint8 {
 	if off < 0x30 {
 		return u.gateRead(off, false)
 	}
+	if off >= 0x58 && off < 0x68 {
+		return u.asicRead(off)
+	}
 	return u.cdRead(off)
 }
 
@@ -615,6 +626,10 @@ func (u *Unit) subRegRead(off uint8) uint8 {
 func (u *Unit) subRegWrite(off uint8, v uint8) {
 	if off < 0x30 {
 		u.gateWrite(off, v, false)
+		return
+	}
+	if off >= 0x58 && off < 0x68 {
+		u.asicWrite(off, v)
 		return
 	}
 	u.cdWrite(off, v)
@@ -827,6 +842,7 @@ func (u *Unit) AdvanceCycles(cycles int) {
 	if cycles <= 0 {
 		return
 	}
+	u.tryASIC()
 	ev := u.cddEngine().AdvanceCycles(cycles)
 	for i := 0; i < ev.DataCount; i++ {
 		u.cddDataSector(ev.DataLBA + i)
@@ -953,12 +969,15 @@ func (u *Unit) SerializeSize() int {
 //	         (CDDStateSize bytes), then the PCM engine state
 //	         block (PCMStateSize bytes), then three bytes: PRG-RAM
 //	         bank, PRG-RAM write protect field, CDC interrupt
-//	         latch. Any remaining tail bytes are zero. The PCM
-//	         register page mirror at 12..27 is derived from the
-//	         PCM engine state on save and ignored on load (the
-//	         engine block is authoritative); SCD-1 states, whose
-//	         extension bytes are all zero, load with the SCD-2
-//	         engines at power-on state.
+//	         latch. The PCM register page mirror at 12..27 is
+//	         derived from the PCM engine state on save and
+//	         ignored on load (the engine block is authoritative);
+//	         SCD-1 states, whose extension bytes are all zero,
+//	         load with the SCD-2 engines at power-on state.
+//	242..254 SCD-3 extension: the graphics ASIC state block
+//	         (ASICStateSize bytes, asic.go). SCD-1 and SCD-2
+//	         states have zeros there and load with the ASIC at
+//	         its power-on state. Byte 255 stays zero.
 
 // Serialize writes the unit state into buf, which must be at least
 // SerializeSize bytes.
@@ -1040,6 +1059,8 @@ func (u *Unit) Serialize(buf []byte) error {
 	if u.cdcIRQ {
 		blk[ext+2] = 1
 	}
+	ext += 3
+	u.asic.serializeState(blk[ext : ext+ASICStateSize])
 	return nil
 }
 
@@ -1105,5 +1126,7 @@ func (u *Unit) Deserialize(buf []byte) error {
 	u.prgBank = blk[ext] & 0x03
 	u.prgWP = blk[ext+1] & 0x07
 	u.cdcIRQ = blk[ext+2]&0x01 != 0
+	ext += 3
+	u.asic.deserializeState(blk[ext : ext+ASICStateSize])
 	return nil
 }
