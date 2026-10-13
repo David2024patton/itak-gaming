@@ -3,7 +3,7 @@ package periph
 // StateSize is the serialized size of the whole peripheral
 // set. The generated firmware image is not serialized: it is
 // rebuilt identically by New.
-const StateSize = 24 + 96 + 112 + 112 + 148 + 28 + 524 + 12 + 12 + 4 + 4
+const StateSize = 24 + 96 + 112 + 112 + 148 + 28 + 524 + 12 + 12 + 4
 
 // Serialize writes the device state into dst (at least
 // StateSize bytes) and returns the byte count.
@@ -99,7 +99,6 @@ func (s *Set) Serialize(dst []byte) int {
 	w.u64(s.rtc.frames)
 	w.u8(s.rtc.idx)
 	w.bytes([]byte{0, 0, 0})
-	w.u32(s.GXCount)
 	w.flag(s.penDn)
 	w.bytes([]byte{0, 0, 0})
 	return w.n
@@ -202,7 +201,6 @@ func (s *Set) Deserialize(src []byte) int {
 	s.rtc.frames = r.u64()
 	s.rtc.idx = r.u8()
 	r.bytes(make([]byte, 3))
-	s.GXCount = r.u32()
 	s.penDn = r.flag()
 	r.bytes(make([]byte, 3))
 	return r.n
