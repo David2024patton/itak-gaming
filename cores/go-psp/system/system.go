@@ -212,6 +212,36 @@ func (m *Machine) PresentFrameBuffer(addr uint32, width, format int) {
 	m.geActive = true
 }
 
+// BootUMD mounts an ISO image and boots the executable the
+// documented UMD layout puts at PSP_GAME/SYSDR/BOOT.BIN (with
+// the documented fallback to EBOOT.BIN beside it) through the
+// HLE kernel. An image with neither file fails cleanly.
+func (m *Machine) BootUMD(path string) error {
+	if err := m.LoadISO(path); err != nil {
+		return err
+	}
+	data, err := m.iso.ReadFile("PSP_GAME/SYSDR/BOOT.BIN")
+	if err != nil {
+		data, err = m.iso.ReadFile("PSP_GAME/SYSDR/EBOOT.BIN")
+		if err != nil {
+			return fmt.Errorf("system: %s: no boot executable at PSP_GAME/SYSDR/BOOT.BIN or EBOOT.BIN", path)
+		}
+	}
+	return m.LoadExecutable(data)
+}
+
+// AudioBuffer drains the mixed sceAudio output in kernel mode:
+// stereo int16 at 44,100 Hz, everything mixed since the last
+// drain (735 frames per frame budget once the stream is
+// running). Outside kernel mode there is no audio path and the
+// result is nil, the PSP-2 behavior.
+func (m *Machine) AudioBuffer() []int16 {
+	if !m.kernelMode {
+		return nil
+	}
+	return m.kern.DrainAudio()
+}
+
 // GameTitle returns the TITLE field of the mounted disc's PARAM.SFO,
 // falling back to the ISO volume id, then to the empty string.
 func (m *Machine) GameTitle() string {
