@@ -4,10 +4,10 @@
 //
 // The PSG is our own SN76489 (cores/go-genesis/chips/psg), written
 // from the TI datasheet and the Sega variant documentation. The
-// YM2612 is written here from Yamaha's published register map.
-// Milestone 1 ships the YM2612 as a register-accurate shell (writes
-// land, timers run, output silent); the FM operator engine lands in
-// milestone 2.
+// YM2612 FM engine (ym2612.go) is written from Yamaha's published
+// documentation: full six-channel FM with operators, envelopes,
+// SSG-EG, LFO, timers and the DAC path. Milestone 1 shipped the
+// YM2612 as a register shell; milestone 2 is the real engine.
 //
 // PINNED API (bus and system are written against this):
 //
@@ -22,6 +22,7 @@ package sound
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/chips/psg"
 )
@@ -44,48 +45,76 @@ type Sound struct {
 	ymRegsA  [256]uint8
 	ymRegsB  [256]uint8
 	ymStatus uint8 // YM2612 timer flags: bit0 = timer A, bit1 = timer B (busy is never set)
+	ym       ymState
 
 	psgCarry float64 // fractional PSG clocks owed to the next Produce call
 	out      []int16 // reusable mix buffer
+
+	// FM resampler state: fmBuf holds native-rate stereo samples,
+	// fmPrev is the last native sample of the previous batch and
+	// fmAcc is how far (in native samples, 0..1) the next output
+	// frame's position has advanced past it.
+	fmBuf   []float32
+	fmPrevL float32
+	fmPrevR float32
+	fmAcc   float64
 
 	psgWrites int // diagnostic counters: chip register writes seen
 	ymWrites  int
 }
 
 // WriteCounts returns how many PSG and YM2612 writes the chips have
-// received since power-on. Diagnostic aid (the FM engine is milestone 2,
-// so a game can be writing the YM constantly while only the PSG sounds).
+// received since power-on. Diagnostic aid: it separates a game that
+// never touches a chip from one whose sound is genuinely broken.
 func (s *Sound) WriteCounts() (psg, ym int) { return s.psgWrites, s.ymWrites }
 
 // New returns the sound section in power-on state.
 func New() *Sound {
-	return &Sound{
+	s := &Sound{
 		psg: psg.New(psgClock, SampleRate, 4096, psg.Config{
 			LFSRBits:       16,     // Sega variant
 			WhiteNoiseTaps: 0x0009, // bits 0 and 3
 		}),
 	}
+	// Operators power on silent: envelope at full attenuation,
+	// stage off (the zero values of the ymState fields).
+	for ch := range s.ym.ops {
+		for op := range s.ym.ops[ch] {
+			s.ym.ops[ch][op].levelFP = ymMaxFP
+		}
+	}
+	return s
 }
 
 // WritePSG passes a byte to the PSG.
 func (s *Sound) WritePSG(val uint8) { s.psgWrites++; s.psg.Write(val) }
 
-// serializeSize is the fixed save-state size of the sound section:
+// serializeSize is the fixed save-state size of the sound section.
+// The first 1544 bytes are the milestone 1 layout; the FM engine
+// state (milestone 2) is appended after it:
 //
 //	ymAddrA(1) + ymAddrB(1) + ymStatus(1) + pad(1) + ymRegsA(256) +
-//	ymRegsB(256) + psgLen(4, little endian) + psg state (1024 max)
-const serializeSize = 1544
+//	ymRegsB(256) + psgLen(4, little endian) + psg state (1024 max) +
+//	psgCarry f64(8) + fmAcc f64(8) + fmPrev f32x2(8) + lfoPhase(4) +
+//	timerAAcc(4) + timerBAcc(4) + egDiv(1) + prev27(1) + pad(2) +
+//	per-channel feedback history f32x2 x6(48) +
+//	per-operator state x24(12 each: phase(4) + levelFP(4) +
+//	stage(1) + flags(1: keyOn, ssgDown, ssgHold) + pad(2))
+const serializeSize = 1920
 
 // psgStateOffset is the offset of the PSG state region in the layout.
 const psgStateOffset = 520
 
-// WriteYM handles a write to one of the YM2612's four ports. Milestone 1
-// is a register-accurate shell: writes land in the register file and no
-// FM audio is produced yet. That includes the bank A DAC data register
-// (0x2A), which is stored like any other register; the DAC output path
-// arrives with the FM engine in milestone 2. The timer registers (bank A
-// 0x24-0x27) are stored raw; the timers themselves are milestone 2, so a
-// write to 0x27 can only clear timer flags, never set them.
+// ymStateOffset is the offset of the appended FM engine state.
+const ymStateOffset = 1544
+
+// WriteYM handles a write to one of the YM2612's four ports: address
+// latch or data for bank A (channels 1-3 plus the global registers)
+// or bank B (channels 4-6). Data writes land in the register file,
+// which the engine reads live, and the two registers with immediate
+// side effects act at once: 0x27 resets timer flags and starts or
+// stops the timers through its load bits, 0x28 keys operators on
+// and off.
 func (s *Sound) WriteYM(addr uint32, val uint8) {
 	s.ymWrites++
 	switch addr {
@@ -93,7 +122,8 @@ func (s *Sound) WriteYM(addr uint32, val uint8) {
 		s.ymAddrA = val
 	case 1: // bank A data
 		s.ymRegsA[s.ymAddrA] = val
-		if s.ymAddrA == 0x27 {
+		switch s.ymAddrA {
+		case 0x27:
 			// Timer mode: bit4 (0x10) resets the timer A flag,
 			// bit5 (0x20) resets the timer B flag.
 			if val&0x10 != 0 {
@@ -102,6 +132,16 @@ func (s *Sound) WriteYM(addr uint32, val uint8) {
 			if val&0x20 != 0 {
 				s.ymStatus &^= 0x02
 			}
+			// A rising load bit restarts that timer's count.
+			if val&0x01 != 0 && s.ym.prev27&0x01 == 0 {
+				s.ym.timerAAcc = 0
+			}
+			if val&0x02 != 0 && s.ym.prev27&0x02 == 0 {
+				s.ym.timerBAcc = 0
+			}
+			s.ym.prev27 = val
+		case 0x28:
+			s.ymKey(val)
 		}
 	case 2: // bank B address latch
 		s.ymAddrB = val
@@ -116,10 +156,14 @@ func (s *Sound) ReadYM() uint8 {
 	return s.ymStatus & 0x03
 }
 
-// Produce advances the PSG by the clocks owed for frames output frames
-// and returns exactly frames interleaved stereo pairs. The PSG is mono,
-// so both channels carry the same sample; the YM2612 joins the mix in
-// milestone 2.
+// Produce advances both chips by the time owed for frames output
+// frames and returns exactly frames interleaved stereo pairs. The
+// PSG runs as it always has (native samples at the output rate,
+// mono duplicated to both channels). The YM2612 runs at its native
+// rate (master / 144) and is linear-interpolated down to the output
+// rate; the interpolation position and the previous native sample
+// carry across calls and are part of the save state, so a restore
+// resumes the FM stream sample-exactly.
 func (s *Sound) Produce(frames int) []int16 {
 	if frames < 0 {
 		frames = 0
@@ -131,6 +175,19 @@ func (s *Sound) Produce(frames int) []int16 {
 	s.psg.GenerateSamples(whole)
 	buf, count := s.psg.GetBuffer()
 	s.psg.ResetBuffer()
+
+	// Generate the native-rate FM samples this call spans. The
+	// next output frame sits at native position -fmAcc relative to
+	// the first new sample, with the previous batch's last sample
+	// at position -1.
+	n := 0
+	if frames > 0 {
+		n = int(float64(frames)*ymRatio-s.fmAcc) + 1
+		if n < 0 {
+			n = 0
+		}
+		s.ymGenerate(n)
+	}
 
 	need := frames * 2
 	if cap(s.out) < need {
@@ -147,11 +204,45 @@ func (s *Sound) Produce(frames int) []int16 {
 		} else if f < -1 {
 			f = -1
 		}
-		v := int16(f * 24000)
-		s.out[2*i] = v
-		s.out[2*i+1] = v
+
+		// Linear interpolation of the FM stream at this frame's
+		// native position.
+		pos := -s.fmAcc + float64(i)*ymRatio
+		k := int(pos)
+		if pos < 0 && float64(k) != pos {
+			k-- // floor for negative positions
+		}
+		frac := float32(pos - float64(k))
+		var l0, r0 float32
+		if k < 0 {
+			l0, r0 = s.fmPrevL, s.fmPrevR
+		} else {
+			l0, r0 = s.fmBuf[2*k], s.fmBuf[2*k+1]
+		}
+		l1, r1 := s.fmBuf[2*(k+1)], s.fmBuf[2*(k+1)+1]
+		fl := l0 + (l1-l0)*frac
+		fr := r0 + (r1-r0)*frac
+
+		s.out[2*i] = clamp16(f*24000 + fl*12000)
+		s.out[2*i+1] = clamp16(f*24000 + fr*12000)
+	}
+	if n > 0 {
+		s.fmPrevL = s.fmBuf[2*(n-1)]
+		s.fmPrevR = s.fmBuf[2*(n-1)+1]
+		s.fmAcc = float64(n) + s.fmAcc - float64(frames)*ymRatio
 	}
 	return s.out
+}
+
+// clamp16 converts a mixed float sample to int16 with saturation.
+func clamp16(v float32) int16 {
+	if v > 32767 {
+		return 32767
+	}
+	if v < -32768 {
+		return -32768
+	}
+	return int16(v)
 }
 
 // SerializeSize returns the fixed save-state size of the sound section.
@@ -185,6 +276,46 @@ func (s *Sound) Serialize(buf []byte) error {
 		copy(region, scratch[:psgLen])
 	}
 	binary.LittleEndian.PutUint32(buf[516:520], uint32(psgLen))
+
+	// FM engine state (milestone 2), layout at serializeSize.
+	b := buf[ymStateOffset:]
+	binary.LittleEndian.PutUint64(b[0:8], math.Float64bits(s.psgCarry))
+	binary.LittleEndian.PutUint64(b[8:16], math.Float64bits(s.fmAcc))
+	binary.LittleEndian.PutUint32(b[16:20], math.Float32bits(s.fmPrevL))
+	binary.LittleEndian.PutUint32(b[20:24], math.Float32bits(s.fmPrevR))
+	binary.LittleEndian.PutUint32(b[24:28], s.ym.lfoPhase)
+	binary.LittleEndian.PutUint32(b[28:32], s.ym.timerAAcc)
+	binary.LittleEndian.PutUint32(b[32:36], s.ym.timerBAcc)
+	b[36] = s.ym.egDiv
+	b[37] = s.ym.prev27
+	b[38], b[39] = 0, 0
+	off := 40
+	for ch := range s.ym.chans {
+		binary.LittleEndian.PutUint32(b[off:off+4], math.Float32bits(s.ym.chans[ch].fb0))
+		binary.LittleEndian.PutUint32(b[off+4:off+8], math.Float32bits(s.ym.chans[ch].fb1))
+		off += 8
+	}
+	for ch := range s.ym.ops {
+		for op := range s.ym.ops[ch] {
+			o := &s.ym.ops[ch][op]
+			binary.LittleEndian.PutUint32(b[off:off+4], o.phase)
+			binary.LittleEndian.PutUint32(b[off+4:off+8], uint32(o.levelFP))
+			b[off+8] = o.stage
+			var flags uint8
+			if o.keyOn {
+				flags |= 1
+			}
+			if o.ssgDown {
+				flags |= 2
+			}
+			if o.ssgHold {
+				flags |= 4
+			}
+			b[off+9] = flags
+			b[off+10], b[off+11] = 0, 0
+			off += 12
+		}
+	}
 	return nil
 }
 
@@ -200,12 +331,43 @@ func (s *Sound) Deserialize(buf []byte) error {
 	copy(s.ymRegsB[:], buf[260:516])
 
 	psgLen := int(binary.LittleEndian.Uint32(buf[516:520]))
-	if psgLen > serializeSize-psgStateOffset {
+	if psgLen > ymStateOffset-psgStateOffset {
 		return errors.New("sound: corrupt PSG state length")
 	}
 	if psgLen > 0 {
 		if err := s.psg.Deserialize(buf[psgStateOffset : psgStateOffset+psgLen]); err != nil {
 			return err
+		}
+	}
+
+	// FM engine state (milestone 2), layout at serializeSize.
+	b := buf[ymStateOffset:]
+	s.psgCarry = math.Float64frombits(binary.LittleEndian.Uint64(b[0:8]))
+	s.fmAcc = math.Float64frombits(binary.LittleEndian.Uint64(b[8:16]))
+	s.fmPrevL = math.Float32frombits(binary.LittleEndian.Uint32(b[16:20]))
+	s.fmPrevR = math.Float32frombits(binary.LittleEndian.Uint32(b[20:24]))
+	s.ym.lfoPhase = binary.LittleEndian.Uint32(b[24:28])
+	s.ym.timerAAcc = binary.LittleEndian.Uint32(b[28:32])
+	s.ym.timerBAcc = binary.LittleEndian.Uint32(b[32:36])
+	s.ym.egDiv = b[36]
+	s.ym.prev27 = b[37]
+	off := 40
+	for ch := range s.ym.chans {
+		s.ym.chans[ch].fb0 = math.Float32frombits(binary.LittleEndian.Uint32(b[off : off+4]))
+		s.ym.chans[ch].fb1 = math.Float32frombits(binary.LittleEndian.Uint32(b[off+4 : off+8]))
+		off += 8
+	}
+	for ch := range s.ym.ops {
+		for op := range s.ym.ops[ch] {
+			o := &s.ym.ops[ch][op]
+			o.phase = binary.LittleEndian.Uint32(b[off : off+4])
+			o.levelFP = int32(binary.LittleEndian.Uint32(b[off+4 : off+8]))
+			o.stage = b[off+8]
+			flags := b[off+9]
+			o.keyOn = flags&1 != 0
+			o.ssgDown = flags&2 != 0
+			o.ssgHold = flags&4 != 0
+			off += 12
 		}
 	}
 	return nil
