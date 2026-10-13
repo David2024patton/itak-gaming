@@ -234,8 +234,8 @@ func TestSerializeRoundTrip(t *testing.T) {
 	if len(s1) != m.StateSize() {
 		t.Fatalf("Serialize produced %d bytes, StateSize says %d", len(s1), m.StateSize())
 	}
-	if s1[0] != 3 {
-		t.Fatalf("version byte = %d, want 3", s1[0])
+	if s1[0] != 4 {
+		t.Fatalf("version byte = %d, want 4", s1[0])
 	}
 
 	// Deserialize must not depend on cart size or history:
