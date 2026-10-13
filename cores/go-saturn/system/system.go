@@ -37,10 +37,12 @@
 // Slice boundaries, stated plainly: there is no BIOS in
 // this core and none is loaded here. Reset parks the
 // master CPU at address 0 with the conventional stack
-// pointer; real game boot through the documented HLE
-// path arrives in SAT-4. The slave CPU starts held and
-// is released through ReleaseSlave or the SMPC SSHON
-// command.
+// pointer, which the device gates use to seed their own
+// programs. Real game boot is BootDisc (boot.go): an HLE
+// implementation of the documented boot process that
+// loads the disc's initial program to Work RAM-H and
+// enters it, with the slave held until the IP releases
+// it through the SMPC SSHON command.
 package system
 
 import (
