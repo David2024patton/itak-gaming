@@ -62,6 +62,10 @@ func (s *Session) reader() {
 			}
 		case "pause":
 			s.peerPaused = e.Paused
+		case "chat":
+			// Recorded for the UI only. Chat must never touch
+			// lockstep state (see chat.go).
+			s.notePeerChat(e.Text)
 		case "peer_left":
 			if s.phase == phaseRoom {
 				// Still in the waiting room: the seat simply
