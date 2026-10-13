@@ -451,6 +451,13 @@ class MainActivity : FlutterActivity() {
                             call.argument<String>("npServer")?.let {
                                 intent.putExtra(EmulatorActivity.EXTRA_NP_SERVER, it)
                             }
+                            // The lobby password, so a seat
+                            // rotation inside the game screen can
+                            // re-enter the room (watch or join)
+                            // without asking for it again.
+                            call.argument<String>("npPassword")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_PASSWORD, it)
+                            }
                             // Optional watch mode (spectator from the
                             // Online screen): mode/server/lobby/token
                             // ride the same extras the netplay launch
