@@ -1,20 +1,24 @@
-// Package system wires the VR4300 CPU, the physical memory
-// bus, and a parsed cartridge into the machine the libretro
-// shell (a later slice) will drive. Slice N64-1 runs the CPU
-// only: there is no RSP, RDP, video, or audio output yet, so
-// the framebuffer is blank and games cannot boot (boot needs
-// the PIF/CIC path, which lands in N64-4). Bare code loaded
-// directly into memory runs today, which is what the test
-// harness uses.
+// Package system wires the VR4300 CPU, the RSP, the
+// physical memory bus, and a parsed cartridge into the
+// machine the libretro shell (a later slice) will drive.
+// Slice N64-2 adds the RSP: it executes from IMEM under
+// the interleave model described on RunCycles. There is
+// no RDP, video, or audio output yet, so the framebuffer
+// is blank and games cannot boot (boot needs the PIF/CIC
+// path, which lands in N64-4). Bare code loaded directly
+// into memory runs today, which is what the test harness
+// uses.
 package system
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
 	"github.com/davidpatton/itak-gaming/cores/go-n64/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/r4300"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/rsp"
 )
 
 // Frame geometry and timing (NTSC): the VR4300 runs at
@@ -47,12 +51,14 @@ const (
 // System is the N64 machine.
 type System struct {
 	CPU  *r4300.CPU
+	RSP  *rsp.RSP
 	Mem  *bus.Memory
 	Cart *cart.Cart
 
 	expansion bool
 	buttons   uint16
 	fb        []uint32
+	rspFrac   int // leftover RSP budget numerator (of 3 per CPU cycle)
 }
 
 // New builds a machine around a raw cartridge dump.
@@ -82,6 +88,7 @@ func (s *System) LoadROM(rom []byte) error {
 	}
 	s.Cart = c
 	s.Mem = bus.New(c.ROM, s.expansion)
+	s.RSP = s.Mem.RSP
 	s.CPU = r4300.New(s.Mem)
 	s.Mem.OnMIChange = func(active bool) {
 		s.CPU.SetInterruptLine(active)
@@ -99,12 +106,26 @@ func (s *System) Reset() {
 	s.CPU.Reset()
 }
 
-// RunCycles executes the CPU for at least the given number
-// of flat cycles.
+// RunCycles executes the CPU for at least the given
+// number of flat cycles, interleaving the RSP. The RSP
+// runs at 62.5 MHz against the CPU's 93.75 MHz, a 2:3
+// ratio: after every CPU step the RSP is credited 2
+// cycles per 3 CPU cycles (the fractional remainder is
+// carried exactly) and runs that many instructions,
+// stopping early when halted. A CPU write that sets the
+// halt flag therefore stops the RSP at the next system
+// step boundary.
 func (s *System) RunCycles(cycles int) {
 	n := 0
 	for n < cycles {
-		n += s.CPU.Step()
+		c := s.CPU.Step()
+		n += c
+		s.rspFrac += 2 * c
+		steps := s.rspFrac / 3
+		s.rspFrac -= steps * 3
+		if steps > 0 {
+			s.RSP.Run(steps)
+		}
 	}
 }
 
@@ -132,16 +153,18 @@ func (s *System) Title() string {
 	return s.Cart.Name
 }
 
-const stateVersion = 1
+const stateVersion = 2
 
 // SerializeSize reports the byte size of a serialized
 // system for this machine's RDRAM configuration.
 func (s *System) SerializeSize() int {
-	return 2 + r4300.SerializeSize + len(s.Mem.RDRAM)
+	return 2 + r4300.SerializeSize + len(s.Mem.RDRAM) + rsp.SerializeSize + 8 + 8
 }
 
 // Serialize writes the full machine state: version byte,
-// option flags, the CPU block, and RDRAM.
+// option flags, the CPU block, RDRAM, the RSP block, the
+// MI interrupt and mask registers, and the RSP
+// interleave remainder.
 func (s *System) Serialize() []byte {
 	out := make([]byte, s.SerializeSize())
 	out[0] = stateVersion
@@ -149,7 +172,15 @@ func (s *System) Serialize() []byte {
 		out[1] = 1
 	}
 	n := s.CPU.Serialize(out[2:])
-	copy(out[2+n:], s.Mem.RDRAM)
+	off := 2 + n
+	copy(out[off:], s.Mem.RDRAM)
+	off += len(s.Mem.RDRAM)
+	off += s.RSP.Serialize(out[off:])
+	intr, mask := s.Mem.MIState()
+	binary.BigEndian.PutUint32(out[off:], intr)
+	binary.BigEndian.PutUint32(out[off+4:], mask)
+	off += 8
+	binary.BigEndian.PutUint64(out[off:], uint64(int64(s.rspFrac)))
 	return out
 }
 
@@ -167,7 +198,18 @@ func (s *System) Deserialize(in []byte) error {
 	if err := s.CPU.Deserialize(in[2:]); err != nil {
 		return err
 	}
-	copy(s.Mem.RDRAM, in[2+r4300.SerializeSize:])
+	off := 2 + r4300.SerializeSize
+	copy(s.Mem.RDRAM, in[off:])
+	off += len(s.Mem.RDRAM)
+	if err := s.RSP.Deserialize(in[off:]); err != nil {
+		return err
+	}
+	off += rsp.SerializeSize
+	intr := binary.BigEndian.Uint32(in[off:])
+	mask := binary.BigEndian.Uint32(in[off+4:])
+	s.Mem.RestoreMI(intr, mask)
+	off += 8
+	s.rspFrac = int(int64(binary.BigEndian.Uint64(in[off:])))
 	s.CPU.SetInterruptLine(s.Mem.MIInterrupt())
 	return nil
 }
