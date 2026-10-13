@@ -232,8 +232,11 @@ human, not a timeout, decides when the game starts:
 1. On connecting, each peer introduces itself, and repeats the
    introduction until the other side knows its name:
    ```json
-   { "type": "hello", "player": "David" }
+   { "type": "hello", "player": "David", "role": "host" }
    ```
+   `role` says which seat the sender holds, `"host"` or
+   `"guest"`; a spectator's hello says `"spectator"` instead
+   (section 4.8). Older builds omit it.
 2. Each player presses Ready when they are set (one-way):
    ```json
    { "type": "ready" }
@@ -289,9 +292,14 @@ sides use the accepted value; it does not change mid-session.
 Each frame, each side sends exactly one message for its local player:
 
 ```json
-{ "type": "input", "frame": 1234, "buttons": 9 }
+{ "type": "input", "frame": 1234, "buttons": 9, "from": "David", "seat": 1 }
 ```
 
+- `from` / `seat`: the sender tags of section 4.8. Every envelope
+  a client sends carries `from` with its player name; inputs
+  additionally carry `seat` (host = 1, guest = 2) so anyone in
+  the room, a spectator in particular, can attribute the two
+  input streams without guessing.
 - `frame`: the frame this input **applies to**, i.e. current frame +
   inputDelay at the moment it was sampled.
 - `buttons`: a 16-bit bitmask in the bridge's libretro button order
@@ -347,11 +355,17 @@ truth**:
    it as a snapshot. Because a save state can exceed the 256 KB
    message cap (an SNES state is ~100-800 KB), snapshots are chunked:
    ```json
-   { "type": "snapshot_begin", "frame": 1500, "bytes": 823407, "chunks": 13 }
-   { "type": "snapshot_chunk", "seq": 0, "data": "base64..." }
+   { "type": "snapshot_begin", "frame": 1500, "bytes": 823407, "chunks": 13, "to": "Brother" }
+   { "type": "snapshot_chunk", "seq": 0, "data": "base64...", "to": "Brother" }
    ... seq 1..12, each chunk at most 64 KB of raw state (base64 ~85 KB)
-   { "type": "snapshot_end", "sha256": "hex-of-the-full-state" }
+   { "type": "snapshot_end", "sha256": "hex-of-the-full-state", "to": "Brother" }
    ```
+   Every envelope of a transfer carries `to`, the name of the one
+   room member it is for. A receiver assembles only transfers
+   addressed to it (or unaddressed ones, the older behavior);
+   with spectators in the room several transfers can share the
+   socket, and a guest must never assemble a snapshot meant for
+   a spectator, nor the reverse.
 3. The guest reassembles, verifies the SHA-256, loads the state via
    the bridge, sets its frame counter to the snapshot's frame, clears
    any queued inputs past that frame, and replies
@@ -434,6 +448,81 @@ Rules:
   display.
 - There is no delivery receipt and no history: a message sent
   before the peer's socket joined is simply lost, like `hello`.
+
+### 4.8 Watching a game (spectators)
+
+A spectator (section 2) sits in the room with the same game and
+core loaded locally and reconstructs the match from the two
+players' input streams: no video ever crosses the wire, the
+watcher just runs the deterministic simulation a few frames
+behind the players. This works only because every sender in
+the room tags its frames. The relay stays verbatim and tags
+nothing itself, so clients self-tag:
+
+- **Every** envelope a client sends carries `"from"` with its
+  player name, stamped where the envelope is built so no send
+  site can forget. Input envelopes additionally carry `"seat"`
+  (host = 1, guest = 2), and a player's `hello` carries its
+  seat as `"role"` (`"host"` / `"guest"`); a spectator's hello
+  says `"role": "spectator"`.
+
+A player session therefore sees frames from several people on
+one socket, and filters by sender once it knows its peer's
+name (from the peer's `hello`):
+
+- Game-critical envelopes (`input`, `state_hash`,
+  `session_offer`, `session_accept`, `session_reject`,
+  `countdown`, `ready`, `pause`, `resync_request`,
+  `snapshot_applied`, `session_end`) are processed **only**
+  when `from` equals the peer's name. An empty `from` is an
+  older client and is always accepted, and before the peer's
+  name is known nothing is filtered, so a two-player session
+  behaves exactly as it did before spectators existed.
+- Snapshot envelopes follow their `to` address instead
+  (section 4.4): a transfer addressed to someone else is
+  ignored envelope by envelope.
+- Chat, voice signaling (`offer` / `answer` / `ice`), and the
+  server's own notices are accepted from anyone. Chat is
+  attributed to its `from` stamp when present, else to the
+  peer (the old two-player assumption).
+
+A **watch session** is a client session in watch mode:
+
+- It sends a `hello` with `"role": "spectator"`, may chat like
+  everyone else, and **never** sends `input`, `ready`,
+  `countdown`, or any session envelope, not even a
+  `session_end` when it leaves; its socket simply closes.
+- It learns the seats from the players' hellos (or the
+  server's `roster`, which also reaches a joiner who missed
+  them), collects the seat-tagged inputs into per-frame pairs,
+  and steps its local core exactly like a player does,
+  honoring the `inputDelay` it overheard in `session_accept`
+  (the protocol default until then).
+- Joining mid-match: on connecting, and whenever it falls
+  more than 600 frames behind, the watcher asks for a
+  snapshot:
+  ```json
+  { "type": "watch_sync", "player": "Fan", "from": "Fan" }
+  ```
+  A player session queues the request under the requester's
+  name. The host (normally) answers with a snapshot addressed
+  to the requester (section 4.4), and **repeats the input
+  envelopes it still holds for `[frame, frame + inputDelay)`
+  right after it**, each with its original sender's stamp.
+  Those inputs were sent before the watcher joined; without
+  them the watcher would stall on the snapshot's very first
+  frame, because unlike a two-player resync the players make
+  no neutral-window agreement for a watcher: they keep
+  applying the real inputs, so the watcher must too. The
+  watcher loads the snapshot through the same path a guest
+  loads a resync, sets its frame counter to the snapshot
+  frame, drops collected inputs before it, and steps on in
+  sync. It acknowledges with `snapshot_applied` addressed to
+  the sender; players ignore acknowledgments not from their
+  peer.
+- The watch ends on `lobby_closed`, on a `session_end` from
+  either player, or when `peer_left` has arrived for **both**
+  players.
 
 ---
 
