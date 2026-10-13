@@ -269,7 +269,7 @@ const List<SystemInfo> kSystems = [
     name: 'Game Boy Advance',
     tagline: 'GBA · 2001',
     color: Color(0xFF5C6BC0),
-    core: 'libmgba.so',
+    core: 'libgo_gba.so',
     dir: 'GBA',
     exts: ['.gba'],
     thumbRepo: 'Nintendo_-_Game_Boy_Advance',
