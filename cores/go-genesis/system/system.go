@@ -355,6 +355,24 @@ func (s *System) RunFrame() {
 		s.runZ80Line(int64(base + uint64(line)*masterFrame/7/linesTotal))
 		s.runSubLine(line)
 		if s.cd != nil {
+			// Advance the CD block (CDD 75 Hz tick, CD-DA and data
+			// read progression) by this line's sub CPU cycle budget.
+			// The delta depends only on the line number, so a
+			// restored machine replays the exact same advance
+			// sequence. Completed CDD commands raise level 4 on
+			// the sub CPU and completed CDC transfers level 5,
+			// each gated by its gate array interrupt mask bit.
+			delta := subTarget(line)
+			if line > 0 {
+				delta -= subTarget(line - 1)
+			}
+			s.cd.AdvanceCycles(int(delta))
+			if s.cd.TakeCDDInterrupt() {
+				s.scpu.RequestInterrupt(4, nil)
+			}
+			if s.cd.TakeCDCInterrupt() {
+				s.scpu.RequestInterrupt(5, nil)
+			}
 			if fire, vec := s.cd.LineTick(line); fire {
 				s.cpu.RequestInterrupt(2, vec)
 			}
@@ -380,7 +398,26 @@ func (s *System) RunFrame() {
 	s.audioAcc += float64(sound.SampleRate) * masterFrame / masterHz
 	n := int(s.audioAcc)
 	s.audioAcc -= float64(n)
-	s.audio = append(s.audio, s.sound.Produce(n)...)
+	gen := s.sound.Produce(n)
+	if s.cd != nil {
+		// Mix the Sega CD audio (CD-DA through the fader plus the
+		// RF5C164 PCM mix, both already at the machine rate) into
+		// the Genesis output with saturation.
+		cdAudio := s.cd.RenderAudio(n)
+		for i := range gen {
+			if i >= len(cdAudio) {
+				break
+			}
+			v := int32(gen[i]) + int32(cdAudio[i])
+			if v > 32767 {
+				v = 32767
+			} else if v < -32768 {
+				v = -32768
+			}
+			gen[i] = int16(v)
+		}
+	}
+	s.audio = append(s.audio, gen...)
 }
 
 // --- save states ---------------------------------------------------------
