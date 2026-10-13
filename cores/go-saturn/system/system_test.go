@@ -120,8 +120,8 @@ func TestLoadDiscImageHeader(t *testing.T) {
 	sector := make([]byte, 2048)
 	copy(sector[0:16], "SEGA SEGASATURN ")
 	copy(sector[0x60:0x60+14], "SYNTHETIC TEST")
-	binary.BigEndian.PutUint32(sector[0xF0:0xF4], 0x06001000)
-	binary.BigEndian.PutUint32(sector[0xF8:0xFC], 0x06000800)
+	binary.BigEndian.PutUint32(sector[0xE8:0xEC], 0x06001000)
+	binary.BigEndian.PutUint32(sector[0xEC:0xF0], 0x06000800)
 	img, err := cd.OpenBytes(sector, 2048)
 	if err != nil {
 		t.Fatalf("OpenBytes: %v", err)
