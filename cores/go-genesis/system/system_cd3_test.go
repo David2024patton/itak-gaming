@@ -78,8 +78,8 @@ func TestCDASICTrace(t *testing.T) {
 	if err := sys.LoadDisc(iso); err != nil {
 		t.Fatalf("LoadDisc: %v", err)
 	}
-	if got, want := sys.SerializeSize(), 1061509; got != want {
-		t.Fatalf("CD mode SerializeSize = %d, want %d (unchanged by SCD-3)", got, want)
+	if got, want := sys.SerializeSize(), 1070469; got != want {
+		t.Fatalf("CD mode SerializeSize = %d, want %d (SCD-4 size: SCD-3 size plus BRAM and BIOS sections)", got, want)
 	}
 	if !runUntilSubDone(sys, 180) {
 		t.Fatalf("sub flag = %#02x after 180 frames, want 2 (ASIC handshake never completed)", sys.CDUnit().SubFlag())
