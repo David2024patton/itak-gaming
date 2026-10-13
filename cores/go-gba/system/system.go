@@ -3,7 +3,8 @@
 // from the bus package, a parsed cartridge from the cart
 // package, the PPU from the gpu package, the timers, DMA,
 // interrupt controller and keypad from the periph package,
-// and our own BIOS code and SWI HLE from the bios package.
+// the sound unit from the apu package, and our own BIOS
+// code and SWI HLE from the bios package.
 //
 // Execution model: the frame runs line by line (228
 // lines of 1232 cycles: 160 visible, 68 of vertical
@@ -20,6 +21,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/davidpatton/itak-gaming/cores/go-gba/apu"
 	"github.com/davidpatton/itak-gaming/cores/go-gba/bios"
 	"github.com/davidpatton/itak-gaming/cores/go-gba/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-gba/cart"
@@ -69,11 +71,11 @@ const (
 )
 
 // stateVersion is the save state format version. Version
-// 2 covers the CPU state, the bus stores, and the GBA-2
+// 3 covers the CPU state, the bus stores, the GBA-2
 // component states (PPU, interrupt controller, timers,
-// DMA, keypad, BIOS wait state) behind the machine
-// trailer.
-const stateVersion = 2
+// DMA, keypad, BIOS wait state), the GBA-3 sound unit
+// state, and the machine trailer.
+const stateVersion = 3
 
 // machineTrailerSize is the fixed trailer behind the
 // component blocks: buttons, current line, and the FIFO
@@ -91,14 +93,16 @@ type Machine struct {
 	timers *periph.Timers
 	dma    *periph.DMA
 	keys   *periph.Keypad
+	apu    *apu.APU
 	biosH  *bios.Handler
 
 	buttons uint32
 	line    int
 
-	// The FIFO sink the GBA-2 DMA feeds until GBA-3 turns
-	// it into audio: it counts the samples per channel
-	// and keeps the most recent value.
+	// The FIFO sink counters: every word the FIFO DMA
+	// channels deliver is counted per channel and the most
+	// recent value kept, alongside being pushed into the
+	// sound unit's FIFOs (see FIFOSample).
 	fifoCount [2]uint64
 	fifoLast  [2]uint32
 }
@@ -130,7 +134,21 @@ func (m *Machine) power() {
 	m.timers = periph.NewTimers()
 	m.dma = periph.NewDMA(m.bus, m.irq, m)
 	m.keys = periph.NewKeypad()
+	m.apu = apu.New()
 	m.biosH = bios.New(m.bus)
+	// Sound wiring: timer overflows clock the Direct
+	// Sound FIFOs (the APU pops one sample per overflow of
+	// the timer each FIFO channel selected), and the APU's
+	// refill request, raised when a FIFO drops to the
+	// documented half-empty level, runs one FIFO DMA burst
+	// on the matching channel (DMA1 feeds FIFO A, DMA2
+	// feeds FIFO B).
+	m.timers.OnOverflow = m.apu.OnTimerOverflow
+	m.apu.Refill = func(fifo int) {
+		if m.apu.WantsData(fifo) {
+			m.dma.OnFIFO(fifo + 1)
+		}
+	}
 	m.cpu.SWIHook = m.biosH.Hook
 	m.bus.IORead = m.ioRead
 	m.bus.IOWrite = m.ioWrite
@@ -185,16 +203,18 @@ func (m *Machine) Title() string {
 	return m.cart.Title
 }
 
-// FIFOSample is the DMA FIFO sink: until GBA-3 builds
-// the audio path, samples delivered by DMA channels 1
-// and 2 are counted and the latest value kept, so the
-// FIFO trigger path is observable and testable.
+// FIFOSample is the DMA FIFO sink: words delivered by
+// DMA channels 1 and 2 are counted (the GBA-2 counters
+// stay as an observability hook) and pushed into the
+// sound unit's FIFOs, four sample bytes per word, least
+// significant byte first.
 func (m *Machine) FIFOSample(channel int, value uint32) {
 	if channel < 1 || channel > 2 {
 		return
 	}
 	m.fifoCount[channel-1]++
 	m.fifoLast[channel-1] = value
+	m.apu.PushFIFO(channel-1, value)
 }
 
 // FIFOSamples reports how many FIFO samples a DMA
@@ -215,6 +235,8 @@ func (m *Machine) ioRead(off uint32, size int) (uint32, bool) {
 	switch {
 	case off < 0x60:
 		return m.gpu.ReadReg(off, size), true
+	case off >= 0x60 && off < 0xA8:
+		return m.apu.ReadReg(off, size), true
 	case off >= 0xB0 && off < 0xE0:
 		return m.dma.ReadReg(off, size), true
 	case off >= 0x100 && off < 0x110:
@@ -233,6 +255,8 @@ func (m *Machine) ioWrite(off uint32, size int, val uint32) bool {
 	switch {
 	case off < 0x60:
 		m.gpu.WriteReg(off, size, val)
+	case off >= 0x60 && off < 0xA8:
+		m.apu.WriteReg(off, size, val)
 	case off >= 0xB0 && off < 0xE0:
 		m.dma.WriteReg(off, size, val)
 	case off >= 0x100 && off < 0x110:
@@ -250,8 +274,11 @@ func (m *Machine) ioWrite(off uint32, size int, val uint32) bool {
 // Execution.
 
 // runCPU steps the CPU for the given cycle budget,
-// advancing the timers by the cycles each step reports
-// and keeping the CPU's IRQ input level current. A CPU
+// advancing the timers and the sound unit by the cycles
+// each step reports (timer overflows reach the sound
+// unit through the timers' OnOverflow hook, and the
+// sound unit then advances by the same count) and
+// keeping the CPU's IRQ input level current. A CPU
 // halted in a BIOS wait is polled so the wait can end as
 // soon as its wake condition lands.
 func (m *Machine) runCPU(cycles int) {
@@ -263,6 +290,7 @@ func (m *Machine) runCPU(cycles int) {
 		m.cpu.IRQLine = m.irq.Asserted()
 		n := m.cpu.Step()
 		m.timers.Advance(n, m.irq)
+		m.apu.Advance(n)
 		spent += n
 	}
 }
@@ -320,6 +348,18 @@ func (m *Machine) RunFrame() { m.runLines(linesPerFrame) }
 // XRGB8888 pixels, owned by the PPU.
 func (m *Machine) Framebuffer() []uint32 { return m.gpu.Framebuffer() }
 
+// AudioBuffer drains the sound unit's pending output:
+// interleaved stereo int16 samples at the rate
+// AudioSampleRate reports. The slice is empty when no
+// full output sample has accumulated since the last
+// drain.
+func (m *Machine) AudioBuffer() []int16 { return m.apu.AudioBuffer() }
+
+// AudioSampleRate returns the current output sample rate
+// in Hz, selected by the SOUNDBIAS resolution bits
+// (32768 Hz at power-on).
+func (m *Machine) AudioSampleRate() int { return m.apu.SampleRate() }
+
 // SetButtons stores the controller mask (see the Button
 // constants) and presents it to the keypad register,
 // which evaluates its interrupt condition.
@@ -335,14 +375,16 @@ func (m *Machine) Buttons() uint32 { return m.buttons }
 
 // StateSize returns the exact byte size of a serialized
 // state: the version byte, the CPU block, the seven bus
-// stores, the five GBA-2 component blocks, and the
-// machine trailer.
+// stores, the component blocks (PPU, interrupt
+// controller, timers, DMA, keypad, BIOS wait state,
+// sound unit), and the machine trailer.
 func (m *Machine) StateSize() int {
 	return 1 + arm7tdmi.StateSize +
 		bus.EWRAMSize + bus.IWRAMSize + bus.SRAMSize +
 		bus.PaletteSize + bus.VRAMSize + bus.OAMSize + bus.IOSize +
 		gpu.StateSize + periph.IRQStateSize + periph.TimersStateSize +
 		periph.DMAStateSize + periph.KeypadStateSize + bios.HandlerStateSize +
+		apu.StateSize +
 		machineTrailerSize
 }
 
@@ -368,6 +410,7 @@ func (m *Machine) Serialize() []byte {
 	off += m.dma.Serialize(out[off:])
 	off += m.keys.Serialize(out[off:])
 	off += m.biosH.Serialize(out[off:])
+	off += m.apu.Serialize(out[off:])
 	binary.LittleEndian.PutUint32(out[off:], m.buttons)
 	off += 4
 	binary.LittleEndian.PutUint32(out[off:], uint32(m.line))
@@ -415,6 +458,7 @@ func (m *Machine) Deserialize(in []byte) error {
 		{periph.DMAStateSize, m.dma.Deserialize},
 		{periph.KeypadStateSize, m.keys.Deserialize},
 		{bios.HandlerStateSize, m.biosH.Deserialize},
+		{apu.StateSize, m.apu.Deserialize},
 	}
 	for _, b := range blocks {
 		if !b.load(in[off : off+b.size]) {
