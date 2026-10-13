@@ -524,6 +524,77 @@ A **watch session** is a client session in watch mode:
   either player, or when `peer_left` has arrived for **both**
   players.
 
+### 4.9 Match end and seat assignment
+
+Rotation (seat swaps, Got Next, tournaments) needs a match
+to be able to end without the session ending. Two envelopes,
+the referee machinery of SPECTATOR_DESIGN.md slice S4,
+cover it.
+
+**Match end.** Either player may end the current match:
+
+```json
+{ "type": "match_end", "reason": "good game" }
+```
+
+`reason` is free text and may be empty. The rules:
+
+- `match_end` is game traffic: a player session honors it
+  only from its peer (the section 4.8 sender gate), so a
+  spectator sharing the socket cannot end a match it is
+  only watching. A watch session believes it from the two
+  players.
+- On receipt, and on sending (the sender's client treats
+  its own send as authoritative), the session returns to
+  the waiting room **on the same socket**. The guarantee:
+  the session is not ended, the transport is never closed,
+  and room membership survives (the peer is still present,
+  names are still known, chat history is kept). What
+  resets is everything the match owned: both players'
+  readys, the frame counter, queued inputs, hash
+  bookkeeping, pause state, and any half-finished resync.
+- The next match starts with the section 4.0 room ritual
+  and the section 4.1 handshake again, unchanged, over the
+  same connection. A different player can hold seat 2 for
+  it: the outgoing guest leaves the room (section 4.0's
+  `peer_left` behavior) and the incoming one joins and says
+  hello, all on the host's existing socket.
+- Each client records the finished match for its local
+  stats exactly as it would a `session_end` (section 4.6),
+  minus the teardown. `session_end` still exists and still
+  means the session itself is over. A watch session
+  likewise falls back to the room on `match_end` and asks
+  for a fresh snapshot, ready to reconstruct the next
+  match.
+
+**Seat assignment.** The host client is the room's referee
+for v1: it alone decides who fills the seats next, and it
+broadcasts the call so every client hears the same decision
+at the same time:
+
+```json
+{ "type": "seat_assign", "player": "Fan", "seat": 2 }
+```
+
+- `seat` is 1 or 2; there is no unassign message. Naming a
+  different player for a seat is how the current holder
+  rotates out: the named player takes the seat through the
+  normal room flow (a spectator is promoted by joining as
+  that seat), and the previous holder falls back to
+  watching or leaves.
+- Honor rules: only the host's client sends `seat_assign`,
+  and receivers never trust claims inside the envelope
+  about who sent it. A player session records a call only
+  when it arrives from the peer (for the guest, the peer is
+  the host); a watch session records one only when it
+  carries the known host's sender stamp. Calls from anyone
+  else, calls naming nobody, and calls for a seat other
+  than 1 or 2 are ignored.
+- The call is a broadcast of a decision, not a
+  negotiation: there is no accept or reject reply, and no
+  server state is involved. If the host leaves, the room
+  ends as it always has (section 1), referee and all.
+
 ---
 
 ## 5. Security notes
