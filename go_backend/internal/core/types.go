@@ -33,7 +33,7 @@ type CoreInfo struct {
 var Cores32Bit = []CoreInfo{
 	{SystemNES, "FCEUmm", "libfceumm.so", []string{".nes"}, 32},
 	{SystemSNES, "Snes9x", "libsnes9x.so", []string{".sfc", ".smc"}, 32},
-	{SystemGenesis, "Genesis Plus GX", "libgenesis_plus_gx.so", []string{".md", ".gen", ".bin"}, 32},
+	{SystemGenesis, "Go Genesis", "libgo_genesis.so", []string{".md", ".gen", ".bin"}, 32},
 	{SystemGameBoy, "Gambatte", "libgambatte.so", []string{".gb"}, 32},
 	{SystemGBC, "Gambatte", "libgambatte.so", []string{".gbc"}, 32},
 	{SystemGBA, "mGBA", "libmgba.so", []string{".gba"}, 32},
