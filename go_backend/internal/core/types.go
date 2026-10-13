@@ -37,7 +37,7 @@ var Cores32Bit = []CoreInfo{
 	{SystemGameBoy, "Go Game Boy", "libgo_gameboy.so", []string{".gb"}, 32},
 	{SystemGBC, "Go Game Boy", "libgo_gameboy.so", []string{".gbc"}, 32},
 	{SystemGBA, "Go GBA", "libgo_gba.so", []string{".gba"}, 32},
-	{SystemPS1, "PCSX ReARMed", "libpcsx_rearmed.so", []string{".cue", ".iso"}, 32},
+	{SystemPS1, "Go PS1", "libgo_ps1.so", []string{".cue", ".iso", ".bin"}, 32},
 	{SystemSegaCD, "Genesis Plus GX", "libgenesis_plus_gx.so", []string{".cue", ".iso"}, 32},
 }
 
