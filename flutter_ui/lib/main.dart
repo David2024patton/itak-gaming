@@ -75,6 +75,111 @@ class Prefs {
 }
 
 // ---------------------------------------------------------------------------
+// Player identity. The first name stays the account key everywhere
+// (saves, stats files, server). Each player also carries a middle
+// initial, a last initial, and a home state or region, collected when
+// the player is added or edited, so the boards can show a fuller
+// identity ("David M. P.", Kentucky) and stay organized when more
+// people join. Stored as one JSON map in the 'player_info' pref.
+// ---------------------------------------------------------------------------
+
+const List<String> kUsStates = [
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI',
+  'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN',
+  'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH',
+  'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA',
+  'WV', 'WI', 'WY',
+];
+
+class PlayerIdentity {
+  final String middle; // one letter, may be empty
+  final String last; // one letter, may be empty
+  final String region; // state code or free text, may be empty
+  const PlayerIdentity(this.middle, this.last, this.region);
+
+  bool get complete =>
+      middle.isNotEmpty && last.isNotEmpty && region.isNotEmpty;
+
+  String displayName(String name) {
+    final parts = <String>[name];
+    if (middle.isNotEmpty) parts.add('$middle.');
+    if (last.isNotEmpty) parts.add('$last.');
+    return parts.join(' ');
+  }
+}
+
+class PlayerInfoStore {
+  static Map<String, PlayerIdentity> _cache = {};
+  static bool _loaded = false;
+
+  static Future<Map<String, PlayerIdentity>> load() async {
+    if (_loaded) return _cache;
+    _loaded = true;
+    final raw = await Prefs.get('player_info');
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final map = jsonDecode(raw) as Map<String, dynamic>;
+        _cache = map.map((k, v) {
+          final m = v as Map<String, dynamic>;
+          return MapEntry(
+            k,
+            PlayerIdentity(
+              (m['m'] ?? '').toString(),
+              (m['l'] ?? '').toString(),
+              (m['st'] ?? '').toString(),
+            ),
+          );
+        });
+      } catch (_) {}
+    }
+    return _cache;
+  }
+
+  static Future<void> _persist() async {
+    final map = _cache.map(
+      (k, v) => MapEntry(k, {'m': v.middle, 'l': v.last, 'st': v.region}),
+    );
+    await Prefs.set('player_info', jsonEncode(map));
+  }
+
+  static Future<void> save(String name, PlayerIdentity id) async {
+    await load();
+    _cache[name] = id;
+    await _persist();
+  }
+
+  static Future<void> rename(String oldName, String newName) async {
+    await load();
+    final id = _cache.remove(oldName);
+    if (id != null) _cache[newName] = id;
+    await _persist();
+  }
+
+  static Future<void> remove(String name) async {
+    await load();
+    _cache.remove(name);
+    await _persist();
+  }
+
+  static PlayerIdentity? of(String name) => _cache[name];
+
+  static String displayOf(String name) =>
+      _cache[name]?.displayName(name) ?? name;
+
+  // The native stats uploader reads these three prefs when it
+  // reports a finished session to the global board, so the board
+  // can show the same identity as the local screens. Refreshed
+  // whenever the current player or their identity changes.
+  static Future<void> publishForUpload(String name) async {
+    await load();
+    final id = _cache[name];
+    await Prefs.set('identity_name', name);
+    await Prefs.set('identity_display', id?.displayName(name) ?? name);
+    await Prefs.set('identity_region', id?.region ?? '');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Systems. Filtered by build (32-bit vs 64-bit done at compile time).
 // ---------------------------------------------------------------------------
 
@@ -538,6 +643,10 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
       _players = players;
       _currentPlayer = cur;
     });
+    await PlayerInfoStore.load();
+    await PlayerInfoStore.publishForUpload(cur);
+    if (!mounted) return;
+    setState(() {});
   }
 
   Future<void> _loadSystemImages() async {
@@ -573,6 +682,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
       _banner = null;
     });
     await Prefs.set('current_player', _currentPlayer);
+    await PlayerInfoStore.publishForUpload(_currentPlayer);
   }
 
   // Controller assignments: player name -> {id, name} of their gamepad.
@@ -615,11 +725,13 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     if (_players.length <= 1) return;
     final players = _players.where((p) => p != name).toList();
     await Prefs.set('players', players.join('\n'));
+    await PlayerInfoStore.remove(name);
     if (_controllerMap.remove(name) != null) await _saveControllerMap();
     var cur = _currentPlayer;
     if (cur == name) {
       cur = players.first;
       await Prefs.set('current_player', cur);
+      await PlayerInfoStore.publishForUpload(cur);
     }
     if (!mounted) return;
     setState(() {
@@ -690,44 +802,278 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     _refocusHome();
   }
 
-  Future<void> _renamePlayer(String oldName, VoidCallback refresh) async {
-    final name = await showTvKeyboard(
-      context,
-      title: 'Rename player',
-      initial: oldName,
+  // The player form: first name, middle initial, last initial, and
+  // home state or region. Every field is required (David,
+  // 2026-10-12) so the leaderboards can tell people apart. Returns
+  // the cleaned values, or null when cancelled.
+  Future<({String name, PlayerIdentity id})?> _playerForm({
+    String? existing,
+  }) async {
+    await PlayerInfoStore.load();
+    var name = existing ?? '';
+    var id = existing != null
+        ? (PlayerInfoStore.of(existing) ??
+            const PlayerIdentity('', '', ''))
+        : const PlayerIdentity('', '', '');
+    String? error;
+    if (!mounted) return null;
+    final result = await showDialog<({String name, PlayerIdentity id})>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Future<void> editName() async {
+            final v = await showTvKeyboard(
+              ctx,
+              title: 'First name',
+              initial: name,
+            );
+            if (v == null) return;
+            setLocal(() => name = v.trim().replaceAll('\n', ' '));
+          }
+
+          Future<void> editInitial(String title, bool middle) async {
+            final v = await showTvKeyboard(
+              ctx,
+              title: title,
+              initial: middle ? id.middle : id.last,
+            );
+            if (v == null) return;
+            final letters = v.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+            final one = letters.isEmpty ? '' : letters[0];
+            setLocal(() {
+              id = middle
+                  ? PlayerIdentity(one, id.last, id.region)
+                  : PlayerIdentity(id.middle, one, id.region);
+            });
+          }
+
+          Future<void> editRegion() async {
+            final picked = await _pickRegion(id.region);
+            if (picked == null) return;
+            setLocal(() => id = PlayerIdentity(id.middle, id.last, picked));
+          }
+
+          Widget field(
+            String label,
+            String value,
+            VoidCallback onTap, {
+            bool auto = false,
+          }) {
+            return Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: InkWell(
+                autofocus: auto,
+                borderRadius: BorderRadius.circular(10),
+                onTap: onTap,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1B1B28),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 150,
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                              fontSize: 15, color: Colors.white60),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          value.isEmpty ? 'Tap to set' : value,
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: value.isEmpty ? Colors.white38 : Colors.white,
+                          ),
+                        ),
+                      ),
+                      const Icon(Icons.edit, size: 18, color: Colors.white54),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
+
+          final taken =
+              _players.any((p) => p != existing && p == name.trim());
+          final valid = name.trim().isNotEmpty && id.complete && !taken;
+          return AlertDialog(
+            backgroundColor: _dialogBg,
+            title: Text(existing == null ? 'Add a player' : 'Edit player'),
+            content: SizedBox(
+              width: 560,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Every player needs a first name, a middle and last '
+                    'initial, and a home state. That is how the '
+                    'leaderboards tell people apart.',
+                    style: TextStyle(fontSize: 15, color: Colors.white70),
+                  ),
+                  field('First name', name, editName, auto: true),
+                  field('Middle initial', id.middle,
+                      () => editInitial('Middle initial', true)),
+                  field('Last initial', id.last,
+                      () => editInitial('Last initial', false)),
+                  field('State / region', id.region, editRegion),
+                  if (error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Text(
+                        error!,
+                        style: const TextStyle(
+                            fontSize: 14.5, color: Colors.redAccent),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  if (!valid) {
+                    setLocal(() => error = taken
+                        ? 'That first name is already taken on this box.'
+                        : 'Fill in every field to save.');
+                    return;
+                  }
+                  Navigator.pop(ctx, (name: name.trim(), id: id));
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
     );
-    final clean = (name ?? '').trim().replaceAll('\n', ' ');
-    if (clean.isEmpty || clean == oldName) return;
-    if (_players.contains(clean)) {
-      await _infoDialog('Name taken', 'There is already a player named $clean.');
-      return;
+    _refocusHome();
+    return result;
+  }
+
+  // State picker: the 50 states plus DC as tappable rows, or a
+  // free-text entry for anywhere outside the US.
+  Future<String?> _pickRegion(String current) async {
+    final picked = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.85),
+      builder: (dctx) => AlertDialog(
+        backgroundColor: _dialogBg,
+        title: const Text('Home state'),
+        content: SizedBox(
+          width: 420,
+          height: 430,
+          child: ListView(
+            children: [
+              for (final st in kUsStates)
+                ListTile(
+                  dense: true,
+                  title: Text(st, style: const TextStyle(fontSize: 18)),
+                  trailing: st == current
+                      ? const Icon(Icons.check, color: Color(0xFF00E676))
+                      : null,
+                  onTap: () => Navigator.pop(dctx, st),
+                ),
+              const Divider(color: Colors.white24),
+              ListTile(
+                dense: true,
+                title: const Text(
+                  'Outside the US...',
+                  style: TextStyle(fontSize: 18),
+                ),
+                onTap: () => Navigator.pop(dctx, '__other__'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    if (picked == '__other__') {
+      if (!mounted) return null;
+      final typed = await showTvKeyboard(
+        context,
+        title: 'State or region',
+        initial: kUsStates.contains(current) ? '' : current,
+      );
+      final clean = (typed ?? '').trim();
+      return clean.isEmpty ? null : clean;
     }
-    final players = _players.map((p) => p == oldName ? clean : p).toList();
-    await Prefs.set('players', players.join('\n'));
-    if (_currentPlayer == oldName) {
-      await Prefs.set('current_player', clean);
-    }
-    await Avatars.rename(oldName, clean);
-    // A rename keeps the player's controller assignment.
-    final assigned = _controllerMap.remove(oldName);
-    if (assigned != null) {
-      _controllerMap[clean] = assigned;
-      await _saveControllerMap();
-    }
-    // Move the player's save folder and stats file to the new name.
-    try {
-      await _channel.invokeMethod('renamePlayerFiles', {
-        'old': oldName,
-        'new': clean,
+    return picked;
+  }
+
+  // Edit a player through the form. A changed first name runs the
+  // full rename path (saves folder, stats file, avatar, controller
+  // assignment, identity record all follow the new name).
+  Future<void> _editPlayer(String oldName, VoidCallback refresh) async {
+    final form = await _playerForm(existing: oldName);
+    if (form == null) return;
+    final newName = form.name;
+    if (newName != oldName) {
+      final players =
+          _players.map((p) => p == oldName ? newName : p).toList();
+      await Prefs.set('players', players.join('\n'));
+      if (_currentPlayer == oldName) {
+        await Prefs.set('current_player', newName);
+      }
+      await Avatars.rename(oldName, newName);
+      // A rename keeps the player's controller assignment.
+      final assigned = _controllerMap.remove(oldName);
+      if (assigned != null) {
+        _controllerMap[newName] = assigned;
+        await _saveControllerMap();
+      }
+      // Move the player's save folder and stats file to the new name.
+      try {
+        await _channel.invokeMethod('renamePlayerFiles', {
+          'old': oldName,
+          'new': newName,
+        });
+      } catch (_) {}
+      await PlayerInfoStore.rename(oldName, newName);
+      if (!mounted) return;
+      setState(() {
+        _players = players;
+        if (_currentPlayer == oldName) _currentPlayer = newName;
       });
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() {
-      _players = players;
-      if (_currentPlayer == oldName) _currentPlayer = clean;
-    });
+    }
+    await PlayerInfoStore.save(newName, form.id);
+    if (_currentPlayer == newName) {
+      await PlayerInfoStore.publishForUpload(newName);
+    }
     refresh();
     _refocusHome();
+  }
+
+  // One-line summary under a player in the manage table: region,
+  // whether they are playing now, and a nudge when the identity
+  // fields are still missing.
+  String _playerSubtitle(String p) {
+    final id = PlayerInfoStore.of(p);
+    final parts = <String>[
+      if ((id?.region ?? '').isNotEmpty) id!.region,
+      p == _currentPlayer ? 'Playing now' : 'Tap row to switch',
+      if (id == null || !id.complete) 'tap Edit to finish the profile',
+    ];
+    return parts.join(' · ');
   }
 
   Future<void> _managePlayers() async {
@@ -839,16 +1185,14 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                                             CrossAxisAlignment.start,
                                         children: [
                                           Text(
-                                            p,
+                                            PlayerInfoStore.displayOf(p),
                                             style: const TextStyle(
                                               fontSize: 20,
                                               fontWeight: FontWeight.bold,
                                             ),
                                           ),
                                           Text(
-                                            p == _currentPlayer
-                                                ? 'Playing now'
-                                                : 'Tap row to switch',
+                                            _playerSubtitle(p),
                                             style: const TextStyle(
                                               fontSize: 13.5,
                                               color: Colors.white54,
@@ -882,9 +1226,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                                     const SizedBox(width: 4),
                                     IconButton(
                                       icon: const Icon(Icons.edit),
-                                      tooltip: 'Rename',
+                                      tooltip: 'Edit player',
                                       onPressed: () =>
-                                          _renamePlayer(p, refresh),
+                                          _editPlayer(p, refresh),
                                     ),
                                     IconButton(
                                       icon: const Icon(Icons.face),
@@ -1063,7 +1407,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                                     CrossAxisAlignment.start,
                                 children: [
                                     Text(
-                                      p,
+                                      PlayerInfoStore.displayOf(p),
                                       style: const TextStyle(
                                         fontSize: 20,
                                         fontWeight: FontWeight.bold,
@@ -1072,7 +1416,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                                     Text(
                                       p == _currentPlayer
                                           ? 'Playing now · tap to keep playing'
-                                          : 'Tap to play as $p',
+                                          : 'Tap to play as ${PlayerInfoStore.displayOf(p)}',
                                       style: const TextStyle(
                                         fontSize: 13.5,
                                         color: Colors.white54,
@@ -1152,12 +1496,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   }
 
   Future<void> _addPlayer() async {
-    final name = await showTvKeyboard(context, title: 'Add a player');
-    _refocusHome();
-    final clean = (name ?? '').trim().replaceAll('\n', ' ');
-    if (clean.isEmpty || _players.contains(clean)) return;
-    final players = [..._players, clean];
+    final form = await _playerForm();
+    if (form == null) return;
+    final players = [..._players, form.name];
     await Prefs.set('players', players.join('\n'));
+    await PlayerInfoStore.save(form.name, form.id);
     setState(() => _players = players);
     await _selectPlayer(players.length - 1);
   }
@@ -1371,7 +1714,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      name,
+                      PlayerInfoStore.displayOf(name),
                       style: const TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.bold,
@@ -1544,8 +1887,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     );
   }
 
-  // One item in the top tab row. Home is the section this screen
-  // shows (green, underlined); the others open their screens.
+  // One item in the top tab row. The current section is marked by
+  // its green, bold name alone (no underline bar; David's call,
+  // 2026-10-12); remote focus adds the bordered pill.
   Widget _tabItem(int index, IconData icon, String label) {
     final focused = _zone == _zoneTabs && _tabIndex == index;
     final current = index == 0;
@@ -1560,41 +1904,30 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
         decoration: BoxDecoration(
-          color: focused ? const Color(0xFF2A2A3E) : Colors.transparent,
+          color: focused
+              ? const Color(0xFF2A2A3E)
+              : current
+                  ? const Color(0xFF00E676).withOpacity(0.12)
+                  : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
             color: focused ? Colors.white : Colors.transparent,
             width: 2.5,
           ),
         ),
-        child: Column(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 21, color: color),
-                const SizedBox(width: 8),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 19,
-                    fontWeight:
-                        current ? FontWeight.bold : FontWeight.normal,
-                    color: color,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Container(
-              height: 3,
-              width: 46,
-              decoration: BoxDecoration(
-                color: current ? const Color(0xFF00E676) : Colors.transparent,
-                borderRadius: BorderRadius.circular(2),
+            Icon(icon, size: 21, color: color),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 19,
+                fontWeight: current ? FontWeight.bold : FontWeight.normal,
+                color: color,
               ),
             ),
           ],
@@ -1846,6 +2179,8 @@ class _OnlineScreenState extends State<OnlineScreen> {
   // Focus rows: 0 = Create, 1 = Refresh, 2.. = lobbies, last = Back.
   int _sel = 0;
   Timer? _ticker;
+  final ScrollController _listScroll = ScrollController();
+  final Map<int, GlobalKey> _rowKeys = {};
 
   int get _itemCount => _lobbies.length + 3;
 
@@ -1863,8 +2198,22 @@ class _OnlineScreenState extends State<OnlineScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _listScroll.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  // Keep the remote-selected lobby row on screen as selection moves.
+  void _scrollToSel() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _rowKeys[_sel]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 160),
+        );
+      }
+    });
   }
 
   Future<dynamic> _api(String method, String path,
@@ -2114,8 +2463,10 @@ class _OnlineScreenState extends State<OnlineScreen> {
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowUp) {
       setState(() => _sel = (_sel - 1 + _itemCount) % _itemCount);
+      _scrollToSel();
     } else if (key == LogicalKeyboardKey.arrowDown) {
       setState(() => _sel = (_sel + 1) % _itemCount);
+      _scrollToSel();
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space ||
@@ -2128,7 +2479,8 @@ class _OnlineScreenState extends State<OnlineScreen> {
     }
   }
 
-  Widget _actionButton(int index, IconData icon, String label) {
+  Widget _actionButton(int index, IconData icon, String label,
+      {bool primary = false}) {
     final focused = _sel == index;
     return GestureDetector(
       onTap: () {
@@ -2137,21 +2489,33 @@ class _OnlineScreenState extends State<OnlineScreen> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E2E),
+          color: primary
+              ? const Color(0xFF00E676)
+              : const Color(0xFF1E1E2E),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: focused ? Colors.white : Colors.white24,
+            color: focused
+                ? Colors.white
+                : (primary ? Colors.white54 : Colors.white24),
             width: focused ? 3 : 1.5,
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 20),
+            Icon(icon,
+                size: 20, color: primary ? Colors.black : Colors.white),
             const SizedBox(width: 9),
-            Text(label, style: const TextStyle(fontSize: 18)),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: primary ? Colors.black : Colors.white,
+              ),
+            ),
           ],
         ),
       ),
@@ -2161,17 +2525,21 @@ class _OnlineScreenState extends State<OnlineScreen> {
   Widget _lobbyRow(int index, Map<String, dynamic> lobby) {
     final focused = _sel == index;
     final locked = lobby['locked'] == true;
+    final host = (lobby['hostPlayer'] ?? 'Player').toString();
     return GestureDetector(
       onTap: () {
         setState(() => _sel = index);
         _joinLobby(lobby);
       },
       child: AnimatedContainer(
+        key: _rowKeys.putIfAbsent(index, () => GlobalKey()),
         duration: const Duration(milliseconds: 120),
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
         decoration: BoxDecoration(
-          color: const Color(0xFF1B1B28),
+          color: focused
+              ? const Color(0xFF23233A)
+              : const Color(0xFF1B1B28),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: focused ? Colors.white : Colors.white12,
@@ -2180,27 +2548,99 @@ class _OnlineScreenState extends State<OnlineScreen> {
         ),
         child: Row(
           children: [
-            Icon(locked ? Icons.lock : Icons.public,
-                color:
-                    locked ? Colors.amber : const Color(0xFF00E676)),
-            const SizedBox(width: 14),
+            // Game tile.
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2A4A),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.sports_esports,
+                  size: 27, color: Color(0xFF00E676)),
+            ),
+            const SizedBox(width: 16),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('${lobby['name']}',
                       style: const TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.bold)),
+                          fontSize: 20, fontWeight: FontWeight.bold),
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
                   Text('${lobby['game']}',
                       style: const TextStyle(
-                          fontSize: 15, color: Colors.white70)),
+                          fontSize: 15, color: Colors.white70),
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 5),
+                  Row(
+                    children: [
+                      PlayerAvatar(name: host, size: 20),
+                      const SizedBox(width: 7),
+                      Text('Host: $host',
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.white54)),
+                    ],
+                  ),
                 ],
               ),
             ),
-            Text(
-              'Host: ${lobby['hostPlayer']}  ·  '
-              '${lobby['players']}/${lobby['maxPlayers']} players',
-              style: const TextStyle(fontSize: 15, color: Colors.white70),
+            const SizedBox(width: 14),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                // Open / Locked chip.
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: locked
+                        ? Colors.amber.withOpacity(0.16)
+                        : const Color(0xFF00E676).withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: locked
+                          ? Colors.amber.withOpacity(0.6)
+                          : const Color(0xFF00E676).withOpacity(0.55),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(locked ? Icons.lock : Icons.lock_open,
+                          size: 14,
+                          color: locked
+                              ? Colors.amber
+                              : const Color(0xFF00E676)),
+                      const SizedBox(width: 5),
+                      Text(
+                        locked ? 'Locked' : 'Open',
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.bold,
+                          color: locked
+                              ? Colors.amber
+                              : const Color(0xFF00E676),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.people, size: 16, color: Colors.white54),
+                    const SizedBox(width: 5),
+                    Text(
+                      '${lobby['players']}/${lobby['maxPlayers']}',
+                      style: const TextStyle(
+                          fontSize: 14.5, color: Colors.white70),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ],
         ),
@@ -2227,49 +2667,149 @@ class _OnlineScreenState extends State<OnlineScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Online Play',
-                    style:
-                        TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 6),
+                // Header: badge, title, and the server status pill.
                 Row(
                   children: [
-                    Icon(Icons.circle,
-                        size: 13,
-                        color: _online
-                            ? const Color(0xFF00E676)
-                            : Colors.redAccent),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(_status,
-                          style: const TextStyle(
-                              fontSize: 16.5, color: Colors.white70)),
+                    Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E676).withOpacity(0.14),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: const Color(0xFF00E676).withOpacity(0.45),
+                        ),
+                      ),
+                      child: const Icon(Icons.public,
+                          size: 29, color: Color(0xFF00E676)),
+                    ),
+                    const SizedBox(width: 16),
+                    const Text('Online Play',
+                        style: TextStyle(
+                            fontSize: 34, fontWeight: FontWeight.w800)),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E1E2E),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.circle,
+                              size: 12,
+                              color: _online
+                                  ? const Color(0xFF00E676)
+                                  : Colors.redAccent),
+                          const SizedBox(width: 8),
+                          Text(
+                            _online ? 'Server online' : 'Server offline',
+                            style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 10),
+                Text(_status,
+                    style: const TextStyle(
+                        fontSize: 16.5, color: Colors.white70)),
                 const SizedBox(height: 18),
                 Row(
                   children: [
-                    _actionButton(0, Icons.add_circle, 'Create lobby'),
+                    _actionButton(0, Icons.add_circle, 'Create lobby',
+                        primary: true),
                     const SizedBox(width: 14),
                     _actionButton(1, Icons.refresh, 'Refresh'),
                   ],
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 22),
+                // Section header over the lobby list.
+                Row(
+                  children: [
+                    const Text(
+                      'Open lobbies',
+                      style: TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Text(
+                        '${_lobbies.length}',
+                        style: const TextStyle(
+                            fontSize: 13.5, color: Colors.white70),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Container(height: 1, color: Colors.white10),
+                const SizedBox(height: 14),
                 Expanded(
                   child: _lobbies.isEmpty
-                      ? const Center(
-                          child: Text('No open lobbies',
-                              style: TextStyle(
-                                  fontSize: 19, color: Colors.white54)),
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 96,
+                                height: 96,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.white.withOpacity(0.05),
+                                  border:
+                                      Border.all(color: Colors.white12),
+                                ),
+                                child: const Icon(Icons.sports_esports,
+                                    size: 46, color: Colors.white38),
+                              ),
+                              const SizedBox(height: 18),
+                              const Text('No open lobbies right now',
+                                  style: TextStyle(
+                                      fontSize: 21,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white70)),
+                              const SizedBox(height: 7),
+                              const Text(
+                                'Create one above and tell a friend to join. '
+                                'Both of you need the same game file.',
+                                style: TextStyle(
+                                    fontSize: 15.5, color: Colors.white54),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
                         )
                       : ListView.builder(
+                          controller: _listScroll,
                           itemCount: _lobbies.length,
                           itemBuilder: (_, i) => _lobbyRow(
                               i + 2, _lobbies[i] as Map<String, dynamic>),
                         ),
                 ),
                 const SizedBox(height: 8),
-                _actionButton(_itemCount - 1, Icons.arrow_back, 'Back'),
+                Row(
+                  children: [
+                    _actionButton(_itemCount - 1, Icons.arrow_back, 'Back'),
+                    const Spacer(),
+                    const Text(
+                      'UP / DOWN browse · OK to join · BACK returns',
+                      style: TextStyle(fontSize: 14, color: Colors.white38),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -3603,8 +4143,18 @@ class _PlayerStat {
   final int? gamesCountOverride;
   final int? secondsOverride;
   final int? playsOverride;
+
+  /// Global rows only: the identity the player's own box reported
+  /// (display name with initials, home region). Empty when the
+  /// player's app has not sent them; the raw name is shown instead.
+  final String display;
+  final String region;
   const _PlayerStat(this.name, this.games,
-      {this.gamesCountOverride, this.secondsOverride, this.playsOverride});
+      {this.gamesCountOverride,
+      this.secondsOverride,
+      this.playsOverride,
+      this.display = '',
+      this.region = ''});
   int get totalSeconds =>
       secondsOverride ?? games.fold(0, (a, g) => a + g.seconds);
   int get totalPlays =>
@@ -3658,14 +4208,22 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   final FocusNode _focusNode = FocusNode();
 
   // Board scope: 0 = this box (Local), 1 = everyone (Global). The
-  // switch sits centered above the filter chips, per David's layout.
-  // UP moves key focus to the switch, DOWN back to the chips;
-  // LEFT/RIGHT works on whichever row has focus.
+  // switch lives in the top bar now (David, 2026-10-12), next to the
+  // back button. Remote focus moves through three zones: 0 = top
+  // bar (Back, Local, Global), 1 = filter chips, 2 = the rows.
+  // UP/DOWN travel between zones and through the rows, so the back
+  // button is reachable and the board itself can be browsed.
   int _scope = 0;
-  bool _scopeFocus = false;
+  int _zone = 1;
+  int _barIndex = 0; // 0 = Back, 1 = Local, 2 = Global
+  int _selIndex = 0;
+  int _rowCount = 0;
+  final ScrollController _listScroll = ScrollController();
+  final Map<int, GlobalKey> _rowKeys = {};
   List<_PlayerStat> _gPlayers = [];
   List<_GameStat> _gGames = [];
-  List<({String player, _GameStat game})> _gRecent = [];
+  List<({String player, String display, String region, _GameStat game})>
+      _gRecent = [];
   bool _gLoaded = false;
   bool _gFailed = false;
 
@@ -3673,6 +4231,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   void initState() {
     super.initState();
     _load();
+    PlayerInfoStore.load().then((_) {
+      if (mounted) setState(() {});
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
     });
@@ -3680,41 +4241,122 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   @override
   void dispose() {
+    _listScroll.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
   void _setScope(int scope) {
     if (scope == _scope) return;
-    setState(() => _scope = scope);
+    setState(() {
+      _scope = scope;
+      _selIndex = 0;
+    });
+    _scrollTop();
     if (scope == 1 && !_gLoaded) _fetchGlobal();
+  }
+
+  void _setMode(int mode) {
+    setState(() {
+      _mode = mode;
+      _selIndex = 0;
+    });
+    _scrollTop();
+  }
+
+  void _scrollTop() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_listScroll.hasClients) _listScroll.jumpTo(0);
+    });
+  }
+
+  void _scrollToSel() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _rowKeys[_selIndex]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 160),
+        );
+      }
+    });
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _scopeFocus = true);
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _scopeFocus = false);
-    } else if (key == LogicalKeyboardKey.arrowLeft) {
-      if (_scopeFocus) {
-        _setScope(0);
-      } else {
-        setState(() => _mode = (_mode - 1 + _modes.length) % _modes.length);
-      }
-    } else if (key == LogicalKeyboardKey.arrowRight) {
-      if (_scopeFocus) {
-        _setScope(1);
-      } else {
-        setState(() => _mode = (_mode + 1) % _modes.length);
-      }
-    } else {
-      return KeyEventResult.ignored;
+    if (key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.gameButtonB ||
+        key == LogicalKeyboardKey.browserBack) {
+      Navigator.of(context).pop();
+      return KeyEventResult.handled;
     }
-    // Handled: keep focus traversal from stealing the arrows (the
-    // AppBar back button would take focus on UP and strand input).
-    return KeyEventResult.handled;
+    if (key == LogicalKeyboardKey.arrowUp) {
+      setState(() {
+        if (_zone == 2) {
+          if (_selIndex > 0) {
+            _selIndex--;
+            _scrollToSel();
+          } else {
+            _zone = 1;
+          }
+        } else if (_zone == 1) {
+          _zone = 0;
+        }
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      setState(() {
+        if (_zone == 0) {
+          _zone = 1;
+        } else if (_zone == 1) {
+          if (_rowCount > 0) {
+            _zone = 2;
+            _selIndex = 0;
+            _scrollToSel();
+          }
+        } else if (_selIndex < _rowCount - 1) {
+          _selIndex++;
+          _scrollToSel();
+        }
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      final dir = key == LogicalKeyboardKey.arrowLeft ? -1 : 1;
+      setState(() {
+        if (_zone == 0) {
+          _barIndex = (_barIndex + dir).clamp(0, 2);
+        } else if (_zone == 1) {
+          _mode = (_mode + dir + _modes.length) % _modes.length;
+          _selIndex = 0;
+          _scrollTop();
+        } else if (_rowCount > 0) {
+          // In the rows, LEFT/RIGHT jump five rows at a time.
+          _selIndex = (_selIndex + dir * 5).clamp(0, _rowCount - 1);
+          _scrollToSel();
+        }
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      if (_zone == 0) {
+        if (_barIndex == 0) {
+          Navigator.of(context).pop();
+        } else {
+          _setScope(_barIndex - 1);
+        }
+      }
+      return KeyEventResult.handled;
+    }
+    // Handled or not, arrows never fall through to focus traversal:
+    // the AppBar back button would take focus on UP and strand input.
+    return KeyEventResult.ignored;
   }
 
   Future<dynamic> _getJson(String path) async {
@@ -3746,6 +4388,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             gamesCountOverride: (m['games'] as num? ?? 0).toInt(),
             secondsOverride: (m['seconds'] as num? ?? 0).toInt(),
             playsOverride: (m['plays'] as num? ?? 0).toInt(),
+            display: m['display']?.toString() ?? '',
+            region: m['region']?.toString() ?? '',
           );
         }).toList();
         _gGames = games.map((e) {
@@ -3761,6 +4405,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           final m = e as Map<String, dynamic>;
           return (
             player: m['player']?.toString() ?? 'Player',
+            display: m['display']?.toString() ?? '',
+            region: m['region']?.toString() ?? '',
             game: _GameStat(
               m['game']?.toString() ?? '',
               (m['plays'] as num? ?? 0).toInt(),
@@ -3833,8 +4479,38 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     return all.take(10).toList();
   }
 
-  Widget _playerCard(int rank, _PlayerStat p) {
+  // Display identity for a row. Global rows use the identity the
+  // player's own box reported; local rows resolve through this box's
+  // player info. The two never mix: a global "David" from another
+  // house must not inherit this box's David's initials.
+  String _dispName(_PlayerStat p, bool global) {
+    if (global) return p.display.isNotEmpty ? p.display : p.name;
+    return PlayerInfoStore.displayOf(p.name);
+  }
+
+  String _regionOf(_PlayerStat p, bool global) {
+    if (global) return p.region;
+    return PlayerInfoStore.of(p.name)?.region ?? '';
+  }
+
+  Widget _regionTag(String region) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.white10,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Text(
+        region,
+        style: const TextStyle(fontSize: 12, color: Colors.white70),
+      ),
+    );
+  }
+
+  Widget _playerCard(int rank, _PlayerStat p, {bool global = false}) {
     final fav = p.favorite;
+    final region = _regionOf(p, global);
     final medalColor = rank == 1
         ? const Color(0xFFFFD54F)
         : rank == 2
@@ -3843,48 +4519,61 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 ? const Color(0xFFBCAAA4)
                 : const Color(0xFF424242);
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 7),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
       decoration: BoxDecoration(
         color: const Color(0xFF1B1B28),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.white12),
       ),
       child: Row(
         children: [
           CircleAvatar(
-            radius: 24,
+            radius: 17,
             backgroundColor: medalColor,
             child: Text(
               '$rank',
               style: const TextStyle(
-                fontSize: 21,
+                fontSize: 15,
                 fontWeight: FontWeight.bold,
                 color: Colors.black87,
               ),
             ),
           ),
-          const SizedBox(width: 16),
-          PlayerAvatar(name: p.name, size: 44),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
+          PlayerAvatar(name: p.name, size: 32),
+          const SizedBox(width: 11),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(p.name,
-                    style: const TextStyle(
-                        fontSize: 23, fontWeight: FontWeight.bold)),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        _dispName(p, global),
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (region.isNotEmpty) ...[
+                      const SizedBox(width: 9),
+                      _regionTag(region),
+                    ],
+                  ],
+                ),
                 Text(
                   'Time played: ${_fmtDuration(p.totalSeconds)} · '
                   'Games: ${p.gamesCount} · Launches: ${p.totalPlays}',
                   style:
-                      const TextStyle(fontSize: 16, color: Colors.white70),
+                      const TextStyle(fontSize: 13.5, color: Colors.white70),
                 ),
                 if (_mode == 0 && fav != null)
                   Text(
                     'Favorite: ${fav.name} (${_fmtDuration(fav.seconds)})',
                     style:
-                        const TextStyle(fontSize: 16, color: Colors.white54),
+                        const TextStyle(fontSize: 13, color: Colors.white54),
                   ),
               ],
             ),
@@ -3896,10 +4585,47 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final rows = _loading ? const <Widget>[] : _visibleContent();
+    _rowCount = rows.length;
+    if (_selIndex >= _rowCount) {
+      _selIndex = _rowCount == 0 ? 0 : _rowCount - 1;
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Leaderboard'),
         backgroundColor: Colors.transparent,
+        elevation: 0,
+        // The Local/Global switch lives in the top bar now, beside
+        // the back button (David, 2026-10-12). UP from anywhere
+        // below reaches this row; OK picks Back, Local, or Global.
+        // A custom leading button (instead of the automatic one) so
+        // remote focus on Back is visible.
+        leading: Center(
+          child: GestureDetector(
+            onTap: () => Navigator.of(context).pop(),
+            child: Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF1E1E2E),
+                border: Border.all(
+                  color: _zone == 0 && _barIndex == 0
+                      ? Colors.white
+                      : Colors.white24,
+                  width: _zone == 0 && _barIndex == 0 ? 2.5 : 1,
+                ),
+              ),
+              child: const Icon(Icons.arrow_back, size: 21),
+            ),
+          ),
+        ),
+        actions: [
+          _scopePill('Local', 0),
+          const SizedBox(width: 8),
+          _scopePill('Global', 1),
+          const SizedBox(width: 14),
+        ],
       ),
       body: Container(
         decoration: const BoxDecoration(
@@ -3916,56 +4642,53 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 onKeyEvent: _onKey,
                 child: Column(
                   children: [
-                    const SizedBox(height: 12),
-                    // Local / Global switch, centered above the
-                    // filter chips (David's layout). UP gives it key
-                    // focus, DOWN goes back to the chips.
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _scopePill('Local', 0),
-                        const SizedBox(width: 10),
-                        _scopePill('Global', 1),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     Wrap(
-                          spacing: 10,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            for (var i = 0; i < _modes.length; i++)
-                              GestureDetector(
-                                onTap: () => setState(() => _mode = i),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 20, vertical: 10),
-                                  decoration: BoxDecoration(
-                                    color: _mode == i
-                                        ? const Color(0xFF00E676)
-                                        : const Color(0xFF1E1E2E),
-                                    borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(
-                                      color: _mode == i
-                                          ? Colors.white
-                                          : Colors.white24,
-                                      width: _mode == i ? 2.5 : 1,
-                                    ),
-                                  ),
-                                  child: Text(
-                                    _modes[i],
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                      color: _mode == i
-                                          ? Colors.black
-                                          : Colors.white,
-                                    ),
-                                  ),
+                      spacing: 10,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        for (var i = 0; i < _modes.length; i++)
+                          GestureDetector(
+                            onTap: () => _setMode(i),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 18, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: _mode == i
+                                    ? const Color(0xFF00E676)
+                                    : const Color(0xFF1E1E2E),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: _zone == 1 && _mode == i
+                                      ? Colors.white
+                                      : (_mode == i
+                                          ? Colors.white54
+                                          : Colors.white24),
+                                  width: _zone == 1 && _mode == i ? 2.5 : 1,
                                 ),
                               ),
-                          ],
-                        ),
-                    Expanded(child: _contentArea()),
+                              child: Text(
+                                _modes[i],
+                                style: TextStyle(
+                                  fontSize: 16.5,
+                                  fontWeight: FontWeight.bold,
+                                  color:
+                                      _mode == i ? Colors.black : Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    Expanded(child: _contentArea(rows)),
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        'UP for the top bar · DOWN to browse the board · '
+                        'LEFT / RIGHT switch boards · BACK returns',
+                        style: TextStyle(fontSize: 13.5, color: Colors.white38),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -3975,24 +4698,31 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   Widget _scopePill(String label, int scope) {
     final active = _scope == scope;
+    final focused = _zone == 0 && _barIndex == scope + 1;
     return GestureDetector(
-      onTap: () => _setScope(scope),
+      onTap: () {
+        setState(() {
+          _zone = 0;
+          _barIndex = scope + 1;
+        });
+        _setScope(scope);
+      },
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
         decoration: BoxDecoration(
           color: active ? const Color(0xFF00E676) : const Color(0xFF1E1E2E),
           borderRadius: BorderRadius.circular(999),
           border: Border.all(
-            color: _scopeFocus
+            color: focused
                 ? Colors.white
                 : (active ? Colors.white54 : Colors.white24),
-            width: _scopeFocus ? 2.5 : 1,
+            width: focused ? 2.5 : 1,
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 18,
+            fontSize: 16.5,
             fontWeight: FontWeight.bold,
             color: active ? Colors.black : Colors.white,
           ),
@@ -4015,8 +4745,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         'Stats start counting as soon as someone plays.';
   }
 
-  Widget _contentArea() {
-    final rows = _visibleContent();
+  Widget _contentArea(List<Widget> rows) {
     if (rows.isEmpty) {
       return Center(
         child: Padding(
@@ -4024,19 +4753,39 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           child: Text(
             _emptyText(),
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 21, color: Colors.grey),
+            style: const TextStyle(fontSize: 20, color: Colors.grey),
           ),
         ),
       );
     }
     return Center(
       child: SizedBox(
-        width: 900,
+        width: 1060,
         child: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 18),
-          children: rows,
+          controller: _listScroll,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          children: [
+            for (var i = 0; i < rows.length; i++) _selectable(i, rows[i]),
+          ],
         ),
       ),
+    );
+  }
+
+  // Wraps one board row with its remote-selection ring and the key
+  // the scroller uses to keep the selected row on screen.
+  Widget _selectable(int i, Widget child) {
+    final sel = _zone == 2 && _selIndex == i;
+    return Container(
+      key: _rowKeys.putIfAbsent(i, () => GlobalKey()),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(
+          color: sel ? Colors.white : Colors.transparent,
+          width: 2.5,
+        ),
+      ),
+      child: child,
     );
   }
 
@@ -4065,9 +4814,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         return [
           for (final e in _gRecent)
             Container(
-              margin: const EdgeInsets.symmetric(vertical: 6),
+              margin: const EdgeInsets.symmetric(vertical: 4),
               padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF1B1B28),
                 borderRadius: BorderRadius.circular(12),
@@ -4075,25 +4824,29 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               ),
               child: Row(
                 children: [
-                  PlayerAvatar(name: e.player, size: 38),
-                  const SizedBox(width: 13),
+                  PlayerAvatar(name: e.player, size: 30),
+                  const SizedBox(width: 11),
                   Text(
-                    e.player,
+                    e.display.isNotEmpty ? e.display : e.player,
                     style: const TextStyle(
-                        fontSize: 19, fontWeight: FontWeight.bold),
+                        fontSize: 16.5, fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(width: 14),
+                  if (e.region.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    _regionTag(e.region),
+                  ],
+                  const SizedBox(width: 13),
                   Expanded(
                     child: Text(
                       e.game.name,
-                      style: const TextStyle(fontSize: 18),
+                      style: const TextStyle(fontSize: 15.5),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Text(
                     _fmtWhen(e.game.last),
                     style:
-                        const TextStyle(fontSize: 16, color: Colors.white60),
+                        const TextStyle(fontSize: 14, color: Colors.white60),
                   ),
                 ],
               ),
@@ -4102,7 +4855,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       default: // Players
         return [
           for (var i = 0; i < _gPlayers.length; i++)
-            _playerCard(i + 1, _gPlayers[i]),
+            _playerCard(i + 1, _gPlayers[i], global: true),
         ];
     }
   }
@@ -4129,8 +4882,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         return [
           for (final e in entries)
             Container(
-              margin: const EdgeInsets.symmetric(vertical: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF1B1B28),
                 borderRadius: BorderRadius.circular(12),
@@ -4138,25 +4891,30 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               ),
               child: Row(
                 children: [
-                  PlayerAvatar(name: e.$1.name, size: 38),
-                  const SizedBox(width: 13),
+                  PlayerAvatar(name: e.$1.name, size: 30),
+                  const SizedBox(width: 11),
                   Text(
-                    e.$1.name,
+                    PlayerInfoStore.displayOf(e.$1.name),
                     style: const TextStyle(
-                        fontSize: 19, fontWeight: FontWeight.bold),
+                        fontSize: 16.5, fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(width: 14),
+                  if ((PlayerInfoStore.of(e.$1.name)?.region ?? '')
+                      .isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    _regionTag(PlayerInfoStore.of(e.$1.name)!.region),
+                  ],
+                  const SizedBox(width: 13),
                   Expanded(
                     child: Text(
                       e.$2.name,
-                      style: const TextStyle(fontSize: 18),
+                      style: const TextStyle(fontSize: 15.5),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Text(
                     _fmtWhen(e.$2.last),
                     style:
-                        const TextStyle(fontSize: 16, color: Colors.white60),
+                        const TextStyle(fontSize: 14, color: Colors.white60),
                   ),
                 ],
               ),
@@ -4172,8 +4930,8 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   Widget _gameRow(int rank, _GameStat g, String right) {
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFF1B1B28),
         borderRadius: BorderRadius.circular(12),
@@ -4182,30 +4940,30 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       child: Row(
         children: [
           CircleAvatar(
-            radius: 17,
+            radius: 14,
             backgroundColor: rank == 1
                 ? const Color(0xFFFFD54F)
                 : const Color(0xFF37474F),
             child: Text(
               '$rank',
               style: TextStyle(
-                fontSize: 16,
+                fontSize: 13,
                 fontWeight: FontWeight.bold,
                 color: rank == 1 ? Colors.black87 : Colors.white,
               ),
             ),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(
               g.name,
-              style: const TextStyle(fontSize: 19),
+              style: const TextStyle(fontSize: 16.5),
               overflow: TextOverflow.ellipsis,
             ),
           ),
           Text(
             right,
-            style: const TextStyle(fontSize: 17, color: Colors.white70),
+            style: const TextStyle(fontSize: 15, color: Colors.white70),
           ),
         ],
       ),
