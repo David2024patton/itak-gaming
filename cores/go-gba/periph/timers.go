@@ -33,6 +33,14 @@ func (c *timerChan) enabled() bool { return c.control&timerEnable != 0 }
 // overflow of the previous channel.
 type Timers struct {
 	ch [4]timerChan
+
+	// OnOverflow, when set, is called once per channel
+	// overflow during Advance, with the channel index. The
+	// sound unit uses it to clock the Direct Sound FIFOs:
+	// timers 0 and 1 are the sample rate generators for
+	// FIFO channels A and B. It fires whether or not the
+	// channel's IRQ enable is set.
+	OnOverflow func(ch int)
 }
 
 // NewTimers returns the timers in power-on state: all
@@ -174,6 +182,9 @@ func (t *Timers) Advance(cycles int, irq *IRQ) {
 			feed++
 			if c.control&timerIRQ != 0 && irq != nil {
 				irq.Raise(uint16(IRQTimer0 << n))
+			}
+			if t.OnOverflow != nil {
+				t.OnOverflow(n)
 			}
 		}
 	}
