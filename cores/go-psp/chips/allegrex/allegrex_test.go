@@ -213,9 +213,14 @@ func TestBSHFL(t *testing.T) {
 
 func TestUnalignedAccess(t *testing.T) {
 	const old = 0x11223344
-	lwlWant := [4]uint32{0xDDCCBBAA, 0xCCBBAA44, 0xBBAA3344, 0xAA223344}
+	// The LWL and SWL vectors were re-derived from the
+	// pspautotests lsu matrix (hardware recorded): the original
+	// vectors pinned a big-endian merge that the corpus refutes.
+	// LWL: (word << 8*(3-a)) with the low (3-a) bytes of the old
+	// register surviving. SWL mirrors it.
+	lwlWant := [4]uint32{0xDD223344, 0xCCDD3344, 0xBBCCDD44, 0xAABBCCDD}
 	lwrWant := [4]uint32{0xAABBCCDD, 0x11AABBCC, 0x1122AABB, 0x112233AA}
-	swlWant := [4]uint32{0x44332211, 0x332211DD, 0x2211CCDD, 0x11BBCCDD}
+	swlWant := [4]uint32{0xAABBCC11, 0xAABB1122, 0xAA112233, 0x11223344}
 	swrWant := [4]uint32{0x11223344, 0x223344DD, 0x3344CCDD, 0x44BBCCDD}
 	for a := uint32(0); a < 4; a++ {
 		// LWL
@@ -284,7 +289,7 @@ func TestLLSC(t *testing.T) {
 	h.r.load(0,
 		encI(0x30, 8, 10, 0), // ll r10, 0(r8)
 		encI(0x38, 8, 9, 0),  // sc r9, 0(r8)
-		encI(0x38, 8, 9, 0),  // sc again, LLbit now clear
+		encI(0x38, 8, 9, 0),  // second sc: the reservation survives
 	)
 	h.run(1)
 	if got := h.c.Reg(10); got != 0xAAAA {
@@ -297,13 +302,16 @@ func TestLLSC(t *testing.T) {
 	if got := h.r.Read32(0x200); got != 0x1234 {
 		t.Errorf("sc stored %#08x", got)
 	}
+	// Per the pspautotests llsc matrix, a successful SC does not
+	// consume the reservation on this hardware; a syscall,
+	// exception or thread switch breaks it instead.
 	h.c.SetReg(9, 0x9999)
 	h.run(1)
-	if got := h.c.Reg(9); got != 0 {
-		t.Errorf("sc without ll = %d, want 0", got)
+	if got := h.c.Reg(9); got != 1 {
+		t.Errorf("second sc = %d, want 1 (reservation persists)", got)
 	}
-	if got := h.r.Read32(0x200); got != 0x1234 {
-		t.Errorf("failed sc stored %#08x", got)
+	if got := h.r.Read32(0x200); got != 0x9999 {
+		t.Errorf("second sc stored %#08x", got)
 	}
 	// ERET clears LLbit: load linked, return from a fake exception
 	// whose EPC points at the SC, then the SC must fail.
@@ -401,7 +409,9 @@ func TestDivByZeroAndEdges(t *testing.T) {
 	if lo, hi := div(true, 0xFFFFFFFB, 0); lo != 1 || hi != 0xFFFFFFFB {
 		t.Errorf("div -5/0: LO=%#08x HI=%#08x", lo, hi)
 	}
-	if lo, hi := div(false, 5, 0); lo != 0xFFFFFFFF || hi != 5 {
+	// The unsigned rule is the corpus proven one: dividends
+	// under 0x10000 yield LO 0x0000FFFF (see TestDivuByZeroRule).
+	if lo, hi := div(false, 5, 0); lo != 0x0000FFFF || hi != 5 {
 		t.Errorf("divu 5/0: LO=%#08x HI=%#08x", lo, hi)
 	}
 	if lo, hi := div(false, 100, 7); lo != 14 || hi != 2 {
@@ -709,12 +719,15 @@ func TestCOPFaults(t *testing.T) {
 	if excCode(h.c) != 11 || excCE(h.c) != 1 {
 		t.Errorf("cop1 disabled: code=%d CE=%d, want 11/1", excCode(h.c), excCE(h.c))
 	}
-	// LDC1 raises RI (no double precision on the Allegrex).
+	// Primary opcode 0x35 is the VFPU LVL.Q/LVR.Q slot on the
+	// Allegrex (the corpus vector binary's words 0xD4600000 and
+	// kin pin it); the MIPS LDC1 reading of the same opcode
+	// does not exist here, so the word executes as a load.
 	h = newHarness()
-	h.r.load(0, encI(0x35, 0, 8, 0))
+	h.r.load(0, 0xD4600000) // lvl.q C000, 0($v1)
 	h.run(1)
-	if excCode(h.c) != 10 {
-		t.Errorf("ldc1 ExcCode = %d, want 10 (RI)", excCode(h.c))
+	if excCode(h.c) != 0 {
+		t.Errorf("lvl.q ExcCode = %d, want 0", excCode(h.c))
 	}
 }
 
@@ -851,5 +864,77 @@ func TestResetContract(t *testing.T) {
 	}
 	if n := c.Step(); n < 1 {
 		t.Errorf("Step cycles = %d, want >= 1", n)
+	}
+}
+
+// TestAllegrexSpecialMulAcc pins the Allegrex placement of the
+// multiply accumulate family and CLZ/CLO: they live in the
+// SPECIAL table (funct 0x1C/0x1D/0x2E/0x2F and 0x16/0x17), not in
+// SPECIAL2 as standard MIPS32 has them. The pspautotests corpus
+// binaries encode them there (cpu_alu's test_madd faulted with a
+// reserved instruction exception until this was implemented).
+func TestAllegrexSpecialMulAcc(t *testing.T) {
+	h := newHarness()
+	h.c.hi, h.c.lo = 0, 0xFFFFFFFF
+	h.c.SetReg(8, 0x10000)
+	h.c.SetReg(9, 0x10000)
+	h.r.load(0, encR(8, 9, 0, 0, 0x1C)) // madd r8, r9 (SPECIAL)
+	h.run(1)
+	if h.c.HI() != 1 || h.c.LO() != 0xFFFFFFFF {
+		t.Errorf("SPECIAL madd: HI=%#08x LO=%#08x, want HI=1 LO=0xFFFFFFFF", h.c.HI(), h.c.LO())
+	}
+	h2 := newHarness()
+	h2.c.SetReg(8, 1)
+	h2.c.SetReg(9, 1)
+	h2.r.load(0, encR(8, 9, 0, 0, 0x2E)) // msub r8, r9 (SPECIAL)
+	h2.run(1)
+	if h2.c.HI() != 0xFFFFFFFF || h2.c.LO() != 0xFFFFFFFF {
+		t.Errorf("SPECIAL msub: HI=%#08x LO=%#08x, want both 0xFFFFFFFF", h2.c.HI(), h2.c.LO())
+	}
+	h3 := newHarness()
+	h3.c.SetReg(8, 0x00F00000)
+	h3.r.load(0, encR(8, 0, 9, 0, 0x16)) // clz r9, r8 (SPECIAL)
+	h3.run(1)
+	if got := h3.c.Reg(9); got != 8 {
+		t.Errorf("SPECIAL clz = %d, want 8", got)
+	}
+}
+
+// TestDivuByZeroRule pins the observed Allegrex unsigned divide
+// by zero behavior the cpu_div corpus test checks: the quotient
+// is 0x0000FFFF for dividends under 0x10000, all ones above, and
+// HI always takes the dividend.
+func TestDivuByZeroRule(t *testing.T) {
+	for _, tc := range []struct {
+		dividend, wantLO uint32
+	}{
+		{0, 0x0000FFFF},
+		{0x64, 0x0000FFFF},
+		{0xFFFF, 0x0000FFFF},
+		{0x10000, 0xFFFFFFFF},
+		{0x12345678, 0xFFFFFFFF},
+	} {
+		h := newHarness()
+		h.c.SetReg(8, tc.dividend)
+		h.c.SetReg(9, 0)
+		h.r.load(0, encR(8, 9, 0, 0, 0x1B)) // divu r8, r9
+		h.run(1)
+		if h.c.LO() != tc.wantLO || h.c.HI() != tc.dividend {
+			t.Errorf("divu %#x / 0: HI=%#08x LO=%#08x, want HI=%#08x LO=%#08x",
+				tc.dividend, h.c.HI(), h.c.LO(), tc.dividend, tc.wantLO)
+		}
+	}
+}
+
+// TestWSBW pins the BSHFL byte reverse (SPECIAL3 funct 0x20,
+// sa 3), which PSP-1 missed: cpu_alu's wsbw thunk raised a
+// reserved instruction exception without it.
+func TestWSBW(t *testing.T) {
+	h := newHarness()
+	h.c.SetReg(8, 0x01234567)
+	h.r.load(0, encSP3(0, 8, 9, 3, 0x20)) // wsbw r9, r8
+	h.run(1)
+	if got := h.c.Reg(9); got != 0x67452301 {
+		t.Errorf("wsbw = %#08x, want 0x67452301", got)
 	}
 }
