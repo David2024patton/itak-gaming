@@ -16,10 +16,14 @@
 //     nearest). FSRRA is computed as 1/sqrt(x) in float64 and rounded
 //     to float32 rather than using the hardware approximation table.
 //     FIPR and FTRV accumulate in float32, term by term, in index order.
-//   - Interrupts are a simple model: RaiseInterrupt records INTEVT and,
-//     when SR.BL is 0, vectors immediately to VBR+0x600. No interrupt
-//     priority or level comparison against SR.IMASK is performed,
-//     because the API carries no level.
+//   - Interrupts follow the SH-4 manual model (DC-2): a request is
+//     latched with its level and accepted at an instruction boundary
+//     only when SR.BL is clear, the CPU is not in a delay slot, and
+//     the level exceeds SR.IMASK. Exceptions are still taken
+//     immediately even when SR.BL is set; the manual warns that a
+//     general exception raised while BL is set can deadlock the
+//     hardware, and real boot code never does this, so vectoring is
+//     the safe emulation choice.
 package sh4
 
 import "encoding/binary"
@@ -130,6 +134,10 @@ type CPU struct {
 	inDelay    bool   // next instruction is a delay slot
 	afterDelay uint32 // PC to continue at after the delay slot
 	excepted   bool   // an exception was taken during exec
+
+	pendCode  uint32 // INTEVT code of the latched interrupt request
+	pendLevel int    // priority level of the latched request, 0 to 15
+	pendValid bool   // an interrupt request is latched and unaccepted
 }
 
 // New creates a CPU attached to mem and resets it.
@@ -161,10 +169,31 @@ func (c *CPU) Run(cycles int) {
 }
 
 // Step executes exactly one instruction, or takes the exception that
-// the instruction raises, and returns 1. A halted CPU (after SLEEP)
+// the instruction raises, and returns 1. Before the fetch, a latched
+// interrupt request is accepted when the manual's conditions hold:
+// SR.BL clear, the next instruction is not a delay slot (acceptance
+// between a branch and its delay slot would lose the branch target),
+// and the request level exceeds SR.IMASK. Acceptance wakes a halted
+// CPU. A halted CPU (after SLEEP) with no acceptable interrupt
 // returns 1 without executing anything.
 func (c *CPU) Step() int {
-	if c.Halted || c.mem == nil {
+	if c.mem == nil {
+		return 1
+	}
+	if c.pendValid && !c.inDelay && c.SR&srBL == 0 &&
+		c.pendLevel > int((c.SR&srIMASK)>>4) {
+		code := c.pendCode
+		c.pendValid = false
+		c.INTEVT = code
+		c.SSR = c.SR
+		c.SPC = c.PC
+		c.SGR = c.R[15]
+		c.setSR(c.SR | srMD | srRB | srBL)
+		c.PC = c.VBR + 0x600
+		c.Halted = false
+		return 1
+	}
+	if c.Halted {
 		return 1
 	}
 	pc := c.PC
@@ -349,24 +378,41 @@ func (c *CPU) illegal(inDelay bool, pc uint32) {
 	}
 }
 
-// RaiseInterrupt records an interrupt event in INTEVT. Simple model:
-// if SR.BL is set the interrupt is blocked and stays recorded but is
-// not taken; otherwise the CPU vectors immediately, using the
-// exception register-save sequence and the interrupt vector at
-// VBR+0x600. EXPEVT is not touched (interrupts report through
-// INTEVT). No level comparison against SR.IMASK is performed because
-// this API carries no interrupt level.
-func (c *CPU) RaiseInterrupt(code uint32) {
-	c.INTEVT = code
-	if c.SR&srBL != 0 {
+// RaiseInterrupt presents an interrupt request with the given
+// INTEVT code and priority level (0 to 15). The request is latched,
+// not taken: Step accepts it at an instruction boundary once SR.BL
+// is clear and the level exceeds SR.IMASK, performing the standard
+// register save (SSR, SPC, SGR), setting MD, RB, and BL, and
+// vectoring to VBR+0x600 with INTEVT holding the code. When a request
+// is already latched, the higher level wins; at equal level the
+// earlier request is kept. EXPEVT is not touched: interrupts report
+// through INTEVT.
+func (c *CPU) RaiseInterrupt(code uint32, level int) {
+	if level < 0 {
+		level = 0
+	}
+	if level > 15 {
+		level = 15
+	}
+	if c.pendValid && level <= c.pendLevel {
 		return
 	}
-	c.SSR = c.SR
-	c.SPC = c.PC
-	c.SGR = c.R[15]
-	c.setSR(c.SR | srMD | srRB | srBL)
-	c.PC = c.VBR + 0x600
-	c.inDelay = false
+	c.pendCode = code
+	c.pendLevel = level
+	c.pendValid = true
+}
+
+// WithdrawInterrupt drops the latched interrupt request, if any.
+// The interrupt controller calls this when its winning source is
+// acknowledged before the CPU accepted the request.
+func (c *CPU) WithdrawInterrupt() {
+	c.pendValid = false
+}
+
+// PendingInterrupt reports the latched interrupt request, for save
+// states and tests.
+func (c *CPU) PendingInterrupt() (code uint32, level int, valid bool) {
+	return c.pendCode, c.pendLevel, c.pendValid
 }
 
 // ---------------------------------------------------------------------------
@@ -605,9 +651,11 @@ func (c *CPU) write64(va uint32, v uint64) bool {
 //	1600  LDTLB replacement counter   4
 //	1604  inDelay byte + padding      4
 //	1608  afterDelay                  4
+//	1612  pending interrupt code      4
+//	1616  pending interrupt word      4  (bit0 valid, bits 7:4 level)
 
 // SerializeSize is the exact length of a serialized CPU state.
-const SerializeSize = 1612
+const SerializeSize = 1620
 
 // Serialize writes the full CPU state to a fresh byte slice of
 // SerializeSize bytes.
@@ -679,6 +727,14 @@ func (c *CPU) Serialize() []byte {
 	}
 	off += 4
 	put(off, c.afterDelay)
+	off += 4
+	put(off, c.pendCode)
+	var pw uint32
+	if c.pendValid {
+		pw = 1
+	}
+	pw |= uint32(c.pendLevel&0xF) << 4
+	put(off+4, pw)
 	return b
 }
 
@@ -749,5 +805,10 @@ func (c *CPU) Deserialize(b []byte) bool {
 	c.inDelay = b[off] != 0
 	off += 4
 	c.afterDelay = get(off)
+	off += 4
+	c.pendCode = get(off)
+	pw := get(off + 4)
+	c.pendValid = pw&1 != 0
+	c.pendLevel = int((pw >> 4) & 0xF)
 	return true
 }
