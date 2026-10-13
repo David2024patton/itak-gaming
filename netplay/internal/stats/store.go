@@ -284,6 +284,26 @@ func (s *Store) TopPlayers(limit int) []PlayerStat {
 	return truncate(out, limit)
 }
 
+// Identity returns the display name and region the store knows
+// for one player: the values from the most recent report (by
+// LastPlayed) that carried a display name, the same rule the
+// players board uses. Both come back empty when the player never
+// reported an identity, or never reported at all.
+func (s *Store) Identity(player string) (display, region string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var seen int64
+	for _, r := range s.entries {
+		if r.Player != player || r.Display == "" {
+			continue
+		}
+		if display == "" || r.LastPlayed >= seen {
+			display, region, seen = r.Display, r.Region, r.LastPlayed
+		}
+	}
+	return display, region
+}
+
 // TopGames aggregates every triple by game title across all players
 // and devices, ranked by total seconds (then plays, then title).
 func (s *Store) TopGames(limit int) []GameStat {
