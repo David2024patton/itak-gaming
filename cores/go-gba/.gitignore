@@ -1,3 +1,4 @@
 # Conformance and test ROM images are local evidence only, never committed.
 testroms/
 *.so
+builds/
