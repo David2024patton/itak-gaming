@@ -86,6 +86,9 @@ func NetplayStart(serverBase, lobbyID, token, game string, isHost bool, playerNa
 	if emu == nil {
 		return "no core loaded"
 	}
+	if npWatch != nil {
+		return "a watch session is already running"
+	}
 	if npSession != nil || npPending != nil {
 		return "a session is already running"
 	}
@@ -335,4 +338,145 @@ func NetplayStop() {
 		npSession.End("quit")
 		npSession = nil
 	}
+}
+
+// Spectating (PROTOCOL.md 4.8)
+// A watch session is a separate lifecycle from a player session:
+// the spectator loads the same game locally, joins the room with
+// a spectator token, and reconstructs the match from both
+// players' input streams. One mode at a time: NetplayStart
+// refuses while a watch runs and vice versa.
+
+var npWatch *netsession.Session
+var npWatchErr string
+
+// NetplayStartWatch connects to the lobby signaling socket as a
+// spectator and introduces us in the room. Unlike NetplayStart
+// it does not block on the match: it returns "" as soon as we
+// are in the room, and the UI polls NetplayWatchInfo and steps
+// with NetplayWatchStep.
+func NetplayStartWatch(serverBase, lobbyID, token, game string, playerName string) string {
+	if emu == nil {
+		return "no core loaded"
+	}
+	if npWatch != nil {
+		return "a watch session is already running"
+	}
+	if npSession != nil || npPending != nil {
+		return "a session is already running"
+	}
+	wsBase := strings.Replace(serverBase, "http://", "ws://", 1)
+	wsBase = strings.Replace(wsBase, "https://", "wss://", 1)
+	wsURL := wsBase + "/ws?lobby=" + url.QueryEscape(lobbyID) +
+		"&token=" + url.QueryEscape(token)
+	conn, err := netsession.DialWS(wsURL, 10*time.Second)
+	if err != nil {
+		return "cannot connect to the lobby server: " + err.Error()
+	}
+	npPlayerName = playerName
+	sess := netsession.NewWatchSession(conn, bridgeCore{}, netsession.Config{
+		Game: game, PlayerName: playerName,
+	})
+	if err := sess.StartWatch(); err != nil {
+		_ = conn.Close()
+		npWatchErr = err.Error()
+		return npWatchErr
+	}
+	npWatch = sess
+	npWatchErr = ""
+	return ""
+}
+
+// watchStepJSON is the wire shape NetplayWatchStep hands the
+// UI: whether a frame ran, the two players' button masks for
+// it, and the frame number those masks belong to. When ok is
+// false, frame is the frame the watcher is waiting on.
+type watchStepJSON struct {
+	OK    bool `json:"ok"`
+	P1    int  `json:"p1"`
+	P2    int  `json:"p2"`
+	Frame int  `json:"frame"`
+}
+
+// NetplayWatchStep simulates one frame of the watched match.
+// Call it from the emulator thread in place of NetplayStep
+// while watching; when it reports ok:false the caller renders
+// nothing new and calls again next tick.
+func NetplayWatchStep() string {
+	out := watchStepJSON{}
+	if npWatch != nil {
+		p1, p2, frame, ok := npWatch.WatchStep()
+		out = watchStepJSON{
+			OK: ok, P1: int(p1), P2: int(p2), Frame: frame,
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return `{"ok":false,"p1":0,"p2":0,"frame":0}`
+	}
+	return string(b)
+}
+
+// watchInfoJSON is the wire shape NetplayWatchInfo hands the
+// UI: the watch phase plus the two seat holders' names and,
+// once ended, why.
+type watchInfoJSON struct {
+	Phase string `json:"phase"`
+	Host  string `json:"host"`
+	Guest string `json:"guest"`
+	Error string `json:"error"`
+}
+
+// NetplayWatchInfo reports the watch state for the UI:
+// {"phase":"waiting|room|playing|ended","host":"...",
+// "guest":"...","error":"..."}. With no watch running the
+// phase is "idle" and error carries the last start failure.
+func NetplayWatchInfo() string {
+	out := watchInfoJSON{Phase: "idle", Error: npWatchErr}
+	if npWatch != nil {
+		phase, host, guest, errText := npWatch.WatchInfo()
+		out = watchInfoJSON{
+			Phase: phase, Host: host, Guest: guest, Error: errText,
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return `{"phase":"idle","host":"","guest":"","error":""}`
+	}
+	return string(b)
+}
+
+// NetplayStopWatch ends the watch. A spectator sends no
+// session traffic on the way out, not even a goodbye
+// envelope: its socket simply closes.
+func NetplayStopWatch() {
+	if npWatch != nil {
+		npWatch.Close()
+		npWatch = nil
+	}
+}
+
+// NetplayPollWatchSync returns the name of a spectator who is
+// waiting for a snapshot from this player session, or "".
+// Each name is handed out once; answering (or ignoring) it is
+// the caller's choice.
+func NetplayPollWatchSync() string {
+	if s := npActive(); s != nil {
+		return s.PollWatchSync()
+	}
+	return ""
+}
+
+// NetplayAnswerWatchSync sends this session's current state
+// to the named spectator as an addressed snapshot. Returns ""
+// on success or the error text.
+func NetplayAnswerWatchSync(name string) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.SendSnapshotTo(name); err != nil {
+		return err.Error()
+	}
+	return ""
 }
