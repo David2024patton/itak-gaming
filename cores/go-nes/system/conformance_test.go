@@ -174,25 +174,106 @@ func TestBlarggInstrTestV5(t *testing.T) {
 	}
 }
 
-// TestBlarggTimingROMsReport runs the Blargg timing suites and
-// logs their verdicts without gating on them. cpu_timing_test
-// has its own gate below (TestCPUTimingGate) now that the
-// machine has dot-level PPU sync; the two instr_timing ROMs
-// measure against the APU frame counter and stay NES-3.
-func TestBlarggTimingROMsReport(t *testing.T) {
+// TestBlarggInstrTiming gates Blargg's instr_timing pair.
+// These time instruction execution against the APU frame
+// counter's length clocks, which is why NES-1 and NES-2 could
+// only log them; with the NES-3 APU they are hard gates.
+func TestBlarggInstrTiming(t *testing.T) {
 	dir := testromsDir(t)
-	roms := []string{
-		filepath.Join(dir, "instr_timing", "1-instr_timing.nes"),
-		filepath.Join(dir, "instr_timing", "2-branch_timing.nes"),
+	for _, name := range []string{"1-instr_timing.nes", "2-branch_timing.nes"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			done, passed, text, cycles := runBlargg(t, filepath.Join(dir, "instr_timing", name), 300_000_000)
+			if !done {
+				t.Fatalf("no result within budget (%d cycles)", cycles)
+			}
+			t.Logf("%s: %d cycles, report: %s", name, cycles, strings.TrimSpace(text))
+			if !passed {
+				t.Fatalf("FAILED: %s", strings.TrimSpace(text))
+			}
+		})
 	}
-	for _, rom := range roms {
-		if _, err := os.Stat(rom); err != nil {
-			t.Logf("%s: not fetched", filepath.Base(rom))
-			continue
-		}
-		done, passed, text, cycles := runBlargg(t, rom, 900_000_000)
-		t.Logf("%s: done=%v passed=%v cycles=%d report: %s",
-			filepath.Base(rom), done, passed, cycles, strings.TrimSpace(text))
+}
+
+// TestBlarggAPUTest gates Blargg's apu_test singles, the
+// standard CPU-visible APU conformance set: length counters
+// and their load table, the frame IRQ flag and its exact set
+// timing, the $4017 reset delay and divider jitter, and the
+// DMC's basics and its 16 rates. Each reports through the
+// $6000 protocol.
+func TestBlarggAPUTest(t *testing.T) {
+	dir := testromsDir(t)
+	base := filepath.Join(dir, "apu_test", "rom_singles")
+	names := []string{
+		"1-len_ctr.nes", "2-len_table.nes", "3-irq_flag.nes",
+		"4-jitter.nes", "5-len_timing.nes", "6-irq_flag_timing.nes",
+		"7-dmc_basics.nes", "8-dmc_rates.nes",
+	}
+	for _, name := range names {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			done, passed, text, cycles := runBlargg(t, filepath.Join(base, name), 600_000_000)
+			if !done {
+				t.Fatalf("no result within budget (%d cycles)", cycles)
+			}
+			t.Logf("%s: %d cycles, report: %s", name, cycles, strings.TrimSpace(text))
+			if !passed {
+				t.Fatalf("FAILED: %s", strings.TrimSpace(text))
+			}
+		})
+	}
+}
+
+// TestAPUMixerReport runs Blargg's apu_mixer set for the
+// record. These are listen-judged tests: each plays a tone,
+// then the inverse waveform through the DMC DAC, and a human
+// confirms the near-silence between the beeps. There is no
+// CPU-visible verdict to gate on, so the test logs each ROM's
+// $6004 text and final status byte, plus how much non-silent
+// audio the run produced (proof the mixer path ran).
+func TestAPUMixerReport(t *testing.T) {
+	dir := testromsDir(t)
+	base := filepath.Join(dir, "apu_mixer")
+	for _, name := range []string{"square.nes", "triangle.nes", "noise.nes", "dmc.nes"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(base, name)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("ROM not fetched: %v", err)
+			}
+			s, err := New(data)
+			if err != nil {
+				t.Fatalf("load %s: %v", path, err)
+			}
+			// These play long tone and cancellation
+			// sequences for a human listener (tens of
+			// seconds); run until the shell reports done.
+			frames := 0
+			variation := 0
+			var prev int16
+			for frames = 0; frames < 12000; frames++ {
+				s.RunFrame()
+				for _, v := range s.AudioBuffer() {
+					if v != prev {
+						variation++
+					}
+					prev = v
+				}
+				if ok, _, _ := s.BlarggResult(); ok {
+					break
+				}
+			}
+			_, _, text := s.BlarggResult()
+			status := s.Peek(0x6000)
+			lines := strings.Split(strings.TrimSpace(text), "\n")
+			tail := lines
+			if len(tail) > 3 {
+				tail = tail[len(tail)-3:]
+			}
+			t.Logf("%s: done status $%02X after %d frames, %d varying samples, text tail: %s",
+				name, status, frames, variation, strings.Join(tail, " / "))
+		})
 	}
 }
 
