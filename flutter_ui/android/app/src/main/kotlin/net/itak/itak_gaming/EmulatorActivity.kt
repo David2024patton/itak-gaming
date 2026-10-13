@@ -800,6 +800,25 @@ class EmulatorActivity : Activity(), TextureListener {
         thread(name = "stats-upload") {
             try {
                 val device = deviceId()
+                // Board identity (display name with initials, home
+                // region), written by the Flutter side whenever the
+                // current player or their profile changes. Only
+                // trusted when it names this exact player.
+                val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
+                val identityMatches =
+                    prefs.getString("identity_name", null) == player
+                val display = if (identityMatches) {
+                    prefs.getString("identity_display", null)
+                        ?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
+                val region = if (identityMatches) {
+                    prefs.getString("identity_region", null)
+                        ?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
                 val games = obj.getJSONObject("games")
                 val keys = games.keys()
                 var sent = 0
@@ -815,6 +834,8 @@ class EmulatorActivity : Activity(), TextureListener {
                         .put("plays", g.optInt("plays", 0))
                         .put("seconds", g.optInt("seconds", 0))
                         .put("lastPlayed", g.optLong("last", 0))
+                    if (display != null) body.put("display", display)
+                    if (region != null) body.put("region", region)
                     val conn = java.net.URL("$SERVER_BASE/stats/report")
                         .openConnection() as java.net.HttpURLConnection
                     conn.requestMethod = "POST"
