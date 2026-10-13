@@ -22,10 +22,12 @@ func homebrewROM(t *testing.T) []byte {
 func hashFrame(s *System) uint64 {
 	h := fnv.New64a()
 	fb := s.Framebuffer()
-	var b [2]byte
+	var b [4]byte
 	for _, px := range fb {
 		b[0] = uint8(px)
 		b[1] = uint8(px >> 8)
+		b[2] = uint8(px >> 16)
+		b[3] = uint8(px >> 24)
 		h.Write(b[:])
 	}
 	return h.Sum64()
