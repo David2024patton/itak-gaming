@@ -36,20 +36,23 @@ the PowerVR2 tile renderer.
   withdrawn before acceptance. Exceptions keep their immediate
   behavior.
 * `holly`: the Holly system interrupt block at 0x005F6900.
-  ISTNRM, ISTERR (both write-1-to-clear), ISTEXT (device-clear
-  only), and the IML2LVL, IML4LVL, IML6LVL mask rows (per bank).
-  Reads of ISTNRM carry bit 31 when any external source is
-  pending and bit 30 when any error source is pending. The
-  highest masked level wins and is presented to the CPU with
-  INTEVT 0x320 at level 6, 0x360 at level 4, 0x3A0 at level 2,
-  following the published ASIC event table: event ids are the
-  ISTNRM bit indices (render done video 0, ISP 1, TSP 2, vblank
-  in 3, vblank out 4, hblank 5, YUV done 6, opaque list done 7,
-  opaque modifier 8, translucent 9, translucent modifier 10,
-  PVR DMA done 19, punchthrough done 21), with the error bank
-  starting at bit 0 of ISTERR (ISP out of memory, strip halt,
-  parameter out of memory, OPB out of memory, TA input error,
-  TA input overflow).
+  SB_ISTNRM (write-1-to-clear), SB_ISTEXT (device-clear only),
+  SB_ISTERR (write-1-to-clear), and the IML2LVL, IML4LVL,
+  IML6LVL mask rows (per bank). Reads of ISTNRM carry bit 30
+  when any external source is pending and bit 31 when any
+  error source is pending. The highest masked level wins and
+  is presented to the CPU with INTEVT 0x320 at level 6, 0x360
+  at level 4, 0x3A0 at level 2, following the published ASIC
+  event table: event ids are the ISTNRM bit indices (render
+  done video 0, ISP 1, TSP 2, vblank in 3, vblank out 4,
+  hblank 5, YUV done 6, opaque list done 7, opaque modifier
+  8, translucent 9, translucent modifier 10, PVR DMA done 19,
+  punchthrough done 21), with the error bank starting at bit
+  0 of ISTERR (ISP out of memory, strip halt, parameter out
+  of memory, OPB out of memory, TA input error, TA input
+  overflow). DC-3 corrected this block's register order and
+  summary bits against the official documentation; see the
+  DC-3 section.
 * `pvr`: the PowerVR2 (CLX2). Register file (ID, REVISION,
   SOFTRESET, STARTRENDER, PARAM_BASE, REGION_BASE, VO_BORDER_COL,
   FB_R_CTRL, FB_W_CTRL, FB_W_LINESTRIDE, FB_R_SOF1/2, FB_R_SIZE,
@@ -107,7 +110,156 @@ the PowerVR2 tile renderer.
   framebuffer at FB_R_SOF1 converted to XRGB8888 per FB_R_CTRL
   and FB_R_SIZE.
 
-### Physical memory map
+## DC-3: what is in this slice
+
+Sound (the AICA with its own ARM7TDMI), the Maple controller
+bus, G2 DMA, and the fog unit deferred from DC-2.
+
+* Correction to DC-2: the Holly register order and the ISTNRM
+  summary bits shipped in DC-2 contradicted the official
+  documentation. The documented map is SB_ISTNRM at
+  0x005F6900, SB_ISTEXT at +0x04, SB_ISTERR at +0x08 (masks
+  IML2NRM/EXT/ERR at 0x6910/14/18, IML4 at 0x6920/24/28, IML6
+  at 0x6930/34/38), and in ISTNRM bit 31 is the error summary
+  and bit 30 the external summary. DC-2 had ISTERR and ISTEXT
+  swapped and the summary bits exchanged; both are fixed,
+  with the bank indices and the serialized layout unchanged.
+  One known deviation remains: the event id for PVR DMA done
+  is still the DC-2 value 19, while the official table puts
+  PVR DMA end at bit 11 and channel 2 DMA end at bit 19;
+  nothing raises the event yet, so the discrepancy is inert.
+* `chips/arm7`: the AICA's ARM7TDMI, this module's own
+  implementation (ARM and Thumb states, mode banking,
+  IRQ/FIQ/undefined/SWI/abort exceptions, the GBATEK cycle
+  model). Gated by the Tom Harte ARM7TDMI corpus, copied
+  local-only into `testroms/` like the other cores (never
+  committed): the default harness subset passes 90,000 of
+  90,000 (2,000 per file across all 45 files), and the full
+  corpus at `DC_TH_SUBSET=50000` passes 2,250,000 of
+  2,250,000. Coprocessor instructions raise the undefined
+  exception, matching the corpus states; data aborts cannot
+  occur because the bus interface cannot fault. One corpus
+  quirk is pinned in the Thumb unit: a POP with an empty
+  register list transfers only the program counter, and the
+  loaded value keeps its bit 0 visible in R15, while a
+  listed POP into the program counter masks it; the
+  reference states distinguish the two paths.
+* `aica`: the sound block. 64 channels with the documented
+  register file: start address with format select (16-bit
+  PCM, 8-bit PCM, 4-bit Yamaha ADPCM with the published step
+  table and per-channel predictor and step state), loop
+  start/end, key on/off through the common KYONEX write,
+  OCT/FNS pitch at the 44,100 Hz base, the AICA envelope
+  generator (attack, decay 1, decay 2, release with the
+  documented rate tables and sustain level), pitch and
+  amplitude LFO, DISDL/DIPAN direct sends, ISEL/IMXL effect
+  sends, Q with a one-pole lowpass filter, and the position
+  and envelope monitor readback. Samples step at exactly
+  512 master cycles (22.5792 MHz master, 44,100 Hz). The
+  ARM7 runs at half the master clock, 11.2896 MHz, the rate
+  the DC documentation gives for the sound CPU. The DSP
+  effect unit executes the documented 128-step microprogram
+  (COEF, MADRS, MPRO loaded through registers; TEMP, MEMS,
+  MIXS, EFREG data paths with the documented multiply, add,
+  shift, pack and unpack operations), gated on a hand built
+  gain plus feedback delay program against hand computed
+  outputs. Common registers cover MVOL, the three timers
+  (sample-clocked interrupt sources), the internal register
+  DMA, the RTC, the MIDI stub port, the ARM/SH-4 shared
+  registers, the interrupt controller both ways (level
+  presentation with end of interrupt to the ARM as FIQ; the
+  SH-4 path raises the Holly external AICA bit), and the
+  ARMRST control that holds and releases the ARM7.
+* `maple`: the controller bus. SB_MDSTAR points at a command
+  table in main RAM; SB_MDST (with SB_MDEN) runs it
+  synchronously, or SB_MDTSEL defers it to vblank out. Frames
+  follow the documented format (command, recipient, sender,
+  word count, payload). Two devices per port: the standard
+  controller (Device Info with the documented function code
+  and function data, Get Condition fed by `SetButtons`:
+  buttons in the documented wire bit layout, active low,
+  triggers and stick axes) and a VMU-like storage device on
+  the sub address (MemoryCard function, 128 KB image, 512
+  byte blocks, Get Block and Write Block). Unknown commands
+  answer 0xFE, known commands with an unsupported function
+  answer 0xFC with the function word, bad block requests
+  answer 0xFB, and an empty sub address receives the single
+  word 0xFFFFFFFF. Completion raises the Holly Maple DMA
+  done event (ISTNRM bit 12, verified against the published
+  table).
+* `g2dma`: the G2 DMA controller at 0x005F7800. The AICA
+  channel copies synchronously in both directions between
+  system memory and AICA space (the documented length is the
+  byte count), raising ISTNRM bit 15 and the AICA-side DMA
+  end interrupt. The Ext1, Ext2, and Dev channels model
+  absent devices: started transfers set their busy bit and
+  never complete, which is the documented behavior of a DMA
+  to a device that is not there.
+* Fog (closes the DC-2 deferral): all four documented TSP
+  fog modes are applied in the shading stage after the
+  source color clamp: table fog through the 128 entry table
+  at window +0x200 with FOG_COL_RAM and the FOG_DENSITY
+  mantissa and exponent format, per-vertex fog with
+  FOG_COL_VERT keyed on the interpolated offset alpha (and
+  the Offset bit), no fog, and Look Up Table Mode 2. The
+  gate mixes a known depth against a hand filled table to
+  the exact presented pixel.
+* `system`: RunFrame steps the AICA in scanline chunks by
+  the exact rational ratio (SH-4 cycles times 225792 over
+  2000000), `AudioBuffer()` drains stereo at 44,100 Hz, and
+  `SetButtons` now feeds the Maple controller on port 0.
+  The whole-machine gate runs one program through all of
+  it: the SH-4 copies and releases an ARM sound driver, the
+  driver keys a looping PCM channel and takes timer FIQs,
+  a Maple condition poll lands and vectors its handler, the
+  fog scene renders, and a mid-run save restores to a byte
+  identical continuation including audio.
+
+### DC-3 simplifications and boundaries
+
+* The DSP coefficient for the filter Q is a stated model:
+  the documentation gives the Q table in dB (0.75 dB per
+  step, minus 3 dB) but no coefficient formula for the
+  one-pole section, so the resonant gain follows that table
+  directly and Q = 4 with FLV at maximum is exactly
+  transparent, the documented pass-through setting.
+* Noise generation (SSCTL) is a per-channel xorshift LFSR;
+  the hardware noise algorithm is not in the published
+  documentation used here. The position monitor returns the
+  low 16 bits of the sample position. MIDI is a stub (the
+  out interrupt fires on a buffer write, input never
+  arrives). The DSP external inputs EXTS are silent (no
+  external source exists in this machine), and DSP TABLE
+  addressing is absolute into wave RAM rather than ring
+  relative. The RTC write model uses a simplified enable
+  latch. The ARM/SH-4 wave RAM write-protect bit (RP) is
+  stored, not enforced.
+* Maple models the controller and the storage sub-device
+  only; other documented devices (keyboard, mouse, gun,
+  microphone) are not implemented, and their addresses
+  answer as empty. All Status returns the Device Info
+  payload plus the condition words, a documented layout
+  choice. SB_MDAPRO is stored without checking the
+  documented security code. Function codes are carried in
+  the RAM representation used by the public headers
+  (controller 0x01000000, storage 0x02000000); the Dev.Box
+  worked example prints the controller code byte-reversed,
+  which this core treats as a documentation artifact.
+* G2 interrupt-triggered DMA (TSEL other than 0) is not
+  modeled; the trigger mask registers sit outside the
+  Holly window. The G2 read counters report start plus
+  length and a zero remaining length after the synchronous
+  AICA copy. SB_G2ID reads 0.
+* Interrupts from the AICA to the SH-4 are level presented
+  from the shared pending word; because the machine steps
+  the two CPUs in chunks, an AICA source the ARM
+  acknowledges inside the same chunk (its own timer FIQ)
+  never becomes visible to the SH-4. The DC-3 gate
+  therefore counts timer B on the SH-4 side, which the ARM
+  never acknowledges. On hardware the two CPUs run
+  concurrently and both would see the line.
+
+
 
 | Range | Contents |
 | :--- | :--- |
@@ -115,11 +267,14 @@ the PowerVR2 tile renderer.
 | 0x00200000 to 0x002FFFFF | Flash ROM, 256 KB mirrored across the window |
 | 0x00500000 to 0x005FFFFF | TA FIFO (polygon parameter stream) |
 | 0x005F6900 to 0x005F693F | Holly interrupt block (real behavior) |
+| 0x005F6C00 to 0x005F6CFF | Maple controller bus (real behavior) |
 | 0x005F7000 to 0x005F70FF | GD-ROM registers (stub storage) |
+| 0x005F7800 to 0x005F78FF | G2 DMA controller (real behavior) |
 | 0x005F8000 to 0x005F9FFF | PowerVR registers, palette RAM, fog table (real behavior) |
 | 0x00600000 to 0x00600FFF | YUV FIFO (macroblock stream) |
 | 0x00601000 to 0x006FFFFF | Modem and expansion area (stub storage, idle) |
-| 0x00700000 to 0x00703FFF | AICA registers (stub storage) |
+| 0x00700000 to 0x00707FFF | AICA registers (real behavior) |
+| 0x00710000 to 0x0071000B | AICA RTC (real behavior) |
 | 0x00800000 to 0x009FFFFF | AICA RAM, 2 MB |
 | 0x04000000 to 0x04FFFFFF | VRAM 32-bit view, 8 MB mirrored |
 | 0x05000000 to 0x05FFFFFF | VRAM 64-bit view, 8 MB mirrored, bank interleaved (below) |
@@ -147,7 +302,7 @@ field. Progressive output reads FB_R_SOF1 only.
 
 `Machine.Serialize` writes, in order:
 
-1. One version byte, currently 0x02.
+1. One version byte, currently 0x03.
 2. The CPU state (`sh4.SerializeSize` bytes, which now includes
    the latched pending interrupt).
 3. Main RAM, then VRAM, then flash, then AICA RAM, each at its
@@ -159,31 +314,43 @@ field. Progressive output reads FB_R_SOF1 only.
    the TA scene: parser state, YUV converter progress, and the
    display lists not held in VRAM. The section size varies with
    the scene, and `StateSize` reports the current exact total.
+6. The AICA state: the raw register file, the DSP memories,
+   every channel's runtime state, the interrupt controller,
+   the output ring, and the ARM7 CPU state.
+7. The Maple state: registers, the four pad states, and the
+   four 128 KB VMU images.
+8. The G2 DMA registers and channel state, then a 16 byte
+   machine tail: the AICA clock accumulator remainder and
+   the Maple vblank trigger edge flag.
 
 A fresh machine measures:
 
 ```text
-StateSize = 27,532,261 bytes (version 2, empty TA scene)
+StateSize = 28,162,473 bytes (version 3, empty TA scene)
 ```
 
 `Machine.Deserialize` checks the version byte and the PVR
 section length, and restores every store and device from the
-buffer; a restored machine continues deterministically from the
-saved point. A mid-frame state saved after TA submission
-restores and renders byte-identical output, which the test
-suite proves.
+buffer; a restored machine continues deterministically from
+the saved point. A mid-frame state saved after TA submission
+restores and renders byte-identical output, and the DC-3
+gate proves the same for a mid-run state with sound playing
+(audio included), which the test suite proves.
 
 ## Roadmap
 
-* DC-2: done (this slice). PowerVR2 renderer, SPG timing, real
-  interrupt delivery through the Holly block.
-* DC-3: Sound and input. The AICA with its ARM7 sound CPU, G2
-  DMA (and the deferred fog unit below), and the Maple bus,
-  which finally delivers controller state to games.
-* DC-4: BIOS HLE and shipping shape. High-level emulation of the
-  BIOS services real games call, a libretro style shell, a
-  real-game engine test, and app wiring for the android-64bit
-  build of iTaK Gaming.
+* DC-2: done. PowerVR2 renderer, SPG timing, real interrupt
+  delivery through the Holly block.
+* DC-3: done (this slice). The AICA with its ARM7 sound CPU,
+  the DSP effect unit, G2 DMA, the Maple bus delivering
+  controller state to games, and the fog unit deferred from
+  DC-2.
+* DC-4: BIOS HLE and shipping shape. High-level emulation of
+  the BIOS boot sequence (our own boot code reads IP.BIN and
+  loads 1ST_READ.BIN per the documented sequence), a libretro
+  style shell, an engine test running a synthetic 1ST_READ
+  that exercises PVR, AICA, and Maple together, and app
+  wiring for the android-64bit build of iTaK Gaming.
 
 ## Honesty notes
 
@@ -193,9 +360,18 @@ suite proves.
   value 0x0009), so execution that lands there slides instead of
   running dumped code. Real BIOS calls get high-level emulation
   in DC-4.
-* Fog is deferred to DC-3. The fog registers and the fog table
-  are stored and serialized, and the TSP fog control field is
-  parsed, but fog is not applied to rendered pixels yet.
+* Fog arrived in DC-3 (see the DC-3 section and its
+  boundaries): all four TSP fog modes are implemented. The
+  fog table entry contributes its low 8 bits as the fog
+  alpha, a stated choice; the FOG_CLAMP_MIN/MAX registers
+  are stored, but the per-polygon color clamp they feed is
+  not implemented (the renderer's source clamp still runs
+  before fog, as documented), Look Up Table Mode 2 collapses
+  to an identity in this single color buffer renderer (the
+  documented substitution makes the fog color the polygon
+  color itself), and the background plane is not fogged,
+  matching its treatment by the other ISP shading features
+  in this renderer.
 * Deferred TA formats and simplifications: floating point and
   intensity vertex color formats are read as packed colors; the
   background plane is color only (its texture bit is ignored);
