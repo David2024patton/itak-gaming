@@ -251,6 +251,66 @@ func NetplayChatJSON(afterSeq int) string {
 	return string(b)
 }
 
+// NetplaySendSignal sends one voice chat signaling envelope to
+// the other player (PROTOCOL.md 3.1): kind "offer" or "answer"
+// with an SDP payload, or kind "ice" with a candidate payload.
+// Returns "" on success or the error text. It works in the
+// waiting room too, so voice can connect before the game
+// starts. Signaling is best effort and never affects the game.
+func NetplaySendSignal(kind, payload string) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.SendSignal(kind, payload); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// signalMsgJSON and signalPollJSON are the wire shape
+// NetplaySignalJSON hands the UI: the signaling entries newer
+// than the caller's cursor plus the newest seq, mirroring the
+// chat poll shape. Empty payload fields are omitted.
+type signalMsgJSON struct {
+	Seq           int    `json:"seq"`
+	Kind          string `json:"kind"`
+	SDP           string `json:"sdp,omitempty"`
+	Candidate     string `json:"candidate,omitempty"`
+	SDPMid        string `json:"sdpMid,omitempty"`
+	SDPMLineIndex int    `json:"sdpMLineIndex,omitempty"`
+}
+
+type signalPollJSON struct {
+	Seq  int             `json:"seq"`
+	Msgs []signalMsgJSON `json:"msgs"`
+}
+
+// NetplaySignalJSON returns the voice signaling entries with
+// seq greater than afterSeq as JSON:
+// {"seq":N,"msgs":[{"seq":..,"kind":"offer","sdp":".."}]}.
+// With no session it returns the cursor unchanged and no
+// messages.
+func NetplaySignalJSON(afterSeq int) string {
+	out := signalPollJSON{Seq: afterSeq, Msgs: []signalMsgJSON{}}
+	if s := npActive(); s != nil {
+		msgs, latest := s.SignalsSince(afterSeq)
+		out.Seq = latest
+		for _, m := range msgs {
+			out.Msgs = append(out.Msgs, signalMsgJSON{
+				Seq: m.Seq, Kind: m.Kind, SDP: m.SDP,
+				Candidate: m.Candidate, SDPMid: m.SDPMid,
+				SDPMLineIndex: m.SDPMLineIndex,
+			})
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return `{"seq":0,"msgs":[]}`
+	}
+	return string(b)
+}
+
 // NetplayActive reports whether a session is live.
 func NetplayActive() bool { return npSession != nil }
 
