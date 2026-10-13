@@ -15,16 +15,20 @@ import (
 // pixels). All fixtures are synthesized here; nothing is loaded from
 // disc.
 
-// vfpuProg is hand-encoded VFPU on top of the integer core:
+// vfpuProg is hand-encoded VFPU on top of the integer core, in
+// the corpus operand layout (C000 is field 0 at file positions
+// {0, 4, 8, 12}, C010 field 1, C100 field 4, C110 field 5; the
+// PSP-2 build of this program used the linear layout the
+// pspautotests corpus later refuted):
 //
-//	vadd.q M1 row0 = M0 row0 + M0 row1        (1,2,3,4) + (10,20,30,40)
-//	vdot.q S(2,0,0) = M1 row0 . M0 row0       11+44+99+176 = 330
-//	vmul.q M1 row1 = M1 row0 * M0 row0        (11,44,99,176)
+//	vadd.q C100 = C000 + C010                 (1,2,3,4) + (10,20,30,40)
+//	vdot.q S200 = C100 . C000                 11+44+99+176 = 330
+//	vmul.q C110 = C100 * C000                 (11,44,99,176)
 //	j self
 var vfpuProg = []uint32{
-	encGateVV(0x18, 0, 0x10, 0x00, 0x04, 3), // vadd.q (op 0x18, G 0)
-	encGateVV(0x19, 1, 0x20, 0x10, 0x00, 3), // vdot.q (op 0x19, G 1)
-	encGateVV(0x19, 0, 0x14, 0x10, 0x00, 3), // vmul.q (op 0x19, G 0)
+	encGateVV(0x18, 0, 0x04, 0x00, 0x01, 3), // vadd.q (op 0x18, G 0)
+	encGateVV(0x19, 1, 0x08, 0x04, 0x00, 3), // vdot.q (op 0x19, G 1)
+	encGateVV(0x19, 0, 0x05, 0x04, 0x00, 3), // vmul.q (op 0x19, G 0)
 	0x0A000003,                              // j 0x0800000C (self)
 }
 
@@ -110,10 +114,15 @@ func loadGateMachine(t *testing.T) *Machine {
 	}
 	m.LoadBytes(0x08002000, gateSpriteVerts())
 	m.Boot(0x08000000)
-	// VFPU inputs: M0 row0 = (1,2,3,4), M0 row1 = (10,20,30,40). Set
-	// after Boot because Boot resets the CPU and clears the VFPU file.
-	for i, v := range []float32{1, 2, 3, 4, 10, 20, 30, 40} {
-		m.CPU.SetVSingle(i, math.Float32bits(v))
+	// VFPU inputs in the corpus layout: C000 (positions
+	// {0, 4, 8, 12}) = (1,2,3,4), C010 (positions {1, 5, 9, 13})
+	// = (10,20,30,40). Set after Boot because Boot resets the
+	// CPU and clears the VFPU file.
+	for i, v := range []float32{1, 2, 3, 4} {
+		m.CPU.SetVSingle(4*i, math.Float32bits(v))
+	}
+	for i, v := range []float32{10, 20, 30, 40} {
+		m.CPU.SetVSingle(4*i+1, math.Float32bits(v))
 	}
 	return m
 }
@@ -121,19 +130,20 @@ func loadGateMachine(t *testing.T) *Machine {
 func TestPSP2VFPUProgramResults(t *testing.T) {
 	m := loadGateMachine(t)
 	m.RunCycles(100)
-	// vadd.q result at M1 row0 (linear 16..19).
+	// vadd.q result at C100 (positions {16, 20, 24, 28}).
 	for i, want := range []float32{11, 22, 33, 44} {
-		if got := math.Float32frombits(m.CPU.VSingle(16 + i)); got != want {
+		if got := math.Float32frombits(m.CPU.VSingle(16 + 4*i)); got != want {
 			t.Errorf("vadd lane %d = %v, want %v", i, got, want)
 		}
 	}
-	// vdot.q result at S(2,0,0) (linear 32).
+	// vdot.q result at S200 (position 32 under the dot
+	// family's scalar decode).
 	if got := math.Float32frombits(m.CPU.VSingle(32)); got != 330 {
 		t.Errorf("vdot = %v, want 330", got)
 	}
-	// vmul.q result at M1 row1 (linear 20..23).
+	// vmul.q result at C110 (positions {17, 21, 25, 29}).
 	for i, want := range []float32{11, 44, 99, 176} {
-		if got := math.Float32frombits(m.CPU.VSingle(20 + i)); got != want {
+		if got := math.Float32frombits(m.CPU.VSingle(17 + 4*i)); got != want {
 			t.Errorf("vmul lane %d = %v, want %v", i, got, want)
 		}
 	}
