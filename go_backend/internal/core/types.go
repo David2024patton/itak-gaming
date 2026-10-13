@@ -31,7 +31,7 @@ type CoreInfo struct {
 
 // SupportedCores lists all cores by platform
 var Cores32Bit = []CoreInfo{
-	{SystemNES, "FCEUmm", "libfceumm.so", []string{".nes"}, 32},
+	{SystemNES, "Go NES", "libgo_nes.so", []string{".nes"}, 32},
 	{SystemSNES, "Snes9x", "libsnes9x.so", []string{".sfc", ".smc"}, 32},
 	{SystemGenesis, "Go Genesis", "libgo_genesis.so", []string{".md", ".gen", ".bin"}, 32},
 	{SystemGameBoy, "Go Game Boy", "libgo_gameboy.so", []string{".gb"}, 32},
