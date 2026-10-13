@@ -77,8 +77,8 @@ func TestSaveStateDeterminism(t *testing.T) {
 	s.RunFrame()
 
 	snap := s.Serialize()
-	if len(snap) != StateSize {
-		t.Fatalf("state size = %d, want %d", len(snap), StateSize)
+	if len(snap) != s.StateSize() {
+		t.Fatalf("state size = %d, want %d", len(snap), s.StateSize())
 	}
 	s.RunFrame()
 	want := s.Serialize()
@@ -105,7 +105,8 @@ func TestSaveStateDeterminism(t *testing.T) {
 
 func TestDeserializeRejectsBadStates(t *testing.T) {
 	s := New()
-	if err := s.Deserialize(make([]byte, StateSize-1)); err == nil {
+	snap := s.Serialize()
+	if err := s.Deserialize(snap[:len(snap)-1]); err == nil {
 		t.Fatal("short state accepted")
 	}
 	bad := s.Serialize()
@@ -221,17 +222,21 @@ func TestVBlankInterruptMaskedByIMS(t *testing.T) {
 	s := New()
 	setupIRQ(s)
 	// Mask every wired source: VBlank-IN, VBlank-OUT,
-	// HBlank-IN, and the sprite draw end (bit 12, raised
-	// by the frame boundary auto draw).
-	s.Bus.Write32(0x05FE00A0, 0x00001007)
+	// HBlank-IN, the sprite draw end (bit 12, raised by
+	// the frame boundary auto draw), and, since SAT-3
+	// wired the SCU timers into the frame, timer 0 (bit
+	// 3: its power on compare of 0 fires at line 0).
+	// Timer 1 stays silent here because its T1MD enable
+	// bit is clear at power on.
+	s.Bus.Write32(0x05FE00A0, 0x0000100F)
 	s.RunFrame()
 	if got := s.Bus.Read32(0x06003000); got != 0 {
 		t.Fatalf("handler ran while masked: cell = %#x", got)
 	}
 	// Status still records the events; only delivery is
 	// blocked.
-	if got := s.Bus.Read32(0x05FE00A4); got&0x1007 != 0x1007 {
-		t.Fatalf("IST = %#x, want bits 0, 1, 2, and 12 set", got)
+	if got := s.Bus.Read32(0x05FE00A4); got&0x100F != 0x100F {
+		t.Fatalf("IST = %#x, want bits 0, 1, 2, 3, and 12 set", got)
 	}
 }
 
@@ -351,8 +356,8 @@ func TestVDPDualCPUDisplayDeterminism(t *testing.T) {
 	s.RunFrame()
 	s.RunFrame()
 	snap := s.Serialize()
-	if len(snap) != StateSize {
-		t.Fatalf("state size = %d, want %d", len(snap), StateSize)
+	if len(snap) != s.StateSize() {
+		t.Fatalf("state size = %d, want %d", len(snap), s.StateSize())
 	}
 	s.RunFrame()
 	s.RunFrame()
