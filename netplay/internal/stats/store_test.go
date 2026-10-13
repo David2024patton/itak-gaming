@@ -217,3 +217,34 @@ func TestEmptyBoardsAreEmptySlices(t *testing.T) {
 		t.Errorf("Recent on empty store = %v, want empty non-nil slice", got)
 	}
 }
+
+func TestIdentity(t *testing.T) {
+	s := newTestStore(t)
+
+	// Unknown player: empty identity, no error.
+	if d, r := s.Identity("Ghost"); d != "" || r != "" {
+		t.Errorf("Identity(Ghost) = %q/%q, want empty", d, r)
+	}
+
+	// A report without an identity teaches the store nothing.
+	s.Report(Report{DeviceID: "tv", Player: "Mary", Game: "Kart", Plays: 1, Seconds: 60, LastPlayed: 1000})
+	if d, r := s.Identity("Mary"); d != "" || r != "" {
+		t.Errorf("Identity(Mary) before any identity report = %q/%q, want empty", d, r)
+	}
+
+	// The most recent report carrying an identity wins, across
+	// devices and games.
+	s.Report(Report{DeviceID: "tv", Player: "Mary", Game: "Kart", Plays: 2, Seconds: 120, LastPlayed: 2000, Display: "Mary P.", Region: "MO"})
+	s.Report(Report{DeviceID: "handheld", Player: "Mary", Game: "SMW", Plays: 1, Seconds: 30, LastPlayed: 1500, Display: "Old Name", Region: "KS"})
+	if d, r := s.Identity("Mary"); d != "Mary P." || r != "MO" {
+		t.Errorf("Identity(Mary) = %q/%q, want Mary P./MO (newest identity report)", d, r)
+	}
+
+	// A newer report for another game, carrying no identity, does
+	// not erase it: identity is read from whichever stored entries
+	// carry one, newest LastPlayed first (the players board's rule).
+	s.Report(Report{DeviceID: "tv", Player: "Mary", Game: "Tetris", Plays: 1, Seconds: 10, LastPlayed: 3000})
+	if d, r := s.Identity("Mary"); d != "Mary P." || r != "MO" {
+		t.Errorf("Identity(Mary) after identity-free report = %q/%q, want Mary P./MO kept", d, r)
+	}
+}
