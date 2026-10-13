@@ -58,6 +58,9 @@ Lobby lifetime rules (enforced by the server):
   socket is closed, and the lobby is deleted.
 - A guest disconnecting notifies the host (`peer_left`), revokes the
   guest's token, and frees the slot so a replacement guest can join.
+- A spectator disconnecting revokes the spectator's token and tells
+  the room (`spectator_left`), but frees no slot and ends nothing:
+  the game carries on without them.
 - A lobby whose peers have all been gone for **60 seconds** is reaped.
 - A lobby nobody ever connected to expires **10 minutes** after
   creation.
@@ -93,9 +96,12 @@ Errors are `{"error": "..."}` with a matching HTTP status.
 
 ```json
 { "id": "XBPVW", "name": "Kart night", "game": "Super Mario Kart (USA).sfc",
-  "hostPlayer": "David", "players": 1, "maxPlayers": 2,
+  "hostPlayer": "David", "players": 1, "maxPlayers": 2, "spectators": 0,
   "locked": true, "createdAt": "2026-10-11T22:00:00Z" }
 ```
+
+`players` counts the player seats only; `spectators` counts watchers
+(see the watch endpoint below). The two never mix.
 
 The list never contains password hashes, salts, or tokens.
 
@@ -109,6 +115,29 @@ The list never contains password hashes, salts, or tokens.
 - **401** wrong password, **404** no such lobby, **409** lobby full or
   name already taken in the lobby, **429** too many attempts
   (20/min per IP per lobby, counting successes and failures alike).
+
+### `POST /lobbies/{id}/watch`
+
+Admits a **spectator**: someone who watches the game without holding
+a player seat. Same request body as join; the password is checked
+exactly the same way. A lobby holds at most **10 spectators**, and
+names are unique across the whole room (a watcher cannot take a
+player's name, or another watcher's).
+
+```json
+{ "player": "Fan", "password": "if the lobby is locked" }
+```
+
+- **200** → `{ "spectatorToken": "...", "wsUrl": "...", "lobby": {...} }`
+- **401** wrong password, **404** no such lobby, **409** spectator
+  seats full or name already taken in the lobby, **429** too many
+  attempts (same brake as join).
+
+The spectator token authenticates the signaling socket as role
+`spectator`. Spectator membership is separate from the player seats:
+watching never counts toward `maxPlayers`, a full player lobby can
+still take watchers, and a spectator disconnecting frees no seat and
+ends nothing.
 
 ### `GET /healthz`
 
@@ -129,11 +158,34 @@ delivered to the other peer byte for byte. (Messages are relayed, not
 re-serialized, so unknown fields survive.) The only messages the
 server itself mints are lifecycle notices:
 
-| type           | extra fields | meaning                                  |
-|----------------|--------------|------------------------------------------|
-| `peer_joined`  | `role`       | the other side connected                 |
-| `peer_left`    | `role`       | a guest disconnected; slot is free       |
-| `lobby_closed` | `role`       | the host left; session over, lobby gone  |
+| type               | extra fields | meaning                                    |
+|--------------------|--------------|--------------------------------------------|
+| `peer_joined`      | `role`       | a player (host or guest) connected         |
+| `peer_left`        | `role`       | a guest disconnected; slot is free         |
+| `lobby_closed`     | `role`       | the host left; session over, lobby gone    |
+| `spectator_joined` | `player`     | a spectator connected                      |
+| `spectator_left`   | `player`     | a spectator disconnected; nothing frees    |
+| `roster`           | `members`    | the room's full member list (see below)    |
+
+`peer_joined` and `peer_left` stay player-only on purpose: player
+clients read `peer_joined` as "my opponent is here", and a spectator
+is never an opponent. Spectators arrive and leave on their own
+notices.
+
+After every membership change (a player or spectator connecting or
+disconnecting), the server also sends the whole room a **roster**:
+the full member list from lobby membership, in join order.
+
+```json
+{ "type": "roster",
+  "members": [ { "name": "David", "role": "host" },
+               { "name": "Brother", "role": "guest" },
+               { "name": "Fan", "role": "spectator" } ] }
+```
+
+Every client in the room, the one who just arrived included, gets
+the same roster, so all of them render the same room. A host
+disconnect sends no roster: `lobby_closed` ends the room instead.
 
 Keepalive: the server pings every 25 s and drops sockets that show no
 sign of life (message or pong) for 90 s.
@@ -454,7 +506,7 @@ report per (player, game) pair it holds:
 for its (deviceId, player, game) triple only when both its plays
 and its seconds are >= the stored values. Since clients always send
 full cumulative totals, a lower report can only be a stale echo
-from an older sync, so it is ignored (the POST still returns 204 —
+from an older sync, so it is ignored (the POST still returns 204;
 from the client's side, syncing succeeded).
 
 ### Read endpoints
@@ -518,13 +570,21 @@ Returns David's list, friends sorted by name:
 - `display` and `region` are the identity the leaderboard knows
   for that name (from its stat reports, section 6), or empty
   strings when the name has never reported one.
-- `status` is presence, and in this version it means exactly one
-  thing: **`in_lobby`** when the friend is the host or a guest of
-  a lobby that exists in the lobby registry right now, with
-  `game` naming that lobby's game. Otherwise **`offline`**, and
-  `game` is omitted. There is **no app-open presence** in this
-  version: offline means "not in a lobby", nothing more. It does
-  not say whether the friend's app is running.
+- `status` is presence, one of three values, decided in this
+  precedence order:
+  - **`in_lobby`** when the friend is the host or a guest of a
+    lobby that exists in the lobby registry right now, with
+    `game` naming that lobby's game. Being in a lobby always
+    wins, even when the friend's app is also pinging.
+  - **`online`** when the friend is not in a lobby but their app
+    pinged `POST /friends/presence` within the last **90
+    seconds**. `game` is omitted.
+  - **`offline`** otherwise: not in a lobby and no recent ping.
+    `game` is omitted.
+- App-open presence tracks only that the app is open, nothing
+  more: which screen the friend is on is not reported, and the
+  pings are kept in memory only, so a server restart resets
+  everyone to offline until their apps ping again.
 - **200** on success (a player with no list gets an empty
   `friends` array); **400** when the `player` parameter is
   missing or blank.
@@ -552,6 +612,21 @@ Removes the follow. Removing a name that is not on the list
 succeeds and changes nothing. Returns **200** with the full
 updated list, same shape as the GET; **400** on a malformed body
 or an empty name.
+
+### `POST /friends/presence`
+
+```json
+{ "player": "David" }
+```
+
+An app-open ping: the client sends one on a timer (every 30 s
+or so) for as long as the app is open, and the server remembers
+the latest one per player for 90 seconds (see `online` under the
+GET). Returns **204** with no body on success; **400** on a
+malformed or oversized (> 4 KB) body, an empty name, or a name
+over 40 characters. Like the rest of this API there is no auth:
+names are public board names, and a ping claims nothing beyond
+"an app said this name is open".
 
 **Storage:** in memory, persisted to a JSON file (the
 `-friendsfile` flag, else `ITAK_FRIENDS_FILE`, else a
