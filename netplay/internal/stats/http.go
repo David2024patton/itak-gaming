@@ -57,6 +57,8 @@ type reportRequest struct {
 	Plays      int    `json:"plays"`
 	Seconds    int    `json:"seconds"`
 	LastPlayed int64  `json:"lastPlayed"`
+	Display    string `json:"display"`
+	Region     string `json:"region"`
 }
 
 func (h *Handler) handleReport(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +106,8 @@ func validateReport(req reportRequest) (Report, error) {
 	device := sanitize(req.DeviceID)
 	player := sanitize(req.Player)
 	game := sanitize(req.Game)
+	display := sanitize(req.Display)
+	region := sanitize(req.Region)
 	switch {
 	case device == "":
 		return Report{}, errors.New("deviceId is required")
@@ -123,6 +127,10 @@ func validateReport(req reportRequest) (Report, error) {
 		return Report{}, errors.New("seconds must be >= 0")
 	case req.LastPlayed < 0:
 		return Report{}, errors.New("lastPlayed must be >= 0")
+	case utf8.RuneCountInString(display) > MaxDisplayChars:
+		return Report{}, errors.New("display must be at most 60 characters")
+	case utf8.RuneCountInString(region) > MaxRegionChars:
+		return Report{}, errors.New("region must be at most 40 characters")
 	}
 	return Report{
 		DeviceID:   device,
@@ -131,6 +139,8 @@ func validateReport(req reportRequest) (Report, error) {
 		Plays:      minInt(req.Plays, MaxValue),
 		Seconds:    minInt(req.Seconds, MaxValue),
 		LastPlayed: req.LastPlayed,
+		Display:    display,
+		Region:     region,
 	}, nil
 }
 
