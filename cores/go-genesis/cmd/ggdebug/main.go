@@ -20,8 +20,8 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/system"
 	"github.com/davidpatton/itak-gaming/cores/go-genesis/vdp"
 
-	m68k "github.com/user-none/go-chip-m68k"
-	"github.com/user-none/go-chip-z80"
+	m68k "github.com/davidpatton/itak-gaming/cores/go-genesis/chips/m68k"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/chips/z80"
 )
 
 const (
@@ -207,7 +207,7 @@ func playshot(romPath string) {
 				r5 := (px >> 11) & 0x1F
 				g6 := (px >> 5) & 0x3F
 				b5 := px & 0x1F
-				img.Set(x, y, color.RGBA{uint8(r5 << 3 | r5 >> 2), uint8(g6 << 2 | g6 >> 4), uint8(b5 << 3 | b5 >> 2), 0xFF})
+				img.Set(x, y, color.RGBA{uint8(r5<<3 | r5>>2), uint8(g6<<2 | g6>>4), uint8(b5<<3 | b5>>2), 0xFF})
 			}
 		}
 		out, _ := os.Create("/tmp/gengames/play_" + tag + ".png")
