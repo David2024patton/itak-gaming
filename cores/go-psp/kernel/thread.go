@@ -31,6 +31,7 @@ const (
 	waitVblank
 	waitThreadEnd
 	waitLwMutex
+	waitAudio
 )
 
 // timesliceInsns is the documented timeslice check interval: every
@@ -247,8 +248,12 @@ func (k *Kernel) pickReady(end uint64) *Thread {
 
 // expireWaits completes every wait whose deadline has passed, in
 // (priority, order) sequence for determinism. Delay waits complete
-// successfully; object waits complete with WAIT_TIMEOUT.
+// successfully; object waits complete with WAIT_TIMEOUT. Audio
+// waits have no timeout case: the mixer advancing to the current
+// cycle (audioAdvance) completes them with their real result
+// when a channel buffer runs out, so it runs first here.
 func (k *Kernel) expireWaits() {
+	k.audioAdvance()
 	var expired []*Thread
 	for _, th := range k.order {
 		if th.state == thWait && th.waitDeadline != 0 && th.waitDeadline <= k.cycles {
