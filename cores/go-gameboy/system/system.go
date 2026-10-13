@@ -1,8 +1,20 @@
-// Package system is the Game Boy (DMG) machine: the SM83 CPU, the
+// Package system is the Game Boy machine: the SM83 CPU, the
 // cartridge, the PPU, the APU, and the small devices on the bus
 // (timer and divider, OAM DMA, joypad, serial port) wired together
 // and clocked dot by dot. One frame is 70,224 dots (456 per line,
 // 154 lines) at the 4,194,304 Hz master clock.
+//
+// A cartridge flagged CGB (header 0x143 bit 7) runs the machine as
+// a Game Boy Color: color PPU, VRAM and WRAM banking, double-speed
+// mode, HDMA, and the CGB registers. Timing model for speed: the
+// frame is paced in device dots (the 4.194 MHz domain the PPU,
+// APU, and RTC live in). The CPU consumes M-cycles; one M-cycle
+// spans 4 device dots at normal speed and 2 in double speed, the
+// timer/divider advances once per CPU dot (so TIMA runs at CPU
+// rate), the APU frame sequencer is clocked from a divider twin
+// that always advances at the device rate (music tempo does not
+// change with CPU speed), and the serial bit clock halves its
+// period in double speed, per the published double-speed rules.
 //
 // The frame shape mirrors the Genesis core in this repository:
 // RunFrame advances one video frame, Framebuffer returns the
@@ -56,7 +68,11 @@ const (
 	regTMA  = 0xFF06
 	regTAC  = 0xFF07
 	regIF   = 0xFF0F
+	regKEY1 = 0xFF4D // CGB speed switch
 	regDMA  = 0xFF46
+	regVBK  = 0xFF4F // CGB VRAM bank (PPU)
+	regRP   = 0xFF56 // CGB infrared port (stub)
+	regSVBK = 0xFF70 // CGB WRAM bank
 	regIE   = 0xFFFF
 )
 
@@ -73,10 +89,40 @@ type System struct {
 	ppu *ppu.PPU
 	apu *sound.APU
 
-	wram [0x2000]byte
-	hram [0x7F]byte
-	ie   uint8
-	ifr  uint8 // interrupt flags (0xFF0F low 5 bits are live)
+	// CGB model state. cgb is decided by the cartridge (or forced
+	// by NewCGB for test ROMs written for CGB hardware). speed is
+	// the CPU speed multiplier, 1 or 2; the timer divider
+	// advances speed times per device dot while seqDiv, the frame
+	// sequencer's divider twin, advances once.
+	cgb      bool
+	forceCGB bool
+	compat   bool // DMG cart on CGB hardware: CGB feature registers lock
+	speed    int
+	key1Arm  bool
+	seqDiv   uint16
+	svbk     uint8 // SVBK register as written (bank in bits 0-2)
+	rpReg    uint8 // infrared port writes, stored; reads are the stub
+	undocCGB [4]uint8
+
+	// HDMA (CGB VRAM DMA). Source and destination registers are
+	// kept as written; the running transfer tracks the current
+	// addresses and remaining block count. A general-purpose
+	// transfer copies immediately on the HDMA5 write and stalls
+	// the CPU for its transfer time via hdmaStallMC.
+	hdmaSrcLo, hdmaSrcHi uint8
+	hdmaDstLo, hdmaDstHi uint8
+	hdmaActive           bool
+	hdmaBlocks           int
+	hdmaSrc              uint16
+	hdmaDst              uint16 // VRAM offset 0x0000-0x1FF0
+	hdmaStallMC          int
+	hdmaCancelled        bool
+
+	wram  [0x8000]byte // 8 banks of 4 KB; the DMG uses banks 0 and 1
+	hram  [0x7F]byte
+	ie    uint8
+	ieReg uint8 // IE as written: reads return the full stored byte
+	ifr   uint8 // interrupt flags (0xFF0F low 5 bits are live)
 
 	// Timer and divider.
 	divider   uint16 // full 16-bit divider counter
@@ -126,15 +172,49 @@ type System struct {
 }
 
 // New builds a machine around a cartridge image: the cartridge is
-// parsed, the CPU is reset to the DMG post-boot state (the values
+// parsed, the CPU is reset to the post-boot state (the values
 // the boot ROM leaves behind at hand-off to 0x0100), and the
-// divider starts at its post-boot phase.
+// divider starts at its post-boot phase. A CGB-flagged cartridge
+// powers the machine on as a Game Boy Color.
 func New(image []byte) (*System, error) {
 	s := &System{}
 	if err := s.LoadGame(image); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// NewCGB builds a machine that runs as a Game Boy Color even for
+// a cartridge without the CGB flag. Real CGB hardware does
+// exactly this for the mooneye CGB test ROMs, which are built as
+// plain images but written for CGB hardware; it exists for the
+// conformance harness.
+func NewCGB(image []byte) (*System, error) {
+	s := &System{forceCGB: true}
+	if err := s.LoadGame(image); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// CGB reports whether the machine is running as a Game Boy Color.
+func (s *System) CGB() bool { return s.cgb }
+
+// Speed returns the current CPU speed multiplier (1 or 2).
+func (s *System) Speed() int {
+	if s.speed == 2 {
+		return 2
+	}
+	return 1
+}
+
+// mcycleDots is the number of device dots one CPU M-cycle spans
+// at the current speed: 4 at normal speed, 2 in double speed.
+func (s *System) mcycleDots() int {
+	if s.speed == 2 {
+		return 2
+	}
+	return 4
 }
 
 // LoadGame builds the machine around a cartridge image and powers
@@ -147,10 +227,40 @@ func (s *System) LoadGame(image []byte) error {
 	if ct.Kind == cart.MBC2 || ct.Kind == cart.MBCUnsupported {
 		return errors.New("system: mapper not implemented")
 	}
+	s.cgb = ct.CGBFlag&0x80 != 0 || s.forceCGB
+	// A DMG cartridge on CGB hardware boots into DMG
+	// compatibility mode: the color hardware is present, but
+	// the feature registers a game could use to leave DMG mode
+	// (KEY1, HDMA, the palette data ports, OPRI, SVBK, FF74) lock
+	// to 0xFF, as the hardware locks them. New() with a DMG cart
+	// never takes this path (it models DMG hardware, where those
+	// registers are simply absent); only CGB hardware, real or
+	// forced, shows the locks.
+	s.compat = s.cgb && ct.CGBFlag&0x80 == 0
 	s.CPU = sm83.New()
-	s.CPU.OnCycle = func() { s.tick(4) }
+	s.CPU.OnCycle = func() { s.tick(s.mcycleDots()) }
+	s.CPU.OnStopSwitch = func() bool {
+		if !s.cgb || s.compat || !s.key1Arm {
+			return false
+		}
+		s.key1Arm = false
+		if s.speed == 2 {
+			s.speed = 1
+		} else {
+			s.speed = 2
+		}
+		return true
+	}
 	s.Cart = ct
-	s.ppu = ppu.New()
+	if s.cgb {
+		s.ppu = ppu.NewCGB()
+		if s.compat {
+			s.ppu.SetCompat()
+		}
+	} else {
+		s.ppu = ppu.New()
+	}
+	s.ppu.OnHBlank = func() { s.hdmaHBlank() }
 	s.apu = sound.New()
 	s.audio = nil
 	s.loaded = true
@@ -161,18 +271,48 @@ func (s *System) LoadGame(image []byte) error {
 // Loaded reports whether a game is in the machine.
 func (s *System) Loaded() bool { return s.loaded }
 
-// Reset restores the machine to the DMG post-boot state. Cartridge
-// RAM survives, as battery-backed RAM does on hardware.
+// Reset restores the machine to the post-boot state: the DMG
+// hand-off values, or the CGB hand-off values (A=0x11 marks CGB
+// hardware to the game) when the machine runs as a Color.
+// Cartridge RAM survives, as battery-backed RAM does on hardware.
 func (s *System) Reset() {
 	if !s.loaded {
 		return
 	}
 	s.CPU.Reset()
-	s.CPU.SetRegs(sm83.Registers{
-		A: 0x01, F: 0xB0, B: 0x00, C: 0x13,
-		D: 0x00, E: 0xD8, H: 0x01, L: 0x4D,
-		SP: 0xFFFE, PC: 0x0100,
-	})
+	if s.compat {
+		// DMG cartridge on CGB hardware: the compatibility boot
+		// path leaves its own register set (hardware-verified by
+		// mooneye boot_regs-cgb).
+		s.CPU.SetRegs(sm83.Registers{
+			A: 0x11, F: 0x80, B: 0x00, C: 0x00,
+			D: 0x00, E: 0x08, H: 0x00, L: 0x7C,
+			SP: 0xFFFE, PC: 0x0100,
+		})
+	} else if s.cgb {
+		s.CPU.SetRegs(sm83.Registers{
+			A: 0x11, F: 0x80, B: 0x00, C: 0x00,
+			D: 0xFF, E: 0x56, H: 0x00, L: 0x0D,
+			SP: 0xFFFE, PC: 0x0100,
+		})
+	} else {
+		s.CPU.SetRegs(sm83.Registers{
+			A: 0x01, F: 0xB0, B: 0x00, C: 0x13,
+			D: 0x00, E: 0xD8, H: 0x01, L: 0x4D,
+			SP: 0xFFFE, PC: 0x0100,
+		})
+	}
+	s.speed = 1
+	s.key1Arm = false
+	s.svbk = 1
+	s.rpReg = 0
+	s.undocCGB = [4]uint8{}
+	s.hdmaSrcLo, s.hdmaSrcHi, s.hdmaDstLo, s.hdmaDstHi = 0, 0, 0, 0
+	s.hdmaActive = false
+	s.hdmaBlocks = 0
+	s.hdmaSrc, s.hdmaDst = 0, 0
+	s.hdmaStallMC = 0
+	s.hdmaCancelled = false
 	s.ppu.Reset()
 	*s.apu = *sound.New()
 	for i := range s.wram {
@@ -184,7 +324,10 @@ func (s *System) Reset() {
 	s.ie = 0
 	s.ifr = 0
 	// DMG hand-off: the divider's high byte reads 0xAB at 0x0100.
+	// The frame sequencer's divider twin starts in lockstep; the
+	// two only diverge once double speed engages.
 	s.divider = 0xAB << 8
+	s.seqDiv = 0xAB << 8
 	s.tima, s.tma, s.tac = 0, 0, 0
 	s.timerBit = false
 	s.overflow = false
@@ -229,8 +372,8 @@ func (s *System) SetButtons(player int, mask uint16) {
 	s.updateJoypadEdge()
 }
 
-// Framebuffer returns the PPU's RGB565 frame (160 by 144).
-func (s *System) Framebuffer() []uint16 {
+// Framebuffer returns the PPU's XRGB8888 frame (160 by 144).
+func (s *System) Framebuffer() []uint32 {
 	if !s.loaded {
 		return nil
 	}
@@ -243,12 +386,47 @@ func (s *System) Width() int { return ppu.Width }
 // Height is the display height in pixels.
 func (s *System) Height() int { return ppu.Height }
 
-// SystemRAM exposes the 8 KB work RAM (libretro memory interface).
+// SystemRAM exposes work RAM banks 0 and 1 (the fixed bank and
+// the default switchable bank, the 8 KB a DMG program sees) for
+// the libretro memory interface.
 func (s *System) SystemRAM() []uint8 {
 	if !s.loaded {
 		return nil
 	}
-	return s.wram[:]
+	return s.wram[:0x2000]
+}
+
+// wramBank resolves the SVBK-selected bank for the D000 window:
+// bank 0 in the register means bank 1, and the DMG always sees
+// bank 1.
+func (s *System) wramBank() int {
+	if !s.cgb {
+		return 1
+	}
+	b := int(s.svbk & 0x07)
+	if b == 0 {
+		b = 1
+	}
+	return b
+}
+
+// readWRAM serves the C000-DFFF work RAM window with banking.
+func (s *System) readWRAM(addr uint16) uint8 {
+	off := int(addr - 0xC000)
+	if off < 0x1000 {
+		return s.wram[off]
+	}
+	return s.wram[s.wramBank()*0x1000+off-0x1000]
+}
+
+// writeWRAM writes the C000-DFFF work RAM window with banking.
+func (s *System) writeWRAM(addr uint16, val uint8) {
+	off := int(addr - 0xC000)
+	if off < 0x1000 {
+		s.wram[off] = val
+		return
+	}
+	s.wram[s.wramBank()*0x1000+off-0x1000] = val
 }
 
 // SaveRAM exposes the cartridge save RAM, if the cartridge has any.
@@ -287,12 +465,19 @@ func (s *System) ppuIRQ(bit int) { s.requestIRQ(uint8(bit)) }
 // cycles (purely internal ones and the tail of the last access
 // cycle).
 func (s *System) Step() int {
+	if s.hdmaStallMC > 0 {
+		// A general-purpose HDMA transfer is running: the CPU
+		// is halted while the machine clocks on.
+		s.hdmaStallMC--
+		s.tick(s.mcycleDots())
+		return 1
+	}
 	m := s.CPU.Step(s)
 	ticked := 0
 	if used := s.CPU.SlotsUsed(); used > 0 {
 		ticked = used - 1
 	}
-	s.tick((m - ticked) * 4)
+	s.tick((m - ticked) * s.mcycleDots())
 	return m
 }
 
@@ -313,18 +498,30 @@ func (s *System) RunFrame() {
 	run := 0
 	for run < target {
 		m := s.Step()
-		run += m * 4
+		run += m * s.mcycleDots()
 	}
 	s.frac = run - target // overshoot carries into the next frame
 	s.frame++
 	s.audio = append(s.audio, s.apu.Produce(-1)...)
 }
 
-// tick advances all devices by the given number of dots.
+// tick advances all devices by the given number of device dots.
+// The timer divider advances once per CPU dot (speed steps per
+// device dot), so TIMA runs at CPU rate in double speed; the
+// frame sequencer's divider twin advances once per device dot,
+// keeping the APU sequencer at 512 Hz of device time at either
+// CPU speed.
 func (s *System) tick(dots int) {
+	steps := s.speed
+	if steps < 1 {
+		steps = 1
+	}
 	for i := 0; i < dots; i++ {
 		s.dot++
-		s.tickTimerDot()
+		for k := 0; k < steps; k++ {
+			s.tickTimerStep()
+		}
+		s.tickSeqDot()
 		s.ppu.Tick(1, s.ppuIRQ)
 		s.tickDMADot()
 		s.tickSerialDot()
@@ -333,16 +530,13 @@ func (s *System) tick(dots int) {
 	}
 }
 
-// tickTimerDot advances the divider by one dot and applies the
-// timer's falling-edge rule: TIMA increments when the AND of the
-// TAC enable and the selected divider bit goes from 1 to 0. A
-// falling edge of divider bit 12 also clocks the APU's frame
-// sequencer.
-func (s *System) tickTimerDot() {
-	prevBit12 := s.divider>>12&1 == 1
+// tickTimerStep advances the divider by one CPU dot and applies
+// the timer's falling-edge rule: TIMA increments when the AND of
+// the TAC enable and the selected divider bit goes from 1 to 0.
+// Overflow reload bookkeeping runs before the edge check: a
+// reload scheduled for this step lands first.
+func (s *System) tickTimerStep() {
 	s.divider++
-	// Overflow reload bookkeeping runs before the edge check: a
-	// reload scheduled for this dot lands first.
 	if s.overflow {
 		s.reloadIn--
 		if s.reloadIn <= 0 {
@@ -360,7 +554,16 @@ func (s *System) tickTimerDot() {
 		s.incTIMA()
 	}
 	s.timerBit = bit
-	if prevBit12 && s.divider>>12&1 == 0 {
+}
+
+// tickSeqDot advances the frame sequencer's divider twin by one
+// device dot; a falling edge of its bit 12 clocks the APU's frame
+// sequencer, the same rule GB-2 applied to the main divider (the
+// two are identical until double speed engages).
+func (s *System) tickSeqDot() {
+	prevBit12 := s.seqDiv>>12&1 == 1
+	s.seqDiv++
+	if prevBit12 && s.seqDiv>>12&1 == 0 {
 		s.apu.StepFrameSequencer()
 	}
 }
@@ -384,7 +587,7 @@ func (s *System) timerSignal() bool {
 // edge strictly inside it is the same-cycle case the mooneye
 // tima_write_reloading rounds pin down.
 func (s *System) incTIMA() {
-	if d := int64(s.dot) - s.timaMark; d >= 0 && d < 4 {
+	if d := int64(s.dot) - s.timaMark; d >= 0 && d < int64(s.mcycleDots()) {
 		return
 	}
 	s.timaMark = -1 << 40
@@ -414,13 +617,21 @@ func (s *System) timerGlitchCheck() {
 // takes over (its byte 0 copies on that dot) and the old one is
 // abandoned. Otherwise the running transfer copies byte idx at
 // dot 8+4*idx after its write and ends at dot 648.
+// tickDMADot advances the OAM DMA by one device dot. The
+// transfer itself is M-cycle paced (a 2 M-cycle startup, then
+// one byte per M-cycle), so its dot length halves in double
+// speed: 648 dots at normal speed, 324 in double speed. A
+// transfer that outlasts the game's calibrated HRAM wait loop
+// would feed the CPU open-bus bytes mid-instruction-stream, so
+// this pacing matters for correctness, not just timing purity.
 func (s *System) tickDMADot() {
+	mc := s.mcycleDots()
 	if s.dmaPend >= 0 {
 		s.dmaPend--
 		if s.dmaPend == 0 {
 			s.dmaPend = -1
 			s.dmaSrc = s.dmaPendSrc
-			s.dmaClock = 8
+			s.dmaClock = 2 * mc
 			s.ppu.WriteOAMRaw(0, s.readRaw(s.dmaSrc))
 			return
 		}
@@ -429,25 +640,32 @@ func (s *System) tickDMADot() {
 		return
 	}
 	s.dmaClock++
-	if s.dmaClock >= 8 && (s.dmaClock-8)%4 == 0 {
-		if idx := (s.dmaClock - 8) / 4; idx < 160 {
+	if s.dmaClock >= 2*mc && (s.dmaClock-2*mc)%mc == 0 {
+		if idx := (s.dmaClock - 2*mc) / mc; idx < 160 {
 			s.ppu.WriteOAMRaw(idx, s.readRaw(s.dmaSrc+uint16(idx)))
 		}
 	}
-	if s.dmaClock >= 648 {
+	if s.dmaClock >= 2*mc+160*mc {
 		s.dmaClock = -1
 	}
 }
 
-// tickSerialDot advances an internal-clock serial transfer: one
-// bit every 512 dots (8192 Hz), the interrupt fires and the
-// transfer bit clears after the eighth bit.
+// tickSerialDot advances an internal-clock serial transfer. The
+// bit period is 512 device dots (8192 Hz) at normal clock, or 16
+// dots (262144 Hz) with the CGB fast clock (SC bit 1); double
+// speed halves either period, as the published double-speed
+// rules describe.
 func (s *System) tickSerialDot() {
 	if !s.serialActive {
 		return
 	}
+	period := 512
+	if s.cgb && s.serialSC&0x02 != 0 {
+		period = 16
+	}
+	period /= s.Speed()
 	s.serialClock++
-	if s.serialClock >= 512 {
+	if s.serialClock >= period {
 		s.serialClock = 0
 		s.serialBits++
 		if s.serialBits == 8 {
@@ -547,7 +765,8 @@ func (s *System) updateJoypadEdge() {
 // registers stay reachable: the CPU's interrupt sampling reads
 // them internally, not over the shared bus.
 func (s *System) dmaRestricts(addr uint16) bool {
-	if s.dmaClock < 8 || s.dmaClock >= 648 {
+	mc := s.mcycleDots()
+	if s.dmaClock < 2*mc || s.dmaClock >= 2*mc+160*mc {
 		return false
 	}
 	if addr == regIF || addr == regIE || addr == regDMA {
@@ -575,9 +794,9 @@ func (s *System) readRaw(addr uint16) uint8 {
 	case addr < 0xC000:
 		return s.Cart.ReadRAM(addr)
 	case addr < 0xE000:
-		return s.wram[addr-0xC000]
+		return s.readWRAM(addr)
 	case addr < 0xFE00:
-		return s.wram[addr-0xE000] // echo RAM mirrors 0xC000-0xDDFF
+		return s.readWRAM(addr - 0x2000) // echo RAM mirrors 0xC000-0xDDFF
 	case addr < 0xFEA0:
 		return s.ppu.Read(addr)
 	case addr < 0xFF00:
@@ -589,6 +808,9 @@ func (s *System) readRaw(addr uint16) uint8 {
 	case addr == regSB:
 		return s.serialSB
 	case addr == regSC:
+		// Bits 1-6 read as 1 on both models (mooneye-verified:
+		// on CGB hardware the clock select bit also reads 1 even
+		// written 0; the stored bit still drives the transfer).
 		return s.serialSC | 0x7E
 	case addr == regDIV:
 		return uint8(s.divider >> 8)
@@ -602,13 +824,58 @@ func (s *System) readRaw(addr uint16) uint8 {
 		return s.ifr | 0xE0
 	case addr >= 0xFF10 && addr < 0xFF40:
 		return s.apu.Read(addr)
+	case addr == regKEY1:
+		if !s.cgb || s.compat {
+			return 0xFF
+		}
+		v := uint8(0x7E)
+		if s.speed == 2 {
+			v |= 0x80
+		}
+		if s.key1Arm {
+			v |= 0x01
+		}
+		return v
+	case addr == regVBK || (addr >= 0xFF68 && addr <= 0xFF6C):
+		return s.ppu.Read(addr)
+	case addr >= 0xFF51 && addr <= 0xFF55:
+		return s.hdmaRead(addr)
+	case addr == regRP:
+		// Infrared port stub: no signal received, the
+		// documented idle read.
+		return 0xFF
+	case addr == regSVBK:
+		if !s.cgb || s.compat {
+			return 0xFF
+		}
+		return 0xF8 | s.svbk&0x07
+	case addr >= 0xFF72 && addr <= 0xFF75:
+		if !s.cgb {
+			return 0xFF
+		}
+		if addr == 0xFF74 && s.compat {
+			return 0xFF // FF74 exists only in full CGB mode
+		}
+		if addr == 0xFF75 {
+			return 0x8F | s.undocCGB[3]&0x70
+		}
+		return s.undocCGB[addr-0xFF72]
+	case addr >= 0xFF76 && addr <= 0xFF77:
+		// PCM12/PCM34: the APU's live channel level outputs.
+		// The APU does not expose per-channel DAC levels, so
+		// the registers read as the idle value 0; on DMG
+		// hardware they are absent entirely.
+		if s.cgb {
+			return 0x00
+		}
+		return 0xFF
 	case addr >= 0xFF40 && addr < 0xFF4C:
 		if addr == regDMA {
 			return s.dmaReg
 		}
 		return s.ppu.Read(addr)
 	case addr == regIE:
-		return s.ie
+		return s.ieReg
 	case addr >= 0xFF80:
 		return s.hram[addr-0xFF80]
 	}
@@ -631,10 +898,10 @@ func (s *System) Write(addr uint16, val uint8) {
 		s.Cart.Write(addr, val)
 		return
 	case addr < 0xE000:
-		s.wram[addr-0xC000] = val
+		s.writeWRAM(addr, val)
 		return
 	case addr < 0xFE00:
-		s.wram[addr-0xE000] = val
+		s.writeWRAM(addr-0x2000, val)
 		return
 	case addr < 0xFEA0:
 		s.ppu.Write(addr, val, s.ppuIRQ)
@@ -649,7 +916,11 @@ func (s *System) Write(addr uint16, val uint8) {
 	case addr == regSB:
 		s.serialSB = val
 	case addr == regSC:
-		s.serialSC = val & 0x81
+		if s.cgb {
+			s.serialSC = val & 0x83
+		} else {
+			s.serialSC = val & 0x81
+		}
 		if val&0x81 == 0x81 {
 			// Internal clock: the transfer runs for eight bit
 			// periods, then completes and interrupts.
@@ -660,8 +931,9 @@ func (s *System) Write(addr uint16, val uint8) {
 			s.serialActive = false
 		}
 	case addr == regDIV:
-		prevBit12 := s.divider>>12&1 == 1
+		prevBit12 := s.seqDiv>>12&1 == 1
 		s.divider = 0
+		s.seqDiv = 0
 		s.timerGlitchCheck()
 		if prevBit12 {
 			// The write dropped bit 12: the frame sequencer
@@ -677,7 +949,7 @@ func (s *System) Write(addr uint16, val uint8) {
 		// cancels the reload and its interrupt entirely.
 		if int64(s.dot) == s.reloadDot {
 			// dropped: the reload owns this dot
-		} else if s.overflow && int64(s.dot)-s.ovflDot < 4 {
+		} else if s.overflow && int64(s.dot)-s.ovflDot < int64(s.mcycleDots()) {
 			s.overflow = false
 			s.tima = val
 			s.timaMark = int64(s.dot)
@@ -704,6 +976,30 @@ func (s *System) Write(addr uint16, val uint8) {
 		s.ifr = val & 0x1F
 	case addr >= 0xFF10 && addr < 0xFF40:
 		s.apu.Write(addr, val)
+	case addr == regKEY1:
+		if s.cgb && !s.compat {
+			s.key1Arm = val&0x01 != 0
+		}
+	case addr == regVBK || (addr >= 0xFF68 && addr <= 0xFF6C):
+		s.ppu.Write(addr, val, s.ppuIRQ)
+	case addr >= 0xFF51 && addr <= 0xFF55:
+		s.hdmaWrite(addr, val)
+	case addr == regRP:
+		s.rpReg = val // stored, no emitter attached (stub)
+	case addr == regSVBK:
+		if s.cgb && !s.compat {
+			s.svbk = val & 0x07
+		}
+	case addr >= 0xFF72 && addr <= 0xFF75:
+		if s.cgb {
+			if addr == 0xFF74 && s.compat {
+				// locked in compatibility mode
+			} else if addr == 0xFF75 {
+				s.undocCGB[3] = val & 0x70
+			} else {
+				s.undocCGB[addr-0xFF72] = val
+			}
+		}
 	case addr >= 0xFF40 && addr < 0xFF4C:
 		if addr == regDMA {
 			s.startDMA(val)
@@ -712,6 +1008,7 @@ func (s *System) Write(addr uint16, val uint8) {
 		}
 	case addr == regIE:
 		s.ie = val
+		s.ieReg = val
 	case addr >= 0xFF80:
 		s.hram[addr-0xFF80] = val
 	}
@@ -724,11 +1021,122 @@ func (s *System) startDMA(val uint8) {
 	s.dmaReg = val
 	if s.dmaClock >= 0 {
 		s.dmaPendSrc = uint16(val) << 8
-		s.dmaPend = 8
+		s.dmaPend = 2 * s.mcycleDots()
 		return
 	}
 	s.dmaSrc = uint16(val) << 8
 	s.dmaClock = 0
+}
+
+// --- HDMA (CGB VRAM DMA) -------------------------------------------------
+
+// hdmaRead serves FF51-FF55. The source and destination registers
+// read back as written; HDMA5 reads the transfer state: bit 7
+// clear with the remaining block count minus one while an HBlank
+// transfer runs, the same value with bit 7 set after a
+// cancellation, and 0xFF once no transfer state remains. In DMG
+// compatibility mode the whole register block locks to 0xFF.
+func (s *System) hdmaRead(addr uint16) uint8 {
+	if s.compat {
+		return 0xFF
+	}
+	switch addr {
+	case 0xFF51:
+		return s.hdmaSrcHi
+	case 0xFF52:
+		return s.hdmaSrcLo
+	case 0xFF53:
+		return s.hdmaDstHi
+	case 0xFF54:
+		return s.hdmaDstLo
+	case 0xFF55:
+		if !s.cgb {
+			return 0xFF
+		}
+		if s.hdmaActive {
+			return uint8(s.hdmaBlocks - 1)
+		}
+		if s.hdmaCancelled {
+			return 0x80 | uint8(s.hdmaBlocks-1)
+		}
+		return 0xFF
+	}
+	return 0xFF
+}
+
+// hdmaWrite serves FF51-FF55. FF51-FF54 store the source and
+// destination (masked to 16-byte alignment, the destination to
+// the VRAM window). An FF55 write with bit 7 clear starts a
+// general-purpose transfer: every block copies at once, into the
+// VBK-selected VRAM bank, and the CPU stalls for the documented
+// transfer time (8 dots per 16-byte block at normal speed, 16 in
+// double speed). With bit 7 set it starts an HBlank transfer of
+// one block per HBlank; the same write with bit 7 clear while an
+// HBlank transfer runs cancels it instead.
+func (s *System) hdmaWrite(addr uint16, val uint8) {
+	if s.compat {
+		return // locked in compatibility mode
+	}
+	switch addr {
+	case 0xFF51:
+		s.hdmaSrcHi = val
+	case 0xFF52:
+		s.hdmaSrcLo = val & 0xF0
+	case 0xFF53:
+		s.hdmaDstHi = val & 0x1F
+	case 0xFF54:
+		s.hdmaDstLo = val & 0xF0
+	case 0xFF55:
+		if !s.cgb {
+			return
+		}
+		if s.hdmaActive {
+			if val&0x80 == 0 {
+				s.hdmaActive = false
+				s.hdmaCancelled = true
+			}
+			return
+		}
+		s.hdmaSrc = uint16(s.hdmaSrcHi)<<8 | uint16(s.hdmaSrcLo)
+		s.hdmaDst = uint16(s.hdmaDstHi&0x1F)<<8 | uint16(s.hdmaDstLo)
+		s.hdmaBlocks = int(val&0x7F) + 1
+		s.hdmaCancelled = false
+		if val&0x80 == 0 {
+			blocks := s.hdmaBlocks
+			for i := 0; i < blocks; i++ {
+				s.hdmaCopyBlock()
+			}
+			s.hdmaBlocks = 0
+			s.hdmaStallMC += blocks * (8 * s.Speed()) / s.mcycleDots()
+		} else {
+			s.hdmaActive = true
+		}
+	}
+}
+
+// hdmaCopyBlock moves one 16-byte block from the current source
+// to the current VRAM destination offset and advances both.
+func (s *System) hdmaCopyBlock() {
+	for i := 0; i < 16; i++ {
+		s.ppu.WriteVRAMRaw(int(s.hdmaDst)+i, s.readRaw(s.hdmaSrc+uint16(i)))
+	}
+	s.hdmaSrc += 16
+	s.hdmaDst = (s.hdmaDst + 16) & 0x1FF0
+}
+
+// hdmaHBlank is the PPU's HBlank hook: an active HBlank HDMA
+// transfer moves one block per HBlank on a visible line. With
+// the LCD off no HBlanks occur and the transfer waits.
+func (s *System) hdmaHBlank() {
+	if !s.hdmaActive || !s.ppu.LCDOn() {
+		return
+	}
+	s.hdmaCopyBlock()
+	s.hdmaBlocks--
+	if s.hdmaBlocks <= 0 {
+		s.hdmaBlocks = 0
+		s.hdmaActive = false
+	}
 }
 
 // --- save states ---------------------------------------------------------
@@ -787,7 +1195,9 @@ func (s *System) Serialize(buf []byte) error {
 	for i := range b {
 		b[i] = 0
 	}
-	b[0] = 1 // layout version
+	// Layout version 2 (GB-3): adds the CGB machine state in the
+	// block's upper half. Version 1 states are rejected cleanly.
+	b[0] = 2 // layout version
 	b[1] = s.ie
 	b[2] = s.ifr
 	binary.LittleEndian.PutUint16(b[3:], s.divider)
@@ -822,6 +1232,28 @@ func (s *System) Serialize(buf []byte) error {
 	}
 	b[27] = uint8(s.serialBits)
 	binary.LittleEndian.PutUint16(b[28:], uint16(s.serialClock))
+	b[64] = uint8(s.Speed())
+	if s.key1Arm {
+		b[65] = 1
+	}
+	binary.LittleEndian.PutUint16(b[66:], s.seqDiv)
+	b[68] = s.svbk
+	b[69] = s.hdmaSrcHi
+	b[70] = s.hdmaSrcLo
+	b[71] = s.hdmaDstHi
+	b[72] = s.hdmaDstLo
+	binary.LittleEndian.PutUint16(b[73:], s.hdmaSrc)
+	binary.LittleEndian.PutUint16(b[75:], s.hdmaDst)
+	binary.LittleEndian.PutUint16(b[77:], uint16(s.hdmaBlocks))
+	if s.hdmaActive {
+		b[79] |= 1
+	}
+	if s.hdmaCancelled {
+		b[79] |= 2
+	}
+	binary.LittleEndian.PutUint32(b[80:], uint32(s.hdmaStallMC))
+	b[84] = s.rpReg
+	copy(b[85:89], s.undocCGB[:])
 	off += 128
 
 	binary.LittleEndian.PutUint64(buf[off:], s.dot)
@@ -864,10 +1296,11 @@ func (s *System) Deserialize(buf []byte) error {
 	off += sound.SerializeSize
 
 	b := buf[off : off+128]
-	if b[0] != 1 {
+	if b[0] != 2 {
 		return errors.New("system: unsupported state layout version")
 	}
 	s.ie = b[1]
+	s.ieReg = b[1]
 	s.ifr = b[2]
 	s.divider = binary.LittleEndian.Uint16(b[3:])
 	s.tima = b[5]
@@ -893,6 +1326,26 @@ func (s *System) Deserialize(buf []byte) error {
 	s.serialActive = b[26] != 0
 	s.serialBits = int(b[27])
 	s.serialClock = int(binary.LittleEndian.Uint16(b[28:]))
+	if b[64] == 2 {
+		s.speed = 2
+	} else {
+		s.speed = 1
+	}
+	s.key1Arm = b[65] != 0
+	s.seqDiv = binary.LittleEndian.Uint16(b[66:])
+	s.svbk = b[68]
+	s.hdmaSrcHi = b[69]
+	s.hdmaSrcLo = b[70]
+	s.hdmaDstHi = b[71]
+	s.hdmaDstLo = b[72]
+	s.hdmaSrc = binary.LittleEndian.Uint16(b[73:])
+	s.hdmaDst = binary.LittleEndian.Uint16(b[75:])
+	s.hdmaBlocks = int(binary.LittleEndian.Uint16(b[77:]))
+	s.hdmaActive = b[79]&1 != 0
+	s.hdmaCancelled = b[79]&2 != 0
+	s.hdmaStallMC = int(binary.LittleEndian.Uint32(b[80:]))
+	s.rpReg = b[84]
+	copy(s.undocCGB[:], b[85:89])
 	off += 128
 
 	s.dot = binary.LittleEndian.Uint64(buf[off:])
