@@ -14,9 +14,12 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import mobile.Mobile
@@ -85,6 +88,23 @@ class EmulatorActivity : Activity(), TextureListener {
     private var roomPanel: LinearLayout? = null
     private var readyButton: Button? = null
     private var myName: String = ""
+    private var rootFrameRef: FrameLayout? = null
+
+    // ----- Netplay text chat -----
+    // Two surfaces over the one session chat log in the Go
+    // engine: a box built into the waiting room panel below, and
+    // a full screen panel reachable from the pause menu. Each
+    // keeps its own read cursor into the log.
+    private var roomChat: ChatBox? = null
+    private var pauseChat: ChatBox? = null
+    private var chatOverlay: FrameLayout? = null
+    private val chatTicker = object : Runnable {
+        override fun run() {
+            if (chatOverlay?.visibility != View.VISIBLE || isFinishing) return
+            pauseChat?.poll()
+            uiHandler.postDelayed(this, 300)
+        }
+    }
     private val uiHandler = Handler(Looper.getMainLooper())
     private val roomTicker = object : Runnable {
         override fun run() {
@@ -258,6 +278,7 @@ class EmulatorActivity : Activity(), TextureListener {
 
         glView = EmuGLView(this)
         val rootFrame = FrameLayout(this)
+        rootFrameRef = rootFrame
         rootFrame.addView(
             glView,
             FrameLayout.LayoutParams(
@@ -394,6 +415,16 @@ class EmulatorActivity : Activity(), TextureListener {
         roomStatusLine = roomText("", 18f)
         roomStatusLine?.setTextColor(Color.argb(170, 255, 255, 255))
         panel.addView(roomStatusLine)
+
+        val spacer5 = View(this)
+        panel.addView(spacer5, LinearLayout.LayoutParams(1, 26))
+        panel.addView(roomText("Chat", 20f, true))
+        val box = ChatBox()
+        roomChat = box
+        panel.addView(
+            box.root,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 300)
+        )
         roomPanel = panel
         overlay.addView(panel, panelParams)
 
@@ -461,7 +492,12 @@ class EmulatorActivity : Activity(), TextureListener {
                     } else {
                         btn.text = "READY"
                         btn.isEnabled = true
-                        if (!btn.hasFocus()) btn.requestFocus()
+                        // Only claim focus when nothing in the room
+                        // has it: a player down in the chat box must
+                        // not be yanked back up here every tick.
+                        if (!btn.hasFocus() && roomOverlay?.findFocus() == null) {
+                            btn.requestFocus()
+                        }
                         roomStatusLine?.text =
                             if (peerReady) "$peer is ready. Your turn!" else "Both players press READY, then the game starts in 5 seconds."
                     }
@@ -477,10 +513,195 @@ class EmulatorActivity : Activity(), TextureListener {
                     "Guests pick this lobby on the Online screen. BACK leaves."
             }
         }
+        roomChat?.poll()
     }
 
     private fun hideRoom() {
         roomOverlay?.visibility = View.GONE
+    }
+
+    // ----- Netplay chat UI -----
+
+    /**
+     * One chat surface: a scrolling message list over a compose
+     * row (text field + Send button). The text field is a plain
+     * EditText, so the Android TV system keyboard opens on it and
+     * the remote's mic button gives voice typing for free.
+     *
+     * Messages live in the Go session (Mobile.netplayChatJSON);
+     * the box polls with its own cursor, so the room box and the
+     * pause box render the same conversation independently.
+     */
+    private inner class ChatBox {
+        val root = LinearLayout(this@EmulatorActivity)
+        private val scroll = ScrollView(this@EmulatorActivity)
+        private val messages = TextView(this@EmulatorActivity)
+        private val input = EditText(this@EmulatorActivity)
+        private val shown = StringBuilder()
+        private var lastSeq = 0
+
+        init {
+            root.orientation = LinearLayout.VERTICAL
+
+            messages.textSize = 18f
+            messages.setTextColor(Color.WHITE)
+            messages.setPadding(18, 12, 18, 12)
+            messages.text = "No messages yet. Say hello!"
+            scroll.addView(messages)
+            scroll.setBackgroundColor(Color.argb(90, 0, 0, 0))
+            root.addView(
+                scroll,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                )
+            )
+
+            val row = LinearLayout(this@EmulatorActivity)
+            row.orientation = LinearLayout.HORIZONTAL
+            row.setPadding(0, 10, 0, 0)
+            input.hint = "Type a message…"
+            input.setSingleLine(true)
+            input.isFocusable = true
+            input.isFocusableInTouchMode = true
+            input.textSize = 19f
+            input.setTextColor(Color.WHITE)
+            input.setHintTextColor(Color.argb(150, 255, 255, 255))
+            input.imeOptions = EditorInfo.IME_ACTION_SEND
+            input.setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    send()
+                    true
+                } else {
+                    false
+                }
+            }
+            row.addView(
+                input,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            val sendBtn = Button(this@EmulatorActivity)
+            sendBtn.text = "Send"
+            sendBtn.textSize = 19f
+            sendBtn.isFocusable = true
+            sendBtn.setOnClickListener { send() }
+            row.addView(
+                sendBtn,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+            root.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
+        fun inputHasFocus(): Boolean = input.hasFocus()
+
+        /** Pull any messages newer than our cursor and render them. */
+        fun poll() {
+            val raw = try {
+                Mobile.netplayChatJSON(lastSeq.toLong())
+            } catch (e: Exception) {
+                return
+            }
+            try {
+                val obj = org.json.JSONObject(raw)
+                lastSeq = obj.optInt("seq", lastSeq)
+                val arr = obj.optJSONArray("msgs") ?: return
+                if (arr.length() == 0) return
+                for (i in 0 until arr.length()) {
+                    val m = arr.getJSONObject(i)
+                    val who = if (m.optBoolean("mine")) "You" else m.optString("from")
+                    shown.append(who).append(": ")
+                        .append(m.optString("text")).append('\n')
+                }
+                messages.text = shown.toString().trimEnd()
+                scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+            } catch (e: Exception) {
+                Log.w(TAG, "chat poll parse failed", e)
+            }
+        }
+
+        fun send() {
+            val text = input.text.toString()
+            if (text.isBlank()) return
+            val err = try {
+                Mobile.netplaySendChat(text)
+            } catch (e: Exception) {
+                "chat unavailable"
+            }
+            if (err.isEmpty()) {
+                input.setText("")
+                // Render our own line at once, not on the next tick.
+                poll()
+            } else {
+                Toast.makeText(this@EmulatorActivity, err, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** Build the pause menu chat panel (once) over the game view. */
+    private fun buildChatOverlay() {
+        val overlay = FrameLayout(this)
+        overlay.setBackgroundColor(Color.argb(235, 14, 14, 24))
+        val panel = LinearLayout(this)
+        panel.orientation = LinearLayout.VERTICAL
+        panel.gravity = Gravity.CENTER
+        panel.setPadding(64, 48, 64, 48)
+        val panelParams = FrameLayout.LayoutParams(
+            920, FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        panelParams.gravity = Gravity.CENTER
+
+        panel.addView(roomText("Chat", 30f, true))
+        val spacer = View(this)
+        panel.addView(spacer, LinearLayout.LayoutParams(1, 20))
+        val box = ChatBox()
+        pauseChat = box
+        panel.addView(
+            box.root,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 560)
+        )
+        val spacer2 = View(this)
+        panel.addView(spacer2, LinearLayout.LayoutParams(1, 20))
+        val closeBtn = Button(this)
+        closeBtn.text = "Back to menu"
+        closeBtn.textSize = 20f
+        closeBtn.isFocusable = true
+        closeBtn.setOnClickListener { closeChatPanel() }
+        panel.addView(closeBtn, LinearLayout.LayoutParams(360, 84))
+
+        overlay.addView(panel, panelParams)
+        overlay.visibility = View.GONE
+        rootFrameRef?.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        chatOverlay = overlay
+    }
+
+    private fun showChatPanel() {
+        if (chatOverlay == null) buildChatOverlay()
+        chatOverlay?.visibility = View.VISIBLE
+        pauseChat?.poll()
+        uiHandler.removeCallbacks(chatTicker)
+        uiHandler.post(chatTicker)
+    }
+
+    private fun closeChatPanel() {
+        chatOverlay?.visibility = View.GONE
+        uiHandler.removeCallbacks(chatTicker)
+        // The game stays parked; hand the player back their menu.
+        menuOpen = false
+        showPauseMenu()
     }
 
     // TextureListener (from the GL renderer's first surface)
@@ -879,39 +1100,40 @@ class EmulatorActivity : Activity(), TextureListener {
         val displayName = FilterSettings.DISPLAY_NAMES[FilterSettings.displayMode]
         val cheatLabel =
             if (enabledCheats.isEmpty()) "Cheats" else "Cheats: ${enabledCheats.size} on"
-        val items = arrayOf(
-            "Resume",
-            "Save Game",
-            "Load Game",
-            cheatLabel,
-            "Picture: $filterName",
-            "Display: $displayName",
-            "Exit Game"
-        )
+        // Label/action pairs, so entries can slot in (Chat, online
+        // only) without renumbering a when block.
+        val entries = mutableListOf<Pair<String, () -> Unit>>()
+        entries.add("Resume" to { }) // resume via dismiss
+        if (netplay) {
+            entries.add("Chat" to {
+                // Keep the game parked while the chat panel is
+                // open; closing it returns to this menu.
+                keepPaused = true
+                window.decorView.postDelayed({ showChatPanel() }, 200)
+            })
+        }
+        entries.add("Save Game" to { doSave() })
+        entries.add("Load Game" to { doLoad() })
+        entries.add(cheatLabel to {
+            // Keep the game parked while the cheat picker
+            // is open; its own dismiss resumes play.
+            keepPaused = true
+            window.decorView.postDelayed({ showCheats() }, 200)
+        })
+        entries.add("Picture: $filterName" to { cycleFilter() })
+        entries.add("Display: $displayName" to { toggleDisplay() })
+        entries.add("Exit Game" to {
+            // Exit asks for confirmation first; the game
+            // stays parked while the prompt is open.
+            keepPaused = true
+            window.decorView.postDelayed({ confirmExit() }, 200)
+        })
         // Note: setMessage + setItems together renders an empty list on
         // this TV's dialog theme, so the player rides in the title.
         AlertDialog.Builder(this)
             .setTitle("${File(romPath).nameWithoutExtension}  ·  ${currentPlayer()}")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> Unit // resume via dismiss
-                    1 -> doSave()
-                    2 -> doLoad()
-                    3 -> {
-                        // Keep the game parked while the cheat picker
-                        // is open; its own dismiss resumes play.
-                        keepPaused = true
-                        window.decorView.postDelayed({ showCheats() }, 200)
-                    }
-                    4 -> cycleFilter()
-                    5 -> toggleDisplay()
-                    6 -> {
-                        // Exit asks for confirmation first; the game
-                        // stays parked while the prompt is open.
-                        keepPaused = true
-                        window.decorView.postDelayed({ confirmExit() }, 200)
-                    }
-                }
+            .setItems(entries.map { it.first }.toTypedArray()) { _, which ->
+                entries[which].second()
             }
             .setOnDismissListener {
                 if (keepPaused) {
@@ -1125,7 +1347,19 @@ class EmulatorActivity : Activity(), TextureListener {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (chatOverlay?.visibility == View.VISIBLE) {
+                // Chat panel is open over the paused game: BACK
+                // closes it and returns to the pause menu.
+                closeChatPanel()
+                return true
+            }
             if (netplay && !npReady) {
+                if (roomChat?.inputHasFocus() == true) {
+                    // Typing in the room chat: BACK steps out of
+                    // the text field instead of leaving the lobby.
+                    readyButton?.requestFocus()
+                    return true
+                }
                 // Still in the waiting room: BACK leaves the lobby.
                 npCancelled = true
                 Mobile.netplayStop()
@@ -1172,6 +1406,7 @@ class EmulatorActivity : Activity(), TextureListener {
     override fun onDestroy() {
         uiHandler.removeCallbacks(roomTicker)
         uiHandler.removeCallbacks(pauseTicker)
+        uiHandler.removeCallbacks(chatTicker)
         try {
             val im = getSystemService(android.content.Context.INPUT_SERVICE)
                 as android.hardware.input.InputManager
