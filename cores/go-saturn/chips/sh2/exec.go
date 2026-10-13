@@ -289,13 +289,18 @@ func (c *CPU) exec0(op uint16, addr uint32, n, m int, low uint32) (int, bool) {
 		c.PC = savedPC
 		c.SR = savedSR
 		return 2, false
-	case low == 9 && (mid == 0 || mid == 2):
-		// MOVT Rn. The manual encoding carries the
-		// constant 2 in the middle nibble; the all zero
-		// middle nibble form (which for R0 is the code
-		// also listed as NOP) is treated the same way,
-		// as this core is directed to do.
+	case low == 9 && mid == 2:
+		// MOVT Rn: R0's encoding 0x0029 carries the
+		// constant 2 in the middle nibble. The all zero
+		// middle nibble form 0x0009 is NOP and changes no
+		// register; an earlier slice treated it as MOVT
+		// R0, which corrupts R0 across every NOP delay
+		// slot and breaks real code, so SAT-4 corrects it
+		// to the manual.
 		c.Reg[n] = uint32(c.getT())
+		return 1, false
+	case op == 0x0009:
+		// NOP
 		return 1, false
 	case low == 3 && mid == 0:
 		// BSRF Rn
