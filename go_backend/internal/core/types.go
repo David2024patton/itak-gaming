@@ -24,7 +24,7 @@ const (
 type CoreInfo struct {
 	System     System
 	Name       string   // e.g. "Snes9x"
-	Library    string   // e.g. "libsnes9x.so"
+	Library    string   // e.g. "libgo_snes.so"
 	Extensions []string // e.g. [".sfc", ".smc"]
 	Bitness    int      // 32 or 64 (minimum required)
 }
@@ -32,7 +32,7 @@ type CoreInfo struct {
 // SupportedCores lists all cores by platform
 var Cores32Bit = []CoreInfo{
 	{SystemNES, "Go NES", "libgo_nes.so", []string{".nes"}, 32},
-	{SystemSNES, "Snes9x", "libsnes9x.so", []string{".sfc", ".smc"}, 32},
+	{SystemSNES, "Go SNES", "libgo_snes.so", []string{".sfc", ".smc"}, 32},
 	{SystemGenesis, "Go Genesis", "libgo_genesis.so", []string{".md", ".gen", ".bin"}, 32},
 	{SystemGameBoy, "Go Game Boy", "libgo_gameboy.so", []string{".gb"}, 32},
 	{SystemGBC, "Go Game Boy", "libgo_gameboy.so", []string{".gbc"}, 32},
