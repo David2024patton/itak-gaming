@@ -170,6 +170,11 @@ func (c *CPU) execute(bus Bus) int {
 		// a CGB speed switch on plain DMG hardware reaches STOP
 		// with the joypad lines in the pressed state.
 		c.fetch8(bus) // padding byte
+		if c.OnStopSwitch != nil && c.OnStopSwitch() {
+			// CGB speed switch: KEY1 was armed, the machine
+			// toggled speed, no stop happens.
+			return 1
+		}
 		if c.rd(bus, 0xFF00)&0x0F == 0x0F {
 			c.stopped = true
 		}
