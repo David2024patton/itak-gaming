@@ -35,8 +35,10 @@ const (
 	CP0DMAFull   = 5 // SP_DMA_FULL (read-only)
 	CP0DMABusy   = 6 // SP_DMA_BUSY (read-only)
 	CP0Semaphore = 7 // SP_SEMAPHORE
-	// 8..15 are the DP registers, implemented in N64-3;
-	// they read as 0 and ignore writes in this slice.
+	// 8..15 are the DP registers. They route to the RDP
+	// in the rdp package through the DPRead and DPWrite
+	// hooks below; with no hook attached they read as 0
+	// and ignore writes.
 )
 
 // SP_STATUS read bits.
@@ -90,6 +92,12 @@ type RSP struct {
 	// interrupt output changes level. The bus wires it to
 	// the MI SP interrupt bit.
 	OnInterrupt func(active bool)
+
+	// DPRead and DPWrite route CP0 registers 8..15 (the
+	// DP command registers) to the RDP. The bus attaches
+	// them; the argument is the CP0 register number.
+	DPRead  func(reg int) uint32
+	DPWrite func(reg int, val uint32)
 }
 
 // New returns an RSP in its power-on state: halted, PC 0,
@@ -200,7 +208,10 @@ func (r *RSP) ReadCP0(reg int) uint32 {
 		r.semaphore = 1
 		return v
 	}
-	return 0 // DP registers: N64-3
+	if reg >= 8 && reg <= 15 && r.DPRead != nil {
+		return r.DPRead(reg)
+	}
+	return 0
 }
 
 // WriteCP0 writes an RSP coprocessor 0 register. Writing
@@ -225,8 +236,11 @@ func (r *RSP) WriteCP0(reg int, val uint32) {
 		// Read-only status.
 	case CP0Semaphore:
 		r.semaphore = 0
+	default:
+		if reg >= 8 && reg <= 15 && r.DPWrite != nil {
+			r.DPWrite(reg, val)
+		}
 	}
-	// DP registers ignore writes in this slice.
 }
 
 // ReadRegister reads a CPU-visible SP register by byte
