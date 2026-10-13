@@ -108,6 +108,13 @@ type GPU struct {
 	irq       bool // GPUSTAT bit 24
 	readLatch uint32
 
+	// Host-side diagnostic: GP1 command bytes with
+	// no implemented case, kept across resets, never
+	// serialized. (GP0 has no unknown commands: every
+	// opcode byte names a documented command class.)
+	unknownGP1  []uint8
+	unknownGP1N int
+
 	// GP0 command assembly.
 	buf     [20]uint32
 	bufLen  int
@@ -156,7 +163,8 @@ func New() *GPU {
 // hardware.
 func (g *GPU) Reset() {
 	vram := g.vram
-	*g = GPU{vram: vram}
+	unk, unkN := g.unknownGP1, g.unknownGP1N
+	*g = GPU{vram: vram, unknownGP1: unk, unknownGP1N: unkN}
 	g.dispEnable = false
 	g.rangeX1 = 0x200
 	g.rangeX2 = 0x200 + 256*10
@@ -340,6 +348,32 @@ func (g *GPU) Status() uint32 {
 	return s
 }
 
+// UnknownGP1Commands returns the distinct GP1
+// command bytes received that have no implemented
+// case, in first-seen order. Host-side diagnostic
+// only: the log survives resets and is not part of
+// the serialized state.
+func (g *GPU) UnknownGP1Commands() []uint8 {
+	out := make([]uint8, len(g.unknownGP1))
+	copy(out, g.unknownGP1)
+	return out
+}
+
+// UnknownGP1Count returns the total number of
+// unimplemented GP1 commands received, repeats
+// included.
+func (g *GPU) UnknownGP1Count() int { return g.unknownGP1N }
+
+func (g *GPU) noteUnknownGP1(cmd uint8) {
+	g.unknownGP1N++
+	for _, u := range g.unknownGP1 {
+		if u == cmd {
+			return
+		}
+	}
+	g.unknownGP1 = append(g.unknownGP1, cmd)
+}
+
 // WriteGP1 executes a GP1 command word.
 func (g *GPU) WriteGP1(w uint32) {
 	cmd := w >> 24
@@ -348,7 +382,8 @@ func (g *GPU) WriteGP1(w uint32) {
 	case 0x00: // reset
 		vram := g.vram
 		disp := g.displayBuf
-		*g = GPU{vram: vram, displayBuf: disp}
+		unk, unkN := g.unknownGP1, g.unknownGP1N
+		*g = GPU{vram: vram, displayBuf: disp, unknownGP1: unk, unknownGP1N: unkN}
 		g.dispEnable = false
 		g.rangeX1 = 0x200
 		g.rangeX2 = 0x200 + 256*10
@@ -397,6 +432,11 @@ func (g *GPU) WriteGP1(w uint32) {
 		case 7:
 			g.readLatch = 2 // GPU version (v2)
 		}
+	default:
+		// Not a documented GP1 command for this
+		// GPU: ignored, but recorded for the
+		// host-side diagnostic log.
+		g.noteUnknownGP1(uint8(cmd))
 	}
 }
 
