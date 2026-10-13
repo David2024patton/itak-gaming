@@ -485,3 +485,83 @@ func NetplayAnswerWatchSync(name string) string {
 	}
 	return ""
 }
+
+// Match end and seat assignment (PROTOCOL.md 4.9)
+// A match can end without the session ending: both players
+// fall back to the waiting room on the same connection and
+// the host referee names who holds the seats next. The UI
+// learns a match ended by polling NetplayPollMatchEnd; it
+// drives the next match itself from there.
+
+// NetplaySendMatchEnd ends the current match on this player
+// session and returns both players to the room. Returns ""
+// on success or the error text.
+func NetplaySendMatchEnd(reason string) string {
+	if npSession == nil {
+		return "no netplay session"
+	}
+	if err := npSession.SendMatchEnd(reason); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// NetplayPollMatchEnd returns the reason of a match end, ours
+// or the peer's, exactly once, then "". A match that ended
+// with no stated reason reports "match ended". A watch
+// session reports the room's match end the same way, so the
+// spectator UI transitions with everyone else.
+func NetplayPollMatchEnd() string {
+	s := npActive()
+	if s == nil {
+		return ""
+	}
+	reason, ok := s.PollMatchEnd()
+	if !ok {
+		return ""
+	}
+	if reason == "" {
+		return "match ended"
+	}
+	return reason
+}
+
+// NetplaySendSeatAssign broadcasts the host's call for who
+// fills a seat next (seat 1 or 2). Returns "" on success or
+// the error text; only the host client may send it.
+func NetplaySendSeatAssign(player string, seat int) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.SendSeatAssign(player, seat); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// seatAssignJSON is the wire shape NetplayPollSeatAssign
+// hands the UI for one recorded seat call.
+type seatAssignJSON struct {
+	Player string `json:"player"`
+	Seat   int    `json:"seat"`
+}
+
+// NetplayPollSeatAssign returns the oldest seat call this
+// client has recorded as JSON {"player":"...","seat":N}, or
+// "" when none is waiting. Each call is handed out once.
+func NetplayPollSeatAssign() string {
+	s := npActive()
+	if s == nil {
+		return ""
+	}
+	player, seat, ok := s.PollSeatAssign()
+	if !ok {
+		return ""
+	}
+	b, err := json.Marshal(seatAssignJSON{Player: player, Seat: seat})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
