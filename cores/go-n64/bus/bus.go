@@ -5,19 +5,23 @@
 // from the published N64 hardware documentation.
 //
 // The SP window and SP registers route to the real RSP
-// (chips/rsp) since slice N64-2. Devices that are later
-// slices (RDP rendering, PIF boot, audio and video
-// output) appear here as register storage with their
-// documented reset behavior, so CPU code can be
-// developed and tested against the real map now. The PI
+// (chips/rsp) since slice N64-2. Since N64-3 the DP page
+// routes to the RDP (rdp package), the VI page to the
+// video interface (vi package), and the AI page to the
+// audio interface (ai package); the RSP's own DP register
+// window (CP0 8..15) routes to the same RDP. The PI
 // implements its DMA engine for real, including the
-// completion interrupt through MI.
+// completion interrupt through MI. PIF boot support is
+// the remaining storage-only device (N64-4).
 package bus
 
 import (
 	"encoding/binary"
 
+	"github.com/davidpatton/itak-gaming/cores/go-n64/ai"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/rsp"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/rdp"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/vi"
 )
 
 // MI interrupt bit assignments (MI_INTR and MI_MASK).
@@ -40,14 +44,20 @@ type Memory struct {
 	// its DMA engine works on RDRAM.
 	RSP *rsp.RSP
 
-	dpRegs [0x20]byte
+	// DP is the display processor (RDP). The DP register
+	// page routes to it, and the RSP's CP0 DP window
+	// (registers 8..15) routes to the same engine.
+	DP *rdp.RDP
 
 	miMode uint32
 	miIntr uint32
 	miMask uint32
 
-	viRegs [0x40]byte
-	aiRegs [0x40]byte
+	// VI is the video interface; AI is the audio
+	// interface. Their register pages route to the
+	// devices, which the system advances with CPU time.
+	VI *vi.VI
+	AI *ai.AI
 
 	piDramAddr uint32
 	piCartAddr uint32
@@ -78,8 +88,35 @@ func New(rom []byte, expansion bool) *Memory {
 	m.RSP.OnInterrupt = func(active bool) {
 		m.SetMI(MIIntrSP, active)
 	}
+	m.wireDevices()
 	return m
 }
+
+// wireDevices (re)builds the RDP, VI, and AI around the
+// current RDRAM and RSP and wires their interrupt
+// outputs into MI.
+func (m *Memory) wireDevices() {
+	m.DP = rdp.New()
+	m.DP.AttachDRAM(m.RDRAM)
+	m.DP.AttachDMEM(m.RSP.DMEM[:])
+	m.DP.OnInterrupt = func(active bool) {
+		m.SetMI(MIIntrDP, active)
+	}
+	m.RSP.DPRead = m.DP.ReadCPURegister
+	m.RSP.DPWrite = m.DP.WriteCPURegister
+	m.VI = vi.New()
+	m.VI.OnInterrupt = func(active bool) {
+		m.SetMI(MIIntrVI, active)
+	}
+	m.AI = ai.New(m.RDRAM)
+	m.AI.OnInterrupt = func(active bool) {
+		m.SetMI(MIIntrAI, active)
+	}
+}
+
+// ResetDevices returns the RDP, VI, and AI to their
+// power-on state (used by System.Reset).
+func (m *Memory) ResetDevices() { m.wireDevices() }
 
 // SetROM replaces the cartridge image.
 func (m *Memory) SetROM(rom []byte) { m.ROM = rom }
@@ -156,13 +193,16 @@ func (m *Memory) Read(addr uint32, size int) uint64 {
 	case addr >= 0x04080000 && addr < 0x04080004: // SP PC
 		return extract32(m.RSP.ReadPC(), addr&3, size)
 	case addr >= 0x04100000 && addr < 0x04100020: // DP registers
-		return readBytes(m.dpRegs[:], addr-0x04100000, size)
+		off := addr - 0x04100000
+		return extract32(m.DP.ReadRegister(off&^3), off&3, size)
 	case addr >= 0x04300000 && addr < 0x04300010: // MI
 		return uint64(m.readMI(addr - 0x04300000))
 	case addr >= 0x04400000 && addr < 0x04400040: // VI
-		return readBytes(m.viRegs[:], addr-0x04400000, size)
+		off := addr - 0x04400000
+		return extract32(m.VI.ReadRegister(off&^3), off&3, size)
 	case addr >= 0x04500000 && addr < 0x04500040: // AI
-		return readBytes(m.aiRegs[:], addr-0x04500000, size)
+		off := addr - 0x04500000
+		return extract32(m.AI.ReadRegister(off&^3), off&3, size)
 	case addr >= 0x04600000 && addr < 0x04600034: // PI
 		return uint64(m.readPI(addr - 0x04600000))
 	case addr >= 0x04700000 && addr < 0x04700020: // RI
@@ -199,13 +239,19 @@ func (m *Memory) Write(addr uint32, size int, val uint64) {
 			m.RSP.WritePC(uint32(val))
 		}
 	case addr >= 0x04100000 && addr < 0x04100020: // DP registers
-		writeBytes(m.dpRegs[:], addr-0x04100000, size, val)
+		if size == 4 {
+			m.DP.WriteRegister(addr-0x04100000, uint32(val))
+		}
 	case addr >= 0x04300000 && addr < 0x04300010: // MI
 		m.writeMI(addr-0x04300000, uint32(val))
 	case addr >= 0x04400000 && addr < 0x04400040: // VI
-		writeBytes(m.viRegs[:], addr-0x04400000, size, val)
+		if size == 4 {
+			m.VI.WriteRegister(addr-0x04400000, uint32(val))
+		}
 	case addr >= 0x04500000 && addr < 0x04500040: // AI
-		writeBytes(m.aiRegs[:], addr-0x04500000, size, val)
+		if size == 4 {
+			m.AI.WriteRegister(addr-0x04500000, uint32(val))
+		}
 	case addr >= 0x04600000 && addr < 0x04600034: // PI
 		m.writePI(addr-0x04600000, uint32(val), size)
 	case addr >= 0x04700000 && addr < 0x04700020: // RI
