@@ -587,9 +587,13 @@ func (c *CPU) exec31(w uint32, ia uint32) {
 			c.recordCR0(res)
 		}
 
-	// Logical.
+	// Logical. Like the shifts below, the X form here
+	// carries the source in the f1 field (rS) and the
+	// destination in the f2 field (rA): the architected
+	// layout for the register logical instructions, the
+	// same layout andi. and ori use in their D forms.
 	case 28, 60, 444, 412, 316, 476, 124, 284: // and, andc, or, orc, xor, nand, nor, eqv
-		av, bv := c.GPR[a], c.GPR[b]
+		av, bv := c.GPR[d], c.GPR[b]
 		var res uint32
 		switch x {
 		case 28:
@@ -609,7 +613,7 @@ func (c *CPU) exec31(w uint32, ia uint32) {
 		case 284:
 			res = ^(av ^ bv)
 		}
-		c.GPR[d] = res
+		c.GPR[a] = res
 		if rc {
 			c.recordCR0(res)
 		}
