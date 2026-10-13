@@ -121,13 +121,16 @@ func (c *CPU) exec(w uint32, ia uint32) {
 		if trapFires(to, uint32(a), uint32(b)) {
 			panic(&faultInfo{vec: VecProgram, srr0: ia, cause: SRR1ProgTrap})
 		}
-	case 4, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61, 63:
-		// Paired singles (4, 56, 57, 60, 61), floating point
-		// loads and stores (48-55), and floating point
-		// arithmetic (59, 63): the FPU is slice GCN-2, so
-		// every one of these raises FP unavailable here,
-		// regardless of MSR[FP].
-		c.fpUnavail()
+	case 4: // paired singles and dcbz_l (GCN-2, ps.go)
+		c.execPS(w)
+	case 48, 49, 50, 51, 52, 53, 54, 55: // FP loads and stores
+		c.execFPLoadStoreD(w)
+	case 56, 57, 60, 61: // paired single quantized loads and stores
+		c.execPSQD(w)
+	case 59: // floating point arithmetic, single (GCN-2)
+		c.execFP59(w)
+	case 63: // floating point arithmetic and system (GCN-2)
+		c.execFP63(w)
 	case 7: // mulli
 		c.GPR[f1(w)] = uint32(int64(int32(c.GPR[f2(w)])) * int64(simm(w)))
 	case 8: // subfic
@@ -725,6 +728,10 @@ func (c *CPU) exec31(w uint32, ia uint32) {
 			c.privAt()
 		}
 		c.SR[c.GPR[b]>>28] = c.GPR[d]
+
+	// Floating point indexed loads and stores (GCN-2).
+	case 535, 567, 599, 631, 663, 695, 727, 759, 983: // lfsx, lfsux, lfdx, lfdux, stfsx, stfsux, stfdx, stfdux, stfiwx
+		c.execFPIndexed(w, x)
 
 	// Synchronization and cache management. dcbz has a real
 	// effect (it zeroes the block); the rest are ordering
