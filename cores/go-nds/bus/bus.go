@@ -14,9 +14,17 @@
 //     return the side's open-bus value, the documented
 //     approximation for code that reads unmapped space.
 //   - VRAM banks are backing stores mapped at their LCDC
-//     addresses; the VRAMCNT bank assignment registers are plain
-//     IO storage in this slice. The 2D engines that consume the
-//     bank assignments arrive in DS-2.
+//     addresses. The VRAMCNT bank assignment registers are plain
+//     IO storage; the 2D engines in the video package consume
+//     the assignments. Banks C and D assigned as ARM7 WRAM
+//     (MST 2) appear in the ARM7 view at 0x06000000, as on
+//     hardware.
+//   - DS-2 device registers (timers, DMA, IPC, interrupts, the
+//     card ports) are not plain storage. When the system
+//     installs an IOHook, accesses to the IO pages are offered
+//     to it first and fall back to storage for the offsets it
+//     does not claim. A bare bus (unit tests) has no hook and
+//     behaves exactly as slice 1.
 //   - The cartridge image is mapped linearly in the
 //     0x08000000 window for foundation work. The real DS game
 //     card streams through a serial command interface; direct
@@ -35,10 +43,11 @@ const (
 	SharedSize  = 32 << 10
 	ARM7RAMSize = 64 << 10
 	VRAMSize    = 0xA4000 // banks A-I at their LCDC offsets
-	PaletteSize = 1 << 10
-	OAMSize     = 1 << 10
+	PaletteSize = 2 << 10 // BG/OBJ palettes for both engines
+	OAMSize     = 2 << 10 // 1 KB of OAM per engine
 	GBASRAMSize = 64 << 10
-	IOSize      = 0x1000
+	IOSize      = 0x1000 // one side's IO page (the ARM7 page)
+	IO9Size     = 0x2000 // ARM9 IO: its page plus the engine B page
 )
 
 // IO offsets of the shared registers, within the 0x04000000 page.
@@ -46,6 +55,43 @@ const (
 	ioEXMEMCNT = 0x204 // 16-bit, in the ARM9 IO page
 	ioWRAMCNT  = 0x247 // 8-bit, in the ARM9 IO page
 )
+
+// VRAMCNT byte offsets in the ARM9 IO page, one per bank A-I.
+// Banks C and D (offsets 0x242 and 0x243) with MST 2 assign the
+// bank as ARM7 WRAM, decoded in the ARM7 view.
+const (
+	ioVRAMCNTC = 0x242
+	ioVRAMCNTD = 0x243
+)
+
+// IOHook is the device-register dispatcher the system installs
+// for DS-2 hardware. ReadIO and WriteIO receive the side, an
+// offset in the hook offset space, and the access size in bytes.
+// The offset space is the IO page offset (0x0000-0x1FFF on the
+// ARM9 side, which includes the engine B page at 0x1000-0x1FFF;
+// 0x0000-0x0FFF on the ARM7 side) plus the 0x04100000 window
+// remapped to 0x2000-0x2FFF (the IPC FIFO receive port at
+// 0x2000 and the card data port at 0x2010). A false return
+// means the offset is plain storage and the bus handles the
+// access itself.
+type IOHook interface {
+	ReadIO(nine bool, off uint32, size int) (uint32, bool)
+	WriteIO(nine bool, off uint32, size int, val uint32) bool
+}
+
+// hookOffset maps an address to the hook offset space, if the
+// address belongs to a hooked window for that side.
+func hookOffset(nine bool, addr uint32) (uint32, bool) {
+	switch {
+	case addr >= 0x04000000 && addr < 0x04001000:
+		return addr & 0xFFF, true
+	case nine && addr >= 0x04001000 && addr < 0x04002000:
+		return addr & 0x1FFF, true
+	case addr >= 0x04100000 && addr < 0x04101000:
+		return 0x2000 + (addr & 0xFFF), true
+	}
+	return 0, false
+}
 
 // Bus holds every DS backing store and hands out the two CPU
 // views. Construct with New, then AttachCPU9 so the ARM9 view can
@@ -65,6 +111,7 @@ type Bus struct {
 
 	rom   []byte
 	cpu9  *armcore.CPU
+	hook  IOHook
 	open9 uint32
 	open7 uint32
 }
@@ -81,10 +128,14 @@ func New() *Bus {
 		Palette:  make([]byte, PaletteSize),
 		OAM:      make([]byte, OAMSize),
 		GBASRAM:  make([]byte, GBASRAMSize),
-		IO9:      make([]byte, IOSize),
+		IO9:      make([]byte, IO9Size),
 		IO7:      make([]byte, IOSize),
 	}
 }
+
+// SetIOHook installs the device-register dispatcher. The system
+// calls it once at construction; unit tests leave it nil.
+func (b *Bus) SetIOHook(h IOHook) { b.hook = h }
 
 // AttachCPU9 binds the ARM9 CPU whose CP15 TCM registers the
 // ARM9 view decodes against.
@@ -182,8 +233,8 @@ func (b *Bus) decode9(addr uint32, fetch bool) ([]byte, uint32, bool) {
 		return b.MainRAM, addr & (MainRAMSize - 1), true
 	case addr >= 0x03000000 && addr < 0x03008000:
 		return b.sharedWindow(true, addr)
-	case addr >= 0x04000000 && addr < 0x04001000:
-		return b.IO9, addr & 0xFFF, true
+	case addr >= 0x04000000 && addr < 0x04002000:
+		return b.IO9, addr & 0x1FFF, true
 	case addr >= 0x05000000 && addr < 0x05001000:
 		return b.Palette, addr & (PaletteSize - 1), true
 	case addr >= 0x06800000 && addr < 0x06800000+VRAMSize:
@@ -213,6 +264,17 @@ func (b *Bus) decode7(addr uint32) ([]byte, uint32, bool) {
 		return b.sharedWindow(false, addr)
 	case addr >= 0x03800000 && addr < 0x04000000:
 		return b.ARM7WRAM, addr & (ARM7RAMSize - 1), true
+	case addr >= 0x06000000 && addr < 0x06040000:
+		// VRAM banks C and D assigned as ARM7 WRAM (VRAMCNT
+		// MST 2) appear here: bank C or D at 0x06000000 plus
+		// 0x20000 times its OFS low bit.
+		for i, cntOff := range []int{ioVRAMCNTC, ioVRAMCNTD} {
+			cnt := uint32(b.IO9[cntOff])
+			if cnt&1 != 0 && (cnt>>1)&3 == 2 && uint32(addr-0x06000000)>>17 == (cnt>>3)&1 {
+				return b.VRAMBank(2 + i), addr & 0x1FFFF, true
+			}
+		}
+		return nil, 0, false
 	case addr >= 0x04000000 && addr < 0x04001000:
 		// The ARM7 reads EXMEMCNT and WRAMCNT from the ARM9 page;
 		// its writes to them are ignored.
@@ -255,6 +317,14 @@ func (v View) open() *uint32 {
 
 // Read implements armcore.Bus for this side.
 func (v View) Read(addr uint32, size int) uint32 {
+	if v.b.hook != nil {
+		if off, in := hookOffset(v.nine, addr); in {
+			if val, handled := v.b.hook.ReadIO(v.nine, off, size); handled {
+				*v.open() = val
+				return val
+			}
+		}
+	}
 	var mem []byte
 	var off uint32
 	var ok bool
@@ -301,6 +371,14 @@ func (v View) Write(addr uint32, size int, val uint32) {
 	if !v.nine && addr >= 0x04000000 && addr < 0x04001000 {
 		if off := addr & 0xFFF; off >= ioEXMEMCNT && off <= ioEXMEMCNT+1 || off == ioWRAMCNT {
 			return
+		}
+	}
+	if v.b.hook != nil {
+		if off, in := hookOffset(v.nine, addr); in {
+			if v.b.hook.WriteIO(v.nine, off, size, val) {
+				*v.open() = val
+				return
+			}
 		}
 	}
 	var mem []byte
@@ -364,7 +442,7 @@ func (b *Bus) VRAMBank(i int) []byte {
 
 // StateSize is the serialized size of the whole memory system.
 const StateSize = MainRAMSize + ITCMSize + DTCMSize + SharedSize + ARM7RAMSize +
-	VRAMSize + PaletteSize + OAMSize + GBASRAMSize + IOSize + IOSize + 8
+	VRAMSize + PaletteSize + OAMSize + GBASRAMSize + IO9Size + IOSize + 8
 
 // Serialize writes every backing store, plus the two open-bus
 // values, to dst (at least StateSize bytes).
