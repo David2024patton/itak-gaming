@@ -440,6 +440,29 @@ func (d *Disc) ReadData(lba int) ([]byte, error) {
 	return out, nil
 }
 
+// ReadAudio returns a freshly allocated 2352 byte raw sector for
+// the sector at lba. It serves any track whose sector size is 2352,
+// audio or data. Tracks stored as 2048 byte sectors and out of
+// range addresses return an error.
+func (d *Disc) ReadAudio(lba int) ([]byte, error) {
+	if d == nil || d.closed {
+		return nil, fmt.Errorf("scd: ReadAudio on a closed disc")
+	}
+	track := d.trackForLBA(lba)
+	if track == nil {
+		return nil, fmt.Errorf("scd: LBA %d is out of range, disc has %d sectors", lba, d.NumSectors())
+	}
+	if track.SectorSize != 2352 {
+		return nil, fmt.Errorf("scd: LBA %d is in track %d with sector size %d, want 2352", lba, track.Number, track.SectorSize)
+	}
+	offset := track.FileOffset + int64(lba-track.StartLBA)*int64(track.SectorSize)
+	out := make([]byte, 2352)
+	if _, err := d.files[track.FileIndex].ReadAt(out, offset); err != nil {
+		return nil, fmt.Errorf("scd: read audio sector at LBA %d: %w", lba, err)
+	}
+	return out, nil
+}
+
 // trackForLBA finds the track that owns lba, or nil when no track does.
 func (d *Disc) trackForLBA(lba int) *Track {
 	for i := range d.tracks {
