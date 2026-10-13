@@ -93,9 +93,13 @@ func TestSyntheticChecksumAndSaveState(t *testing.T) {
 
 func TestMachineBasics(t *testing.T) {
 	m := New()
+	// PS1-2 contract change: the framebuffer is the
+	// GPU display area at native resolution (the
+	// documented reset default is 256x240, display
+	// off), not the fixed 640x480 blank of PS1-1.
 	fb := m.Framebuffer()
-	if len(fb) != Width*Height {
-		t.Fatalf("framebuffer = %d pixels, want %d", len(fb), Width*Height)
+	if len(fb) != m.DisplayWidth()*m.DisplayHeight() {
+		t.Fatalf("framebuffer = %d pixels, want %d (native display)", len(fb), m.DisplayWidth()*m.DisplayHeight())
 	}
 	if fb[0] != 0xFF000000 || fb[len(fb)-1] != 0xFF000000 {
 		t.Errorf("framebuffer not blank black")
