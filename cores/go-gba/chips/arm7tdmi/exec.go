@@ -3,6 +3,20 @@ package arm7tdmi
 // Step executes exactly one instruction and returns the number of
 // bus cycles it consumed in the ARM7TDMI cycle model.
 func (c *CPU) Step() int {
+	// A pending IRQ is taken at the instruction boundary,
+	// before the instruction in the execute stage runs, and
+	// also while the core is halted (an interrupt is what
+	// ends a halt on hardware). The link value follows the
+	// exception convention: it is the address of the
+	// instruction that was about to execute, plus 4, so the
+	// handler returns with SUBS PC, LR, #4 to exactly that
+	// instruction.
+	if c.IRQLine && c.CPSR&BitI == 0 {
+		if c.Thumb() {
+			return c.exception(0x18, ModeIRQ, c.R[15])
+		}
+		return c.exception(0x18, ModeIRQ, c.R[15]-4)
+	}
 	if c.Halted {
 		return 1
 	}
@@ -52,6 +66,14 @@ func (c *CPU) advance(thumb bool) {
 func (c *CPU) branch(addr uint32) {
 	c.refill(addr)
 	c.flushed = true
+}
+
+// Jump moves execution to addr, refilling the pipeline there.
+// It exists for the system layer and the SWI hook: a handled
+// software interrupt completes by jumping to its return
+// address, and the BIOS wait routines resume the same way.
+func (c *CPU) Jump(addr uint32) {
+	c.branch(addr)
 }
 
 // condPassed evaluates an ARM condition field against the CPSR
