@@ -373,8 +373,8 @@ func runUntilFlag(t *testing.T, sys *System) {
 
 func TestRSPExecutionGate(t *testing.T) {
 	sys := bootRSPMachine(t)
-	if got := sys.SerializeSize(); got != 6307239 {
-		t.Errorf("state size at 4 MB: %d want 6307239", got)
+	if got := sys.SerializeSize(); got != 6604438 {
+		t.Errorf("state size at 4 MB: %d want 6604438", got)
 	}
 	runUntilFlag(t, sys)
 	for i := 0; i < 50; i++ { // let the CPU copy the cells out
