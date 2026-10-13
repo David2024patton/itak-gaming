@@ -16,11 +16,15 @@
 //
 // Documented simplifications for this slice (see the module
 // README for the full list): trilinear filtering samples one mip
-// level with bilinear filtering; fog registers are stored but the
-// fog unit is deferred to DC-3; the region array is walked for
+// level with bilinear filtering; the region array is walked for
 // per-tile list disables only, and the renderer consumes the TA
 // primitive lists in per-pixel submission order, which is
-// pixel-identical to the hardware tile order.
+// pixel-identical to the hardware tile order. Fog arrived in
+// DC-3 (fog.go): all four documented TSP fog modes are applied
+// in the shading stage; the FOG_CLAMP_MIN/MAX registers are
+// stored but the per-polygon color clamp they feed is not
+// implemented (the source clamp01 in the shader still runs
+// before fog, as documented).
 package pvr
 
 import (
@@ -58,7 +62,7 @@ const (
 	RegSDRAMCfg     = 0x0A8 // SDRAM_CFG (stored)
 	RegFPUCullMode  = 0x0AC // FPU_CULL_MODE (stored)
 
-	RegFogColRAM   = 0x0B0 // FOG_COL_RAM (stored, fog deferred)
+	RegFogColRAM   = 0x0B0 // FOG_COL_RAM (used by table fog since DC-3)
 	RegFogColVert  = 0x0B4 // FOG_COL_VERT (stored)
 	RegFogDensity  = 0x0B8 // FOG_DENSITY (stored)
 	RegFogClampMax = 0x0BC // FOG_CLAMP_MAX (stored)
