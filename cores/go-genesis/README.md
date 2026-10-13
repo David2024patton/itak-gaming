@@ -84,3 +84,28 @@ Not yet wired into the app: the TV still bundles Genesis Plus GX.
 Wiring this core in for Genesis (Sega CD stays on Genesis Plus GX
 until our own Sega CD support lands) is the next job, gated on a TV
 playtest.
+
+## Sega CD support (SCD-1, foundations)
+
+What landed in this slice:
+
+- A second 68000 sub CPU running at 12.5 MHz with its own bus view: boot window, 512 KB PRG-RAM, 256 KB Word RAM, the gate array, and PCM register and wave RAM storage.
+- Word RAM 2M and 1M modes with the DMNA/RET ownership handshake between the two CPUs.
+- The gate array at 0xA12000 on the main side, mirrored at 0xFF8000 for the sub CPU: reset and bus-request control, comm flags, 8 command words and 8 status words, and the H-INT interval and vector registers.
+- H-INT delivered to the main CPU as a level 2 interrupt at the programmed line cadence.
+- A CD block layer opening .cue/.bin and .iso images, with cue parsing, MSF/LBA conversion, and Mode 1/Mode 2 data extraction.
+- A simplified CDC model: latched LBA, count and destination, DMA-style transfer into PRG-RAM, Word RAM or PCM wave RAM, or a polled data port. Its busy flag clears after two status reads. The CDD is held at a status-response model.
+
+Boot honesty: this core contains NO Sega BIOS code. Both BIOS roles are filled by small hand-written 68k stubs in the scd package. The sub stub performs the documented boot flow: read sector 0, verify the SEGADISCSYSTEM signature, load the initial program from the header fields into PRG-RAM, and jump to it. A main-side stub program releases the sub CPU and runs the comm handshake for CD-only boots. Real Sega CD BIOS call services (the BIOS jump tables games call) are NOT implemented yet.
+
+Save states: cartridge-only states are byte-identical to before and still load. With a disc attached, the state grows by the sub CPU registers, the full CD RAM and register state, and the sub cycle counter: the state size in CD mode is 1,061,509 bytes (cartridge mode is 207,149 bytes). A CD state needs the CD attached to load.
+
+Simplifications, stated plainly:
+
+- The main CPU's own Word RAM window in cartridge space (0x200000) is not routed yet, so cartridge space is completely untouched in this slice. This also keeps SRAM cartridges safe. The ownership model is enforced and tested at the unit level.
+- CDC transfers complete instantly apart from the two-read busy window.
+- No wait states are charged on sub CPU memory accesses.
+- PRG-RAM banking and protection, and the 1M dual-port second window, are not modeled.
+- PCM registers and wave RAM are storage only: there is no PCM or CD audio yet.
+
+Remaining slices: SCD-2 (CD-DA and RF5C164 PCM audio, full CDD command set), SCD-3 (graphics scaler/rotator ASIC, real-game engine test with Sonic CD from a user-supplied image), SCD-4 (app wiring so the Sega CD slot swaps off Genesis Plus GX).
