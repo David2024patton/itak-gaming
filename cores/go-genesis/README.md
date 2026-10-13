@@ -66,17 +66,21 @@ Milestone 2 DONE (2026-10-13): the YM2612 FM operator engine is built
 in-house (6 channels, 4 operators per channel, envelopes with SSG-EG,
 feedback, LFO, channel 3 special mode, DAC channel, hardware timers)
 and unit-tested, including a 440.00 Hz frequency check on a keyed
-channel. In the Sonic save test the music window now produces 350,214
-non-zero samples (was 33,002, PSG only), and save states stay
-byte-exact at the grown size of 207,133 bytes. The engine test rig
-still flags audio silence, a window artifact: its 120-frame window
-closes during the boot sequence, before the first FM note plays at
-about frame 490 in this core's timing. One known gap remains: the
-YM2612 timers advance once per video frame instead of with emulation
-clocks, so sample playback paced by polling the timer flags (the SEGA
-jingle, SMPS DAC drums) plays frame-quantized. Advancing sound clocks
-from the system loop is the next wiring job.
+channel. Two wirings completed it: the timers advance from the system
+loop at scanline precision (a polling program sees the flag mid-frame;
+261 timer services land inside one frame), and register writes are
+timestamped, so the sound up to each write's emulated moment renders
+before the write lands. A DAC sample stream (the SEGA jingle, about
+275 sample writes per frame) now plays at full rate: measured
+1,200-1,400 waveform-active samples per frame in the jingle window,
+where frame-end rendering managed about 2. The pan registers power on
+routed to both sides, as hardware behaves (the jingle never writes
+pan first). In the Sonic save test the music window produces 484,644
+non-zero samples (was 33,002, PSG only), save states stay byte-exact
+at the grown size of 207,149 bytes, and the engine test rig now
+reports ALL TESTS PASSED.
 
-Not yet wired into the app: the TV still bundles Genesis Plus GX. This
-core replaces it once the timer clock wiring lands and it passes a TV
+Not yet wired into the app: the TV still bundles Genesis Plus GX.
+Wiring this core in for Genesis (Sega CD stays on Genesis Plus GX
+until our own Sega CD support lands) is the next job, gated on a TV
 playtest.
