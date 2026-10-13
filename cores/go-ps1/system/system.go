@@ -451,7 +451,7 @@ func (m *Machine) advance(cycles int) {
 	for i := 0; i < timers.Count; i++ {
 		if asserted&(1<<uint(i)) != 0 {
 			m.istat |= 1 << uint(IRQTMR0+i)
-			class := uint32(evClassTMR0 + i)
+			class := evClassTMR0 + uint32(i)
 			if i == 2 {
 				class = evClassTMR1 // TMR2 shares TMR1's class (documented quirk)
 			}
