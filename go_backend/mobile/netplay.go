@@ -75,7 +75,12 @@ func npActive() *netsession.Session {
 	if npSession != nil {
 		return npSession
 	}
-	return npPending
+	if npPending != nil {
+		return npPending
+	}
+	// Watching is a session too: chat (and signaling, later)
+	// resolve to the watch session when no player session runs.
+	return npWatch
 }
 
 // NetplayStart connects to the lobby signaling socket and runs the
