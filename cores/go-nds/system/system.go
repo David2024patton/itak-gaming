@@ -298,6 +298,11 @@ func (m *Machine) Touch() (x, y uint16, down bool) {
 // EEPROM backing, 512 bytes in this slice).
 func (m *Machine) SaveRAM() []byte { return m.Periph.SaveRAM() }
 
+// SetSaveRAM replaces the cartridge save memory contents
+// (the AUX SPI EEPROM backing), truncating or zero-padding
+// data to the backing size.
+func (m *Machine) SetSaveRAM(data []byte) { copy(m.Periph.SaveRAM(), data) }
+
 // GXFIFOCount returns the number of 32-bit words written to
 // the geometry FIFO port (the DS-3 geometry engine drains
 // them for real; see the gx package).
