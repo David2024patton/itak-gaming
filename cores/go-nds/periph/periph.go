@@ -1,8 +1,9 @@
-// Package periph implements the DS-2 device registers that are
+// Package periph implements the DS device registers that are
 // not plain storage: the per-CPU interrupt controllers, timers,
 // DMA engines, the IPC sync and FIFO unit, the game card
 // command port, the AUX SPI save memory, the ARM7 SPI bus
-// (power, firmware flash, touchscreen), and the RTC stub. The
+// (power, firmware flash, touchscreen with the microphone aux
+// channel), and the RTC stub. The
 // system installs a Set as the bus IOHook; offsets the Set does
 // not claim fall back to plain IO storage in the bus.
 //
@@ -44,9 +45,9 @@ const (
 	IRQSPI      = 24
 )
 
-// GXFIFOAddr is the geometry command FIFO port. DMA transfers
-// and CPU writes landing here are counted in GXCount as the
-// DS-3 sink.
+// GXFIFOAddr is the geometry command FIFO port. In DS-3 the
+// system hook routes writes there to the gx package; the
+// DS-2 counting sink that lived here is gone.
 const GXFIFOAddr = 0x04000400
 
 // IO offsets (hook offset space) of the registers claimed here.
@@ -65,7 +66,6 @@ const (
 	offIE     = 0x210
 	offIF     = 0x214
 	offSPI    = 0x1C0
-	offGXFIFO = 0x400
 
 	extFIFORecv = 0x2000 // 0x04100000
 	extCardData = 0x2010 // 0x04100010
@@ -94,6 +94,7 @@ type Set struct {
 	rom   func() []byte
 	keys  func() uint32
 	touch func() (uint16, uint16, bool)
+	mic   func() (int16, bool)
 	penDn bool
 
 	irq [2]irqCtl
@@ -105,11 +106,6 @@ type Set struct {
 	aux AuxSPI
 	spi SPI
 	rtc RTC
-
-	// GXCount is the number of 32-bit words consumed into the
-	// geometry FIFO sink (the DS-3 geometry engine will drain
-	// it for real).
-	GXCount uint32
 }
 
 // New builds the peripheral set. The callbacks reach the parts
@@ -153,6 +149,12 @@ func (s *Set) SetPenDown(down bool) {
 	}
 	s.penDn = down
 }
+
+// SetMicrophoneSource installs the machine's microphone
+// sample source for the touchscreen ADC aux channel (DS-3).
+// Each call of the source consumes one sample; ok=false means
+// no sample is available and the ADC reads its idle value.
+func (s *Set) SetMicrophoneSource(fn func() (int16, bool)) { s.mic = fn }
 
 // SaveRAM returns the cartridge save memory (the AUX SPI
 // EEPROM backing).
@@ -285,11 +287,6 @@ func (s *Set) WriteIO(nine bool, off uint32, size int, val uint32) bool {
 		// Writing 1s acknowledges (clears) the written flags.
 		c := &s.irq[side]
 		c.iflags &^= putU32(0, off, size, val)
-		return true
-	case off == offGXFIFO && nine:
-		if size == 4 {
-			s.GXCount++
-		}
 		return true
 	}
 	return false
