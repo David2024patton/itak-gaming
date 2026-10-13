@@ -12,6 +12,7 @@ type peer struct {
 	conn    *ws.Conn
 	lobbyID string
 	role    lobby.Role
+	player  string // display name, for server notices that name a member
 	token   string // kept only to revoke membership on disconnect
 }
 
@@ -65,6 +66,19 @@ func (h *hub) others(p *peer) []*peer {
 		if q != p {
 			out = append(out, q)
 		}
+	}
+	return out
+}
+
+// all returns a snapshot of every peer in p's room, p included. If p
+// has already been removed from the room, the snapshot is the room
+// that remains, which is what teardown notices want.
+func (h *hub) all(p *peer) []*peer {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*peer, 0, 2)
+	for q := range h.rooms[p.lobbyID] {
+		out = append(out, q)
 	}
 	return out
 }
