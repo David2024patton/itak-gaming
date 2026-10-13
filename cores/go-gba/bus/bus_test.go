@@ -59,6 +59,50 @@ func TestVRAMUpperMirror(t *testing.T) {
 	}
 }
 
+// TestVRAMMiddleBand pins the window offsets
+// 0x8000..0xFFFF: they are real VRAM (the second 32 KB
+// bank and the OBJ tile area starts right above them),
+// NOT aliases of the 32 KB below. A mask-based decode
+// once dropped bit 15 for the whole window, folding this
+// band onto 0x0000..0x7FFF and scrambling any game that
+// places maps or tiles there (found by the Anguna gate
+// in GBA-4: its BG2 tilemap at window 0xE000 landed at
+// backing offset 0x6000).
+func TestVRAMMiddleBand(t *testing.T) {
+	b := New()
+	marks := []struct {
+		addr uint32
+		val  uint32
+	}{
+		{0x06008000, 0x11111111},
+		{0x0600A000, 0x22222222},
+		{0x0600E000, 0x33333333},
+		{0x0600FFFC, 0x44444444},
+	}
+	for _, mk := range marks {
+		b.Write(mk.addr, 4, mk.val)
+	}
+	for _, mk := range marks {
+		if got := b.Read(mk.addr, 4); got != mk.val {
+			t.Fatalf("Read(%#08x, 4) = %#08x, want %#08x", mk.addr, got, mk.val)
+		}
+	}
+	// The spots the buggy fold used to hit must be empty.
+	for _, addr := range []uint32{0x06000000, 0x06002000, 0x06006000, 0x06007FFC} {
+		if got := b.Read(addr, 4); got != 0 {
+			t.Fatalf("Read(%#08x, 4) = %#08x, want 0 (the middle band must not alias the low band)", addr, got)
+		}
+	}
+	// And the backing store must hold the bytes at the
+	// true offsets.
+	if got := b.VRAM[0x8000]; got != 0x11 {
+		t.Fatalf("VRAM backing at 0x8000 = %#02x, want 0x11", got)
+	}
+	if got := b.VRAM[0xE000]; got != 0x33 {
+		t.Fatalf("VRAM backing at 0xE000 = %#02x, want 0x33", got)
+	}
+}
+
 func TestROMMirroring(t *testing.T) {
 	rom := make([]byte, 0x1000) // 4 KB fake ROM
 	for i := range rom {
