@@ -324,27 +324,90 @@ func (h *Handler) wake(c *arm7tdmi.CPU) {
 	c.Jump(ret)
 }
 
-// Poll advances the wait state. The system calls it while
-// the CPU is halted in a wait. A Halt wakes when any of the
-// IF flag bits 0 to 13 is pending (IME and IE gating is
-// the documented simplification: Halt wakes on any pending
-// flag). An IntrWait wakes when the BIOS check word gains
-// any of its masked bits; those bits are then consumed
-// (cleared from the check word) before resuming.
+// finish clears the wait bookkeeping for the case where
+// the CPU already resumed on its own: it woke to take the
+// interrupt, the dispatcher ran and returned it to exactly
+// the wait's resume address, so no jump is needed here.
+func (h *Handler) finish() {
+	h.waiting = false
+	h.kind = waitNone
+	h.mask = 0
+}
+
+// executingAddr returns the address of the instruction in
+// the CPU's execute stage, by the pipeline convention
+// swiReturn uses: R15 reads as the executing address plus
+// 8 in ARM state and plus 4 in Thumb state.
+func executingAddr(c *arm7tdmi.CPU) uint32 {
+	if c.Thumb() {
+		return c.R[15] - 4
+	}
+	return c.R[15] - 8
+}
+
+// Poll advances the wait state. The system calls it
+// whenever a wait is outstanding, whether or not the CPU
+// is currently halted, because a wait completes through
+// the real IRQ path and Poll has to watch both sides of
+// the dispatch:
+//
+//   - While the CPU sits halted, no dispatcher has run
+//     yet. A Halt wakes when any of the IF flag bits 0 to
+//     13 is pending (IME and IE gating is the documented
+//     simplification: Halt wakes on any pending flag) and
+//     the IRQ itself is then taken on the next step, so
+//     the user handler still runs before the waiting
+//     code. An IntrWait can complete here only if its
+//     check word bits are already present.
+//   - An accepted interrupt wakes the halted CPU (see
+//     arm7tdmi.Step) and the BIOS dispatcher records the
+//     acknowledged flags in the check word, calls the
+//     user handler, and returns to the wait's resume
+//     address. If the awaited condition now holds, Poll
+//     consumes it (for IntrWait, clearing its bits from
+//     the check word) and the wait is over; the CPU is
+//     already positioned at the resume address. If it
+//     does not hold (the wake was an unrelated interrupt),
+//     IntrWait halts again at the resume address, exactly
+//     the BIOS IntrWait loop; a plain Halt needs no such
+//     re-check because any accepted interrupt ends it.
+//   - While the CPU is inside the IRQ dispatcher (IRQ
+//     mode) Poll leaves everything alone: the dispatcher
+//     is still deciding the wait's outcome.
 func (h *Handler) Poll(c *arm7tdmi.CPU) {
 	if !h.waiting {
 		return
 	}
+	if c.CPSR&0x1F == arm7tdmi.ModeIRQ {
+		return
+	}
 	switch h.kind {
 	case waitHalt:
-		if h.mem.Read(0x04000202, 2)&0x3FFF != 0 {
-			h.wake(c)
+		if c.Halted {
+			if h.mem.Read(0x04000202, 2)&0x3FFF != 0 {
+				h.wake(c)
+			}
+			return
 		}
+		// The CPU woke to service an interrupt and its
+		// handler has returned: the halt is over.
+		h.finish()
 	case waitIntr:
 		word := h.mem.Read(CheckWordAddr, 4)
 		if word&h.mask != 0 {
 			h.mem.Write(CheckWordAddr, 4, word&^h.mask)
-			h.wake(c)
+			if c.Halted {
+				h.wake(c)
+			} else {
+				h.finish()
+			}
+			return
+		}
+		if !c.Halted && executingAddr(c) == h.ret {
+			// An unrelated interrupt woke the CPU and its
+			// dispatcher run did not set the awaited
+			// bits: halt again at the resume address.
+			c.Halted = true
 		}
 	}
 }
