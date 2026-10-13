@@ -2,10 +2,12 @@
 // the TI SN76489 PSG (the Sega variant built into the VDP's silicon, with
 // the 16-bit LFSR and 0x0009 noise taps), mixed to 44.1kHz stereo.
 //
-// The PSG is github.com/user-none/go-chip-sn76489 (MIT). The YM2612 is
-// written here from Yamaha's published register map. Milestone 1 ships
-// the YM2612 as a register-accurate shell (writes land, timers run,
-// output silent); the FM operator engine lands in milestone 2.
+// The PSG is our own SN76489 (cores/go-genesis/chips/psg), written
+// from the TI datasheet and the Sega variant documentation. The
+// YM2612 is written here from Yamaha's published register map.
+// Milestone 1 ships the YM2612 as a register-accurate shell (writes
+// land, timers run, output silent); the FM operator engine lands in
+// milestone 2.
 //
 // PINNED API (bus and system are written against this):
 //
@@ -21,7 +23,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/user-none/go-chip-sn76489"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/chips/psg"
 )
 
 // SampleRate is the core's audio output rate.
@@ -35,7 +37,7 @@ const psgClock = 3579545
 
 // Sound holds both chips and the mix state.
 type Sound struct {
-	psg *sn76489.SN76489
+	psg *psg.PSG
 
 	ymAddrA  uint8
 	ymAddrB  uint8
@@ -58,7 +60,7 @@ func (s *Sound) WriteCounts() (psg, ym int) { return s.psgWrites, s.ymWrites }
 // New returns the sound section in power-on state.
 func New() *Sound {
 	return &Sound{
-		psg: sn76489.New(psgClock, SampleRate, 4096, sn76489.Config{
+		psg: psg.New(psgClock, SampleRate, 4096, psg.Config{
 			LFSRBits:       16,     // Sega variant
 			WhiteNoiseTaps: 0x0009, // bits 0 and 3
 		}),
@@ -157,8 +159,8 @@ func (s *Sound) SerializeSize() int { return serializeSize }
 
 // Serialize writes the sound section state into buf (layout documented at
 // serializeSize). The PSG state goes into the 1024-byte region at the
-// tail. Observed library behavior: sn76489.Serialize needs only
-// sn76489.SerializeSize (41) bytes, so with a 1024-byte scratch it never
+// tail. Observed chip behavior: psg.Serialize needs only
+// psg.SerializeSize (41) bytes, so with a 1024-byte scratch it never
 // errors; if it ever did, psgLen is written as 0 and the region left
 // zeroed instead of failing the whole state.
 func (s *Sound) Serialize(buf []byte) error {
@@ -179,7 +181,7 @@ func (s *Sound) Serialize(buf []byte) error {
 	psgLen := 0
 	var scratch [1024]byte
 	if err := s.psg.Serialize(scratch[:]); err == nil {
-		psgLen = sn76489.SerializeSize
+		psgLen = psg.SerializeSize
 		copy(region, scratch[:psgLen])
 	}
 	binary.LittleEndian.PutUint32(buf[516:520], uint32(psgLen))
