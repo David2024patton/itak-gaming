@@ -42,6 +42,7 @@ request bodies and URLs.
 | POST   | `/lobbies`            | create a lobby; returns `id` + `hostToken` + `wsUrl` (201) |
 | GET    | `/lobbies`            | public list of open lobbies: id, name, game, host, players, locked, createdAt |
 | POST   | `/lobbies/{id}/join`  | join with `{player, password?}`; returns `guestToken` + `wsUrl` |
+| POST   | `/lobbies/{id}/watch` | watch as a spectator with `{player, password?}`; returns `spectatorToken` + `wsUrl` (max 10 per lobby, no player seat) |
 | GET    | `/ws?lobby=&token=`   | WebSocket signaling relay between the lobby's peers |
 | GET    | `/healthz`            | `{"status":"ok","lobbies":N}` |
 
@@ -51,7 +52,8 @@ SHA-256 digests. The public list never exposes either.
 WebSocket messages are opaque JSON envelopes with a `type` field
 (`offer`, `answer`, `ice`, `input`, `state_hash`, `snapshot_*`, ...)
 passed through untouched; the server adds only `peer_joined`,
-`peer_left`, and `lobby_closed` lifecycle notices. Message cap
+`peer_left`, `lobby_closed`, `spectator_joined`, `spectator_left`,
+and `roster` lifecycle notices. Message cap
 256 KB. Host disconnect closes the lobby; a guest disconnect frees
 their slot. Lobbies empty of peers for 60 s are reaped, and lobbies
 nobody ever connected to expire after 10 minutes. Caps: 500 lobbies,
