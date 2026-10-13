@@ -266,7 +266,7 @@ func TestPeriphStateRoundTrip(t *testing.T) {
 	r.s.AdvanceTimers(true, 5000)
 	r.v9.Write(0x04000184, 4, 0x8000)
 	r.v9.Write(0x04000188, 4, 0xFEEDFACE)
-	r.s.GXCount = 77
+	r.s.rtc.frames = 77
 	r.s.SaveRAM()[3] = 0x5A
 	blob := make([]byte, StateSize)
 	if n := r.s.Serialize(blob); n != StateSize {
@@ -287,7 +287,7 @@ func TestPeriphStateRoundTrip(t *testing.T) {
 	if got := r2.v7.Read(0x04100000, 4); got != 0xFEEDFACE {
 		t.Fatalf("FIFO word restored: %08x", got)
 	}
-	if r2.s.GXCount != 77 || r2.s.SaveRAM()[3] != 0x5A {
+	if r2.s.rtc.frames != 77 || r2.s.SaveRAM()[3] != 0x5A {
 		t.Fatal("scalar state not restored")
 	}
 }
