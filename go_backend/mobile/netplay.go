@@ -633,3 +633,127 @@ func NetplayRosterJSON() string {
 	}
 	return string(b)
 }
+
+// Got Next (PROTOCOL.md 4.10)
+// The winner-stays line: anyone in the room joins with
+// NetplaySendGotNext, the host referee's session tracks the
+// authoritative order, and every client reads the same list
+// back through NetplayGotNextJSON. The host UI keeps the
+// room in sync by broadcasting whenever NetplayGotNextDirty
+// says the line moved.
+
+// NetplaySendGotNext joins the Got Next line (join true) or
+// leaves it (join false). Works for players and watchers.
+// Returns "" on success or the error text.
+func NetplaySendGotNext(join bool) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.SendGotNext(join); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// gotNextJSON is the wire shape NetplayGotNextJSON hands
+// the UI: the line in order, whether the local player is in
+// it, and their 1 based position (0 when not in line).
+type gotNextJSON struct {
+	Queue    []string `json:"queue"`
+	Mine     bool     `json:"mine"`
+	Position int      `json:"position"`
+}
+
+// NetplayGotNextJSON returns the Got Next line as JSON:
+// {"queue":["..."],"mine":bool,"position":N}. With no
+// session it returns the empty shape.
+func NetplayGotNextJSON() string {
+	out := gotNextJSON{Queue: []string{}}
+	if s := npActive(); s != nil {
+		queue := s.GotNextQueue()
+		out.Queue = queue
+		for i, name := range queue {
+			if name == npPlayerName && npPlayerName != "" {
+				out.Mine = true
+				out.Position = i + 1
+			}
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return `{"queue":[],"mine":false,"position":0}`
+	}
+	return string(b)
+}
+
+// NetplayGotNextDirty reports whether the host's line
+// changed since the last broadcast. Only meaningful on the
+// host client; everywhere else it is false.
+func NetplayGotNextDirty() bool {
+	if s := npActive(); s != nil {
+		return s.GotNextDirty()
+	}
+	return false
+}
+
+// NetplayBroadcastGotNextQueue sends the host's line order
+// to the room. Returns "" on success or the error text;
+// only the host client may broadcast.
+func NetplayBroadcastGotNextQueue() string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.BroadcastGotNextQueue(); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// NetplayNoteSeatTaken tells the session that name now
+// holds a seat, so they come off the Got Next line. The
+// host UI calls it right after a seat assignment goes out.
+// Returns "" on success or the error text.
+func NetplayNoteSeatTaken(name string) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	s.NoteSeatTaken(name)
+	return ""
+}
+
+// Tournament naming (PROTOCOL.md section 8)
+// A hosted room can run under a tournament name the host
+// picked on the Online screen. The host client broadcasts
+// it with NetplaySendTournamentName so the guest's room and
+// every watcher learn it; everyone reads it back through
+// NetplayTournamentName. The host client also reports the
+// room's results to the server under this name; the name's
+// trip around the room is display state only.
+
+// NetplaySendTournamentName broadcasts the room's
+// tournament name. Returns "" on success or the error
+// text; only the host client may send it, and watch and
+// room-less callers hear so.
+func NetplaySendTournamentName(name string) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.SendTournamentName(name); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// NetplayTournamentName returns the room's tournament name
+// as this client knows it, or "" for a casual room (or one
+// whose host never named it). Safe to poll from any screen.
+func NetplayTournamentName() string {
+	if s := npActive(); s != nil {
+		return s.TournamentName()
+	}
+	return ""
+}
