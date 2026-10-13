@@ -310,6 +310,14 @@ func TestCDROMDMAGate(t *testing.T) {
 	m.Bus.Write8(0x1F801801, 0x02) // Setloc
 	m.Bus.Read8(0x1F801801)        // drain response
 	m.Bus.Write8(0x1F801801, 0x06) // ReadN
+	// PS1-3 timing reconciliation: the full CD
+	// controller delivers the first sector only after
+	// its modeled settle delay plus one sector period
+	// (3,000,000 + 451,584 cycles from a stopped
+	// state), driven by the machine clock. Run the
+	// machine past that point; the content assertions
+	// below are unchanged from PS1-2.
+	m.RunCycles(3_600_000)
 	if m.CD.DataLen() != 2048 {
 		t.Fatalf("CD data FIFO = %d bytes, want 2048", m.CD.DataLen())
 	}
