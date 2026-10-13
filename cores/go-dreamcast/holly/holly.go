@@ -51,14 +51,17 @@ const (
 	EvtOpaqueModDone   = 8  // TA opaque modifier list transfer finished
 	EvtTransDone       = 9  // TA translucent list transfer finished
 	EvtTransModDone    = 10 // TA translucent modifier list transfer finished
-	EvtMapleDMADone    = 12 // Maple DMA transfer finished
-	EvtAICADMADone     = 15 // G2 AICA DMA transfer finished
-	// EvtPVRDMADone keeps the value DC-2 assigned. The published
-	// event table puts PVR DMA end at bit 11 and channel-2 DMA
-	// end at bit 19; nothing raises this event yet (there is no
-	// PVR DMA), so the constant is documentation only for now.
-	EvtPVRDMADone = 19 // PVR DMA finished (no DMA this slice)
-	EvtPunchDone  = 21 // TA punchthrough list transfer finished
+	// EvtPVRDMADone is bit 11 per the published event table.
+	// DC-2 and DC-3 carried the channel-2 DMA end value 19
+	// here by mistake; nothing in the module ever raised or
+	// tested the constant (a module-wide grep at DC-4 time
+	// found this declaration as its only use), so DC-4 fixes
+	// it to the documented value. Bit 19 is channel-2 DMA end,
+	// an event this core does not model.
+	EvtPVRDMADone   = 11 // PVR DMA finished (no PVR DMA modeled yet)
+	EvtMapleDMADone = 12 // Maple DMA transfer finished
+	EvtAICADMADone  = 15 // G2 AICA DMA transfer finished
+	EvtPunchDone    = 21 // TA punchthrough list transfer finished
 )
 
 // ASIC event bit indices in the error bank (the published table
