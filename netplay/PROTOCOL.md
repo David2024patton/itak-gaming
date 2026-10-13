@@ -793,3 +793,109 @@ names are public board names, and a ping claims nothing beyond
 `friends.json` next to the stats file) written atomically (temp
 file + rename) at most every 10 s when changed, and once more at
 shutdown.
+
+## 8. Tournament results
+
+The same server binary also keeps **tournament results**: a
+win/loss board for host-run tournaments, completely separate
+from the playtime leaderboard (section 6). Nothing here counts
+seconds or plays; a row exists because a match was reported.
+
+**The honor system:** when a tournament match ends, the HOST's
+client reports the result, and when a tournament finishes, the
+host reports its champion. The server trusts the report; there
+is no server-side referee in this version, and the UI says so.
+Names are the raw player names, exactly as on the other boards:
+trimmed of surrounding whitespace, stripped of control
+characters, max 40 characters. A tournament name is max 80
+characters, a game title max 120.
+
+### `POST /matches/report`
+
+```json
+{ "tournament": "Friday Night Fights",
+  "game": "Mortal Kombat (USA).md",
+  "winner": "David", "loser": "Brother", "host": "David",
+  "winnerDisplay": "David P.", "winnerRegion": "KY",
+  "loserDisplay": "Brother P.", "loserRegion": "MO" }
+```
+
+Records one finished match: the winner gains a win, the loser
+a loss, both gain a match, both are stamped with the tournament
+and game as their most recent event, and the match joins the
+recent feed with a server timestamp.
+
+- `tournament`, `winner`, `loser`, and `host` are required and
+  must be non-empty after cleaning; the winner and loser must
+  be different players. `game` may be empty.
+- The four identity fields are optional (display max 60
+  characters, region max 40). A report that carries a display
+  name for a player replaces the identity stored on that
+  player's tournament record; a report that carries none leaves
+  the stored identity alone (latest identity wins, the same
+  rule as section 6).
+- **204** on success; **400** on a malformed or oversized
+  (> 16 KB) body, an unknown field, or a validation failure.
+  A rejected report records nothing.
+
+### `POST /matches/champion`
+
+```json
+{ "tournament": "Friday Night Fights", "champion": "David",
+  "host": "David" }
+```
+
+Records that a player won a tournament outright: their
+`tournamentsWon` count rises by one and the tournament becomes
+their latest title. The champion's record is created when they
+have never played a reported match. Optional identity extras
+(`championDisplay`, `championRegion`) follow the same rules as
+a match report's. A champion report is not a match: it does
+not touch the recent feed. **204** on success; **400** on a
+malformed body or an empty/invalid field.
+
+### `GET /matches/leaderboard`
+
+Returns the tournament board, at most 100 players:
+
+```json
+{ "players": [
+  { "name": "David", "display": "David P.", "region": "KY",
+    "wins": 12, "losses": 3, "matches": 15,
+    "tournamentsWon": 2,
+    "lastTournament": "Friday Night Fights",
+    "lastGame": "Mortal Kombat (USA).md",
+    "lastTitle": "Friday Night Fights",
+    "lastPlayed": 1791772800000 }
+] }
+```
+
+- Ranking: tournaments won descending, then wins descending,
+  then matches descending, then name ascending.
+- `display` and `region` come from the player's own match and
+  champion reports; when no report ever carried an identity for
+  the name, the playtime leaderboard's identity for that name
+  fills in (section 6), so a known player is not anonymous here
+  just because a host's client sent no identity.
+
+### `GET /matches/recent`
+
+Returns the last 20 reported matches, newest first:
+
+```json
+{ "recent": [
+  { "tournament": "Friday Night Fights",
+    "game": "Mortal Kombat (USA).md",
+    "winner": "David", "loser": "Brother",
+    "at": 1791772800000 }
+] }
+```
+
+`at` is the server's record time in unix milliseconds. The
+store keeps the last 50 reported matches; the feed serves 20.
+
+**Storage:** in memory, persisted to a JSON file (the
+`-matchesfile` flag, else `ITAK_MATCHES_FILE`, else a
+`matches.json` next to the stats file) written atomically (temp
+file + rename) at most every 10 s when changed, and once more
+at shutdown.
