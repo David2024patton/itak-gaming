@@ -2,13 +2,14 @@
 // list processor, the memory bus and the UMD reader into the machine the
 // rest of the project builds on.
 //
-// Slice PSP-2 state: the CPU and VFPU execute for real, and display lists
-// submitted through SubmitDisplayList are executed synchronously by the
-// GE into VRAM, which Framebuffer then presents. There is still no kernel
-// HLE, so LoadISO only mounts and inspects the disc image; nothing boots
-// from it in this slice. PSP software is an operating environment, and the
-// eventual game path is HLE of the PSP kernel in PSP-3, not low-level
-// boot of Sony code.
+// Slice PSP-3 state: LoadExecutable boots an ELF or PRX through the HLE
+// kernel in the kernel package (threads, sync objects, the published
+// HLE library subset, a virtual file system over the UMD image and an
+// in-memory Memory Stick). The PSP-1/2 direct path stays available
+// when no executable is loaded: display lists submitted through
+// SubmitDisplayList execute synchronously through the GE. Save states
+// are version 2 without a kernel and version 3 with one; the two do
+// not mix (see Deserialize).
 package system
 
 import (
@@ -19,6 +20,8 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-psp/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-psp/chips/allegrex"
 	"github.com/davidpatton/itak-gaming/cores/go-psp/ge"
+	"github.com/davidpatton/itak-gaming/cores/go-psp/kernel"
+	"github.com/davidpatton/itak-gaming/cores/go-psp/load"
 	"github.com/davidpatton/itak-gaming/cores/go-psp/umd"
 )
 
@@ -33,10 +36,16 @@ const (
 // about 59.94 Hz; 60 is the family convention for this skeleton.
 const FrameCycles = 3700000
 
-// stateVersion tags the serialized layout. It must change whenever the
-// layout changes. Version 2 (PSP-2) appends the GE state block and the
+// stateVersion tags the serialized layout of a machine without a
+// kernel. Version 2 (PSP-2) appends the GE state block and the
 // GE-active flag, and the CPU block grew to include the VFPU state.
+// Version 3 (PSP-3) is the kernel mode layout: the version 2 body
+// followed by the serialized kernel blob. A version 2 state loads
+// only into a machine that has not booted an executable, and a
+// version 3 state only makes sense with its kernel; both rules are
+// enforced in Deserialize.
 const stateVersion = 2
+const stateVersionKernel = 3
 
 // PSP controller button bits (sceCtrl masks).
 const (
@@ -73,6 +82,10 @@ type Machine struct {
 	analogY     byte
 	cycles      uint64
 	geActive    bool // a display list was submitted; Framebuffer presents the GE
+
+	kern       *kernel.Kernel // non-nil in kernel mode (after LoadExecutable)
+	kernelMode bool
+	msFiles    map[string][]byte
 }
 
 // New returns a machine with zeroed memory and the CPU parked at the
@@ -122,6 +135,81 @@ func (m *Machine) LoadISO(path string) error {
 // ISO returns the mounted disc image, or nil.
 func (m *Machine) ISO() *umd.ISO {
 	return m.iso
+}
+
+// --- Kernel mode (PSP-3) ---
+
+// LoadExecutable boots an ELF (ET_EXEC / ET_SCE_EXEC) or PRX
+// (ET_SCE_REL) image through the HLE kernel: the machine resets,
+// the module loads into the user partition, and its main thread is
+// created ready to run on the next RunFrame. Loading an executable
+// replaces any previously running program.
+func (m *Machine) LoadExecutable(data []byte) error {
+	m.Bus = bus.New()
+	m.GE = ge.New(m.Bus)
+	m.CPU = allegrex.New(m.Bus)
+	m.cycles = 0
+	m.geActive = false
+	for i := range m.framebuffer {
+		m.framebuffer[i] = 0xFF000000
+	}
+	k := kernel.New(m)
+	if err := k.LoadModule(data); err != nil {
+		return err
+	}
+	m.kern = k
+	m.kernelMode = true
+	return nil
+}
+
+// KernelMode reports whether an executable has been booted.
+func (m *Machine) KernelMode() bool { return m.kernelMode }
+
+// Kernel returns the HLE kernel, or nil outside kernel mode.
+func (m *Machine) Kernel() *kernel.Kernel { return m.kern }
+
+// Exited reports whether the guest program has exited (through
+// sceKernelExitGame or by every thread dying).
+func (m *Machine) Exited() bool {
+	return m.kernelMode && m.kern.Exited()
+}
+
+// ConsoleOutput returns everything the guest has written to the
+// kernel console so far (empty outside kernel mode).
+func (m *Machine) ConsoleOutput() string {
+	if !m.kernelMode {
+		return ""
+	}
+	return m.kern.ConsoleText()
+}
+
+// SetMemoryStickFiles installs the in-memory ms0: store the
+// kernel's file system serves. Keys are full guest paths
+// ("ms0:/SAVEDATA/x.bin"); writes through sceIo go to the same map.
+func (m *Machine) SetMemoryStickFiles(files map[string][]byte) {
+	m.msFiles = files
+}
+
+// MemoryStickFiles returns the ms0: store (kernel.Host).
+func (m *Machine) MemoryStickFiles() map[string][]byte { return m.msFiles }
+
+// The kernel.Host implementation.
+
+var _ kernel.Host = (*Machine)(nil)
+
+// Memory returns the bus as the loader's memory (kernel.Host).
+func (m *Machine) Memory() load.Memory { return m.Bus }
+
+// SharedCPU returns the shared Allegrex (kernel.Host).
+func (m *Machine) SharedCPU() *allegrex.CPU { return m.CPU }
+
+// PresentFrameBuffer routes a guest framebuffer selection to the
+// GE display buffer and marks the GE as the presented source
+// (kernel.Host; format codes are the GE codes 0=5650, 1=5551,
+// 2=4444, 3=8888).
+func (m *Machine) PresentFrameBuffer(addr uint32, width, format int) {
+	m.GE.SetDisplayBuffer(addr, width, format)
+	m.geActive = true
 }
 
 // GameTitle returns the TITLE field of the mounted disc's PARAM.SFO,
@@ -221,8 +309,12 @@ func (m *Machine) Analog() (x, y byte) {
 }
 
 // RunCycles advances the machine until at least n CPU cycles have been
-// consumed.
+// consumed. In kernel mode the cycles go through the scheduler.
 func (m *Machine) RunCycles(n int) {
+	if m.kernelMode {
+		m.kern.Run(uint64(n))
+		return
+	}
 	spent := 0
 	for spent < n {
 		c := m.CPU.Step()
@@ -234,41 +326,65 @@ func (m *Machine) RunCycles(n int) {
 	}
 }
 
-// RunFrame advances one frame budget.
+// RunFrame advances one frame budget. In kernel mode the budget is
+// consumed across threads by the scheduler, then the vblank is
+// notified (waking sceDisplayWaitVblankStart waiters for the next
+// frame). Once the guest has exited, RunFrame is a no-op.
 func (m *Machine) RunFrame() {
+	if m.kernelMode {
+		if m.kern.Exited() {
+			return
+		}
+		m.kern.Run(FrameCycles)
+		m.kern.NotifyVblank()
+		return
+	}
 	m.RunCycles(FrameCycles)
 }
 
 // TotalCycles returns the total cycles executed since New. It is part of
 // the serialized state, so a restored machine continues the count.
 func (m *Machine) TotalCycles() uint64 {
+	if m.kernelMode {
+		return m.kern.Cycles()
+	}
 	return m.cycles
 }
 
 // StateSize returns the exact serialized size in bytes for the current
 // format and the machine's current GE state (the GE block is variable
-// length because the stencil plane is optional).
+// length because the stencil plane is optional). Kernel mode states
+// (version 3) add the length prefixed kernel blob.
 func (m *Machine) StateSize() int {
 	cpuLen := len(m.CPU.Serialize())
 	geLen := len(m.GE.Serialize())
-	return 1 + 4 + cpuLen + bus.RAMSize + bus.VRAMSize + bus.ScratchpadSize + 4 + 2 + 2 + 8 + 4 + 4 + geLen
+	n := 1 + 4 + cpuLen + bus.RAMSize + bus.VRAMSize + bus.ScratchpadSize + 4 + 2 + 2 + 8 + 4 + 4 + geLen
+	if m.kernelMode {
+		n += 4 + len(m.kern.Serialize())
+	}
+	return n
 }
 
 // Serialize captures the full machine state: CPU (including the VFPU),
 // RAM, VRAM, scratchpad, input, the cycle counter, and the GE. The
 // layout is:
 //
-//	[0]      state version byte
+//	[0]      state version byte (2, or 3 in kernel mode)
 //	[1:5]    uint32 LE CPU state length
 //	[5:...]  CPU state, then RAM, VRAM, scratchpad,
 //	         buttons uint32, analog X, analog Y, 2 pad bytes,
 //	         total cycles uint64, GE-active uint32,
 //	         uint32 LE GE state length, GE state
+//	         (version 3 only: uint32 LE kernel length, kernel state)
 func (m *Machine) Serialize() []byte {
 	cpuState := m.CPU.Serialize()
 	geState := m.GE.Serialize()
 	out := make([]byte, 0, m.StateSize())
-	out = append(out, stateVersion)
+	version := byte(stateVersion)
+	if m.kernelMode {
+		version = stateVersionKernel
+	}
+	out = append(out, version)
 	var tmp [8]byte
 	binary.LittleEndian.PutUint32(tmp[:4], uint32(len(cpuState)))
 	out = append(out, tmp[:4]...)
@@ -279,7 +395,10 @@ func (m *Machine) Serialize() []byte {
 	binary.LittleEndian.PutUint32(tmp[:4], m.buttons)
 	out = append(out, tmp[:4]...)
 	out = append(out, m.analogX, m.analogY, 0, 0)
-	binary.LittleEndian.PutUint64(tmp[:8], m.cycles)
+	// In kernel mode the authoritative cycle count is the kernel's
+	// (m.cycles is not advanced there); TotalCycles reports it in
+	// both modes, and Deserialize adopts it back the same way.
+	binary.LittleEndian.PutUint64(tmp[:8], m.TotalCycles())
 	out = append(out, tmp[:8]...)
 	geActive := uint32(0)
 	if m.geActive {
@@ -290,19 +409,35 @@ func (m *Machine) Serialize() []byte {
 	binary.LittleEndian.PutUint32(tmp[:4], uint32(len(geState)))
 	out = append(out, tmp[:4]...)
 	out = append(out, geState...)
+	if m.kernelMode {
+		kernelState := m.kern.Serialize()
+		binary.LittleEndian.PutUint32(tmp[:4], uint32(len(kernelState)))
+		out = append(out, tmp[:4]...)
+		out = append(out, kernelState...)
+	}
 	return out
 }
 
 // Deserialize restores a state produced by Serialize. The bytes are
 // parsed field by field and must be consumed exactly; anything else is
-// an error and leaves the machine untouched.
+// an error and leaves the machine untouched. Version rules: a
+// version 2 state carries no kernel and loads only into a machine
+// that has not booted an executable; loading one into a kernel mode
+// machine is an error (the kernel's threads and objects cannot be
+// reconstructed from it). A version 3 state restores its kernel and
+// puts the machine in kernel mode. Version 1 is rejected.
 func (m *Machine) Deserialize(data []byte) error {
 	if len(data) < 1+4 {
 		return errors.New("system: state too short")
 	}
-	if data[0] != stateVersion {
-		return fmt.Errorf("system: state version %d, want %d", data[0], stateVersion)
+	version := data[0]
+	if version != stateVersion && version != stateVersionKernel {
+		return fmt.Errorf("system: state version %d, want %d or %d", version, stateVersion, stateVersionKernel)
 	}
+	if version == stateVersion && m.kernelMode {
+		return errors.New("system: version 2 state has no kernel state; refusing to load into a kernel mode machine")
+	}
+	kernelMode := version == stateVersionKernel
 	off := 1
 	cpuLen := int(binary.LittleEndian.Uint32(data[off:]))
 	off += 4
@@ -331,10 +466,25 @@ func (m *Machine) Deserialize(data []byte) error {
 	off += 4
 	geLen := int(binary.LittleEndian.Uint32(data[off:]))
 	off += 4
-	if len(data) != off+geLen {
-		return fmt.Errorf("system: state size %d, want %d", len(data), off+geLen)
+	if len(data) < off+geLen {
+		return fmt.Errorf("system: state size %d too short for GE block", len(data))
 	}
 	geState := data[off : off+geLen]
+	off += geLen
+	var kernelState []byte
+	if kernelMode {
+		if len(data) < off+4 {
+			return errors.New("system: version 3 state missing kernel block")
+		}
+		kernelLen := int(binary.LittleEndian.Uint32(data[off:]))
+		off += 4
+		if len(data) != off+kernelLen {
+			return fmt.Errorf("system: state size %d, want %d", len(data), off+kernelLen)
+		}
+		kernelState = data[off : off+kernelLen]
+	} else if len(data) != off {
+		return fmt.Errorf("system: state size %d, want %d", len(data), off)
+	}
 
 	if err := m.CPU.Deserialize(cpuState); err != nil {
 		return err
@@ -350,5 +500,14 @@ func (m *Machine) Deserialize(data []byte) error {
 	m.analogY = analogY
 	m.cycles = cycles
 	m.geActive = geActive
+	if kernelMode {
+		k := kernel.New(m)
+		if err := k.Deserialize(kernelState); err != nil {
+			return err
+		}
+		m.kern = k
+		m.kernelMode = true
+		m.cycles = k.Cycles()
+	}
 	return nil
 }
