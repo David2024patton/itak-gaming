@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/davidpatton/itak-gaming/netplay/internal/appdist"
+	"github.com/davidpatton/itak-gaming/netplay/internal/friends"
 	"github.com/davidpatton/itak-gaming/netplay/internal/lobby"
 	"github.com/davidpatton/itak-gaming/netplay/internal/server"
 	"github.com/davidpatton/itak-gaming/netplay/internal/stats"
@@ -41,12 +43,29 @@ func defaultStatsFile() string {
 	return "./stats.json"
 }
 
+// defaultFriendsFile is where friends lists persist: the
+// ITAK_FRIENDS_FILE environment variable wins, else a friends.json
+// next to the stats file, so both state files live in the same
+// directory (in production, the same mounted volume).
+func defaultFriendsFile(statsFile string) string {
+	if p := os.Getenv("ITAK_FRIENDS_FILE"); p != "" {
+		return p
+	}
+	return filepath.Join(filepath.Dir(statsFile), "friends.json")
+}
+
 func main() {
 	addr := flag.String("addr", ":8790", "listen address (host:port)")
 	sweepInterval := flag.Duration("sweep", 15*time.Second, "lobby reaper interval")
 	statsFile := flag.String("statsfile", defaultStatsFile(), "path to the global leaderboard stats file")
+	friendsFile := flag.String("friendsfile", "", "path to the friends list file (default: friends.json next to the stats file)")
 	appDir := flag.String("appdir", defaultAppDir(), "directory with published app builds (version.json + APK) for self-update; empty disables")
 	flag.Parse()
+
+	friendsPath := *friendsFile
+	if friendsPath == "" {
+		friendsPath = defaultFriendsFile(*statsFile)
+	}
 
 	logger := log.New(os.Stdout, "lobbyserver ", log.LstdFlags)
 	store := lobby.NewMemoryStore()
@@ -58,15 +77,23 @@ func main() {
 	statsStore := stats.Open(*statsFile, logger)
 	statsHandler := stats.NewHandler(statsStore, logger)
 
+	// Friends lists: same binary, same port. Players follow other
+	// players by name; reads enrich each friend with the identity
+	// the leaderboard knows and with live lobby presence.
+	friendsStore := friends.Open(friendsPath, logger)
+	friendsHandler := friends.NewHandler(friendsStore, statsStore, store, logger)
+
 	// Reaper: expired lobbies are collected in the background so the
 	// request path never pays for cleanup.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go reapLoop(ctx, store, *sweepInterval, logger)
 	go statsStore.SaveLoop(ctx, 10*time.Second)
+	go friendsStore.SaveLoop(ctx, 10*time.Second)
 
 	mux := http.NewServeMux()
 	statsHandler.Register(mux)
+	friendsHandler.Register(mux)
 	if *appDir != "" {
 		appdist.New(*appDir, logger).Register(mux)
 		logger.Printf("app updates served from %s", *appDir)
