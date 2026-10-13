@@ -221,7 +221,7 @@ const List<SystemInfo> kSystems = [
     name: 'Nintendo',
     tagline: 'NES · 1985',
     color: Color(0xFFE53935),
-    core: 'libfceumm.so',
+    core: 'libgo_nes.so',
     dir: 'NES',
     exts: ['.nes'],
     thumbRepo: 'Nintendo_-_Nintendo_Entertainment_System',
