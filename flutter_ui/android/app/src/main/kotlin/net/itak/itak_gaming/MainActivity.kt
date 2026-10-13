@@ -451,6 +451,25 @@ class MainActivity : FlutterActivity() {
                             call.argument<String>("npServer")?.let {
                                 intent.putExtra(EmulatorActivity.EXTRA_NP_SERVER, it)
                             }
+                            // Optional watch mode (spectator from the
+                            // Online screen): mode/server/lobby/token
+                            // ride the same extras the netplay launch
+                            // uses, plus the watcher's player name.
+                            call.argument<String>("mode")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_MODE, it)
+                            }
+                            call.argument<String>("serverBase")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_SERVER, it)
+                            }
+                            call.argument<String>("lobbyId")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_LOBBY, it)
+                            }
+                            call.argument<String>("token")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_TOKEN, it)
+                            }
+                            call.argument<String>("playerName")?.let {
+                                intent.putExtra(EmulatorActivity.EXTRA_NP_PLAYER, it)
+                            }
                             startActivity(intent)
                             result.success(true)
                         }
