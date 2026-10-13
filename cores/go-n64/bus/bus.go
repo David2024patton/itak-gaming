@@ -11,15 +11,19 @@
 // audio interface (ai package); the RSP's own DP register
 // window (CP0 8..15) routes to the same RDP. The PI
 // implements its DMA engine for real, including the
-// completion interrupt through MI. PIF boot support is
-// the remaining storage-only device (N64-4).
+// completion interrupt through MI. Since N64-4 the PIF
+// RAM window and SI page route to the real PIF (pif
+// package), and the PI's second domain (0x08000000)
+// reaches the cartridge save device (cart package).
 package bus
 
 import (
 	"encoding/binary"
 
 	"github.com/davidpatton/itak-gaming/cores/go-n64/ai"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/chips/rsp"
+	"github.com/davidpatton/itak-gaming/cores/go-n64/pif"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/rdp"
 	"github.com/davidpatton/itak-gaming/cores/go-n64/vi"
 )
@@ -65,9 +69,17 @@ type Memory struct {
 	piConfig   [0x34]byte // BSD domain configuration registers
 
 	riRegs [0x20]byte
-	siRegs [0x20]byte
 	rdRegs [0x40]byte // RDRAM registers
-	pifRAM [0x40]byte
+
+	// PIF is the peripheral interface behind the PIF RAM
+	// window and the SI page. Saves is the cartridge
+	// save device behind PI domain 2 (0x08000000).
+	PIF   *pif.PIF
+	Saves *cart.SaveStore
+
+	siDramAddr uint32
+	siPIFAddr  uint32
+	siStatus   uint32 // SI_STATUS: only the interrupt bit (12) is modeled set
 
 	// OnMIChange, when set, is called whenever the MI
 	// interrupt line level may have changed. The system
@@ -88,6 +100,9 @@ func New(rom []byte, expansion bool) *Memory {
 	m.RSP.OnInterrupt = func(active bool) {
 		m.SetMI(MIIntrSP, active)
 	}
+	m.PIF = pif.New()
+	m.Saves = cart.NewSaveStore(cart.SaveNone)
+	m.PIF.AttachCart(m.Saves)
 	m.wireDevices()
 	return m
 }
@@ -208,11 +223,14 @@ func (m *Memory) Read(addr uint32, size int) uint64 {
 	case addr >= 0x04700000 && addr < 0x04700020: // RI
 		return readBytes(m.riRegs[:], addr-0x04700000, size)
 	case addr >= 0x04800000 && addr < 0x04800020: // SI
-		return readBytes(m.siRegs[:], addr-0x04800000, size)
+		off := addr - 0x04800000
+		return extract32(m.readSI(off&^3), off&3, size)
+	case addr >= 0x08000000 && addr < 0x08020000: // PI domain 2: save device
+		return m.saveRead(addr-0x08000000, size)
 	case addr >= 0x10000000 && addr < 0x1FC00000: // cartridge ROM
 		return m.romRead(addr-0x10000000, size)
 	case addr >= 0x1FC007C0 && addr < 0x1FC00800: // PIF RAM
-		return readBytes(m.pifRAM[:], addr-0x1FC007C0, size)
+		return readBytes(m.PIF.RAM[:], addr-0x1FC007C0, size)
 	}
 	return 0
 }
@@ -257,11 +275,16 @@ func (m *Memory) Write(addr uint32, size int, val uint64) {
 	case addr >= 0x04700000 && addr < 0x04700020: // RI
 		writeBytes(m.riRegs[:], addr-0x04700000, size, val)
 	case addr >= 0x04800000 && addr < 0x04800020: // SI
-		writeBytes(m.siRegs[:], addr-0x04800000, size, val)
+		if size == 4 {
+			m.writeSI(addr-0x04800000, uint32(val))
+		}
+	case addr >= 0x08000000 && addr < 0x08020000: // PI domain 2: save device
+		m.saveWrite(addr-0x08000000, size, val)
 	case addr >= 0x10000000 && addr < 0x1FC00000:
 		// Cartridge ROM is read-only on the bus.
 	case addr >= 0x1FC007C0 && addr < 0x1FC00800: // PIF RAM
-		writeBytes(m.pifRAM[:], addr-0x1FC007C0, size, val)
+		writeBytes(m.PIF.RAM[:], addr-0x1FC007C0, size, val)
+		m.PIF.AfterWrite()
 	}
 }
 
@@ -396,6 +419,9 @@ func (m *Memory) writePI(off uint32, val uint32, size int) {
 
 // piDMA performs a PI transfer of (val&0xFFFFFF)+1 bytes,
 // rounded up to an even length as the hardware does.
+// Transfers whose cartridge address falls in PI domain 2
+// (0x08000000) go to the cartridge save device instead
+// of the ROM window.
 func (m *Memory) piDMA(val uint32, fromCart bool) {
 	length := int(val&0xFFFFFF) + 1
 	if length&1 != 0 {
@@ -403,6 +429,12 @@ func (m *Memory) piDMA(val uint32, fromCart bool) {
 	}
 	dram := m.piDramAddr & (uint32(len(m.RDRAM)) - 1)
 	cart := m.piCartAddr
+	if cart >= 0x08000000 && cart < 0x08020000 {
+		m.piSaveDMA(cart-0x08000000, dram, length, fromCart)
+		m.miIntr |= MIIntrPI
+		m.fireMI()
+		return
+	}
 	if cart >= 0x10000000 {
 		cart -= 0x10000000
 	}
@@ -416,6 +448,138 @@ func (m *Memory) piDMA(val uint32, fromCart bool) {
 	}
 	m.miIntr |= MIIntrPI
 	m.fireMI()
+}
+
+// piSaveDMA moves bytes between RDRAM and the save
+// device window at the given window offset.
+func (m *Memory) piSaveDMA(off uint32, dram uint32, length int, fromCart bool) {
+	for i := 0; i < length; i++ {
+		d := (int(dram) + i) & (len(m.RDRAM) - 1)
+		if fromCart {
+			m.RDRAM[d] = m.saveReadByte(off + uint32(i))
+		} else {
+			m.saveWriteByte(off+uint32(i), m.RDRAM[d])
+		}
+	}
+}
+
+// saveReadByte reads one byte of the domain 2 window:
+// SRAM is a direct store; Flash answers through its
+// command state machine; with no PI-side device fitted
+// the window reads as 0.
+func (m *Memory) saveReadByte(off uint32) byte {
+	switch m.Saves.Type {
+	case cart.SaveSRAM:
+		return m.Saves.SRAM[off&(cart.SRAMSize-1)]
+	case cart.SaveFlash:
+		return m.Saves.Flash.LoadByte(off)
+	}
+	return 0
+}
+
+// saveWriteByte writes one byte of the domain 2 window
+// (data path only; Flash commands arrive as 32-bit CPU
+// writes through saveWrite).
+func (m *Memory) saveWriteByte(off uint32, v byte) {
+	switch m.Saves.Type {
+	case cart.SaveSRAM:
+		m.Saves.SRAM[off&(cart.SRAMSize-1)] = v
+	case cart.SaveFlash:
+		m.Saves.Flash.StoreByte(off, v)
+	}
+}
+
+// saveRead composes a big-endian read from the window.
+func (m *Memory) saveRead(off uint32, size int) uint64 {
+	var v uint64
+	for i := 0; i < size; i++ {
+		v = v<<8 | uint64(m.saveReadByte(off+uint32(i)))
+	}
+	return v
+}
+
+// saveWrite handles a direct CPU write to the window.
+// With a Flash device fitted, a 32-bit write whose top
+// byte is a command byte is a Flash command (the real
+// chip latches commands exactly this way); other writes
+// are data.
+func (m *Memory) saveWrite(off uint32, size int, val uint64) {
+	if m.Saves.Type == cart.SaveFlash {
+		m.Saves.Flash.Write(off, size, val)
+		return
+	}
+	for i := 0; i < size; i++ {
+		m.saveWriteByte(off+uint32(i), byte(val>>(8*uint(size-1-i))))
+	}
+}
+
+// SI register offsets (page base 0x04800000).
+const (
+	siRegDramAddr  = 0x00
+	siRegPIFAddrRD = 0x04 // write: start a PIF to RDRAM DMA
+	siRegPIFAddrWR = 0x10 // write: start a RDRAM to PIF DMA
+	siRegStatus    = 0x1C
+	siStatusIntr   = 1 << 12
+)
+
+// readSI reads an SI register by offset.
+func (m *Memory) readSI(off uint32) uint32 {
+	switch off {
+	case siRegDramAddr:
+		return m.siDramAddr
+	case siRegPIFAddrRD, siRegPIFAddrWR:
+		return m.siPIFAddr
+	case siRegStatus:
+		return m.siStatus
+	}
+	return 0
+}
+
+// writeSI handles SI register writes. Writing either
+// PIF address register runs a fixed 64-byte DMA between
+// RDRAM and PIF RAM and raises the SI interrupt, as
+// documented: a read-side DMA first executes the parsed
+// Joybus frame in the PIF, a write-side DMA delivers
+// the new frame (and any other command byte bits) to
+// the PIF for parsing.
+func (m *Memory) writeSI(off uint32, val uint32) {
+	switch off {
+	case siRegDramAddr:
+		m.siDramAddr = val & 0xFFFFFF
+	case siRegPIFAddrRD:
+		m.siPIFAddr = val
+		m.PIF.Execute()
+		base := int(m.siDramAddr) & (len(m.RDRAM) - 1)
+		for i := 0; i < pif.RAMSize; i++ {
+			m.RDRAM[(base+i)&(len(m.RDRAM)-1)] = m.PIF.RAM[i]
+		}
+		m.siDMAComplete()
+	case siRegPIFAddrWR:
+		m.siPIFAddr = val
+		base := int(m.siDramAddr) & (len(m.RDRAM) - 1)
+		for i := 0; i < pif.RAMSize; i++ {
+			m.PIF.RAM[i] = m.RDRAM[(base+i)&(len(m.RDRAM)-1)]
+		}
+		m.PIF.AfterWrite()
+		m.siDMAComplete()
+	case siRegStatus:
+		// Any write clears the SI interrupt.
+		m.siStatus &^= siStatusIntr
+		m.SetMI(MIIntrSI, false)
+	}
+}
+
+func (m *Memory) siDMAComplete() {
+	m.siStatus |= siStatusIntr
+	m.SetMI(MIIntrSI, true)
+}
+
+// SIState returns the SI registers for save states.
+func (m *Memory) SIState() (dramAddr, status uint32) { return m.siDramAddr, m.siStatus }
+
+// RestoreSI sets the SI registers from a save state.
+func (m *Memory) RestoreSI(dramAddr, status uint32) {
+	m.siDramAddr, m.siStatus = dramAddr, status
 }
 
 // spByteAt reads one byte of the SP memory window;
@@ -446,4 +610,4 @@ func (m *Memory) SPMem() []byte {
 }
 
 // PIFRAM returns the PIF RAM backing store.
-func (m *Memory) PIFRAM() []byte { return m.pifRAM[:] }
+func (m *Memory) PIFRAM() []byte { return m.PIF.RAM[:] }
