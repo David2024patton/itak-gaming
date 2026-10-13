@@ -162,6 +162,12 @@ use any WebRTC stack for the direct channel; a raw UDP channel with an
 equivalent offer/answer exchange (endpoint addresses + a per-session
 key in the same fields) is equally valid.
 
+On the client side these envelopes are carried by the session layer
+(the same queue and cursor pattern as text chat, section 4.7), which
+caps SDP payloads at 32 KB and ICE candidates at 4 KB. A receiver
+drops any signaling envelope whose payload exceeds those caps rather
+than truncating it, because a cut SDP cannot be applied at all.
+
 ---
 
 ## 4. Lockstep session
