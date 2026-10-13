@@ -17,7 +17,10 @@ EmulatorActivity).
   leaderboard survives container replacement. Friends lists
   persist the same way: `ITAK_FRIENDS_FILE` sets the path, and
   when it is unset the server writes `friends.json` next to the
-  stats file, so the same `/data` volume holds both.
+  stats file, so the same `/data` volume holds both. Tournament
+  results persist the same way too: `ITAK_MATCHES_FILE` sets
+  the path, and when it is unset the server writes
+  `matches.json` next to the stats file.
 - Routing labels (Dokploy/Traefik, container joins the proxy
   network):
 
