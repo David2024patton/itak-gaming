@@ -90,6 +90,15 @@ type ymState struct {
 	timerBAcc uint32 // master clocks accumulated toward timer B expiry
 	egDiv     uint8  // envelope divider counter, ticks every 3 samples
 	prev27    uint8  // last register 0x27 value, for timer load edges
+	// genClock is the emulated time, in YM2612 master clocks, the
+	// render stream has reached: 144 clocks per native sample
+	// generated, counted from power-on. RenderYMTo compares write
+	// timestamps against it to decide how much pending span to
+	// render before a register change lands. Serialized: without
+	// it a restore could not tell rendered time from unrendered
+	// time and timestamped writes would skip or double-render a
+	// span around the save point.
+	genClock int64
 	// advLedger is the master clocks of timer time the system has
 	// already stepped through AdvanceClocks but the render loop has
 	// not yet accounted for. ymGenerate consumes it instead of
@@ -570,11 +579,21 @@ func (s *Sound) ymChannel(ch int, lfoSigned, lfoTri float64, lfoOn bool, acc *[2
 	}
 }
 
-// ymGenerate renders n native-rate stereo samples into s.fmBuf.
+// ymGenerate renders n native-rate stereo samples, appending
+// them to the pending stream in s.fmBuf after any samples already
+// rendered there by RenderYMTo (s.preRendered of them). Each sample
+// advances genClock by 144 master clocks; rendering in pieces, as
+// timestamped writes drive it, produces the same state evolution
+// as rendering the whole span at once, with register changes
+// landing at their true positions inside the span.
 func (s *Sound) ymGenerate(n int) {
-	need := 2 * n
+	start := s.preRendered
+	total := start + n
+	need := 2 * total
 	if cap(s.fmBuf) < need {
-		s.fmBuf = make([]float32, need)
+		grown := make([]float32, need)
+		copy(grown, s.fmBuf[:2*start])
+		s.fmBuf = grown
 	}
 	s.fmBuf = s.fmBuf[:need]
 
@@ -582,7 +601,7 @@ func (s *Sound) ymGenerate(n int) {
 	lfoOn := lfoReg&0x08 != 0
 	lfoInc := lfoIncTab[lfoReg&0x07]
 
-	for i := 0; i < n; i++ {
+	for i := start; i < total; i++ {
 		// Timer time for this native sample (144 master clocks):
 		// whatever the system already stepped through
 		// AdvanceClocks is consumed from the ledger instead of
@@ -624,4 +643,6 @@ func (s *Sound) ymGenerate(n int) {
 		s.fmBuf[2*i] = acc[0]
 		s.fmBuf[2*i+1] = acc[1]
 	}
+	s.preRendered = total
+	s.ym.genClock += int64(n) * 144
 }
