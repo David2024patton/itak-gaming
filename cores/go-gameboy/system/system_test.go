@@ -51,7 +51,7 @@ func TestSerialCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.RunMCycles(50)
+	s.RunMCycles(1100) // an internal-clock transfer takes 4096 dots
 	if s.Serial() != "H" {
 		t.Fatalf("Serial = %q, want %q", s.Serial(), "H")
 	}
@@ -65,9 +65,13 @@ func TestTimerInterrupt(t *testing.T) {
 	s.Write(regTMA, 0x42)
 	s.Write(regTIMA, 0xFF)
 	s.Write(regTAC, 0x05) // enable, 16 T-cycle period
-	s.RunMCycles(4)       // 16 T-cycles: exactly one tick, which overflows
+	s.RunMCycles(4)       // 16 T-cycles: the tick that overflows
+	if got := s.Read(regTIMA); got != 0x00 {
+		t.Fatalf("TIMA in the reload window = 0x%02X, want 0x00 (reload is delayed one M-cycle)", got)
+	}
+	s.RunMCycles(1) // the reload lands one M-cycle after the overflow
 	if got := s.Read(regTIMA); got != 0x42 {
-		t.Fatalf("TIMA after overflow = 0x%02X, want reload value 0x42", got)
+		t.Fatalf("TIMA after reload = 0x%02X, want reload value 0x42", got)
 	}
 	if s.Read(regIF)&0x04 == 0 {
 		t.Fatalf("timer interrupt not requested in IF")
