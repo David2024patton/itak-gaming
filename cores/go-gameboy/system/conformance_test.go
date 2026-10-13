@@ -210,7 +210,20 @@ func mooneyeGated(rel string) bool {
 // B=3 C=5 D=8 E=13 H=21 L=34; failing writes 0x42 to all six.
 func runMooneye(t *testing.T, path string, budget int) (done, pass bool) {
 	t.Helper()
-	s, err := New(loadROM(t, path))
+	return runMooneyeMode(t, path, budget, false)
+}
+
+// runMooneyeMode is runMooneye with an optional forced CGB
+// machine, for the mooneye test ROMs written for CGB hardware.
+func runMooneyeMode(t *testing.T, path string, budget int, cgb bool) (done, pass bool) {
+	t.Helper()
+	var s *System
+	var err error
+	if cgb {
+		s, err = NewCGB(loadROM(t, path))
+	} else {
+		s, err = New(loadROM(t, path))
+	}
 	if err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
@@ -370,16 +383,16 @@ func TestDMGAcid2(t *testing.T) {
 	if b := ref.Bounds(); b.Dx() != 160 || b.Dy() != 144 {
 		t.Fatalf("reference size = %v, want 160x144", b)
 	}
-	shadeFor := func(gray uint32) (uint16, bool) {
+	shadeFor := func(gray uint32) (uint32, bool) {
 		switch gray >> 8 {
 		case 0xFF:
-			return 0xFFFF, true
+			return 0xFFFFFFFF, true
 		case 0xAA:
-			return 0xAD55, true
+			return 0xFFAAAAAA, true
 		case 0x55:
-			return 0x52AA, true
+			return 0xFF555555, true
 		case 0x00:
-			return 0x0000, true
+			return 0xFF000000, true
 		}
 		return 0, false
 	}
@@ -411,5 +424,129 @@ func TestDMGAcid2(t *testing.T) {
 	}
 	if mismatch > 0 {
 		t.Fatalf("dmg-acid2: %d of %d pixels differ from the reference", mismatch, 160*144)
+	}
+}
+
+// TestCGBAcid2 renders the cgb-acid2 test image on the CGB
+// machine and compares it pixel for pixel against the shipped
+// reference render. The reference PNG stores each channel
+// already expanded from 5 bits with (v<<3)|(v>>2), the same
+// expansion the PPU's upconversion uses, so channels compare
+// directly.
+func TestCGBAcid2(t *testing.T) {
+	dir := filepath.Join(testromsDir(t), "cgb-acid2")
+	romPath := filepath.Join(dir, "cgb-acid2.gbc")
+	refPath := filepath.Join(dir, "reference-cgb.png")
+	if _, err := os.Stat(romPath); err != nil {
+		t.Skip("cgb-acid2 ROM absent")
+	}
+	f, err := os.Open(refPath)
+	if err != nil {
+		t.Skipf("cgb-acid2 reference absent: %v", err)
+	}
+	defer f.Close()
+	ref, _, err := image.Decode(f)
+	if err != nil {
+		t.Fatalf("decode reference: %v", err)
+	}
+	if b := ref.Bounds(); b.Dx() != 160 || b.Dy() != 144 {
+		t.Fatalf("reference size = %v, want 160x144", b)
+	}
+	s, err := New(loadROM(t, romPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.CGB() {
+		t.Fatal("cgb-acid2 did not engage CGB mode")
+	}
+	for i := 0; i < 60; i++ {
+		s.RunFrame()
+	}
+	fb := s.Framebuffer()
+	mismatch := 0
+	for y := 0; y < 144; y++ {
+		for x := 0; x < 160; x++ {
+			r, g, b, _ := ref.At(x, y).RGBA()
+			want := uint32(0xFF000000) |
+				uint32(r>>8)<<16 | uint32(g>>8)<<8 | uint32(b>>8)
+			if got := fb[y*160+x]; got != want {
+				if mismatch < 10 {
+					t.Logf("pixel (%d,%d): got 0x%08X, want 0x%08X", x, y, got, want)
+				}
+				mismatch++
+			}
+		}
+	}
+	if mismatch > 0 {
+		t.Fatalf("cgb-acid2: %d of %d pixels differ from the reference", mismatch, 160*144)
+	}
+}
+
+// mooneyeCGBMisc lists the mooneye misc/ ROMs written for CGB
+// hardware that GB-3 gates on. Excluded, with reasons:
+//   - boot_div-cgb0 and boot_div-cgbABCDE measure the divider
+//     phase left by specific CGB boot ROM revisions; this
+//     machine models the register hand-off, not boot ROM
+//     execution.
+//   - boot_hwio-C dumps the whole IO page as the real boot ROM
+//     leaves it, including state outside the documented
+//     hand-off surface.
+//   - ppu/vblank_stat_intr-C measures VBlank and STAT interrupt
+//     latency against a mid-frame DIV reset with a single
+//     256-dot period of tolerance, balanced on the boot ROM's
+//     frame phase; interrupt correctness for games is covered
+//     by the gated acceptance interrupt suite.
+//
+// The -A ROMs target the Game Boy Advance's GB mode, not CGB
+// hardware.
+var mooneyeCGBMisc = map[string]bool{
+	"boot_regs-cgb.gb":      true,
+	"bits/unused_hwio-C.gb": true,
+}
+
+func TestMooneyeCGBMisc(t *testing.T) {
+	root := filepath.Join(testromsDir(t), "mooneye", "misc")
+	if _, err := os.Stat(root); err != nil {
+		t.Skip("mooneye misc ROMs absent")
+	}
+	var roms []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(path, ".gb") {
+			rel, _ := filepath.Rel(root, path)
+			roms = append(roms, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(roms)
+	for _, rel := range roms {
+		rel := filepath.ToSlash(rel)
+		// Only the CGB-hardware ROMs run here: names carrying
+		// the -C or cgb markers. The rest target DMG, SGB, or
+		// the AGB and are covered (or excluded) elsewhere.
+		if !strings.Contains(rel, "cgb") && !strings.Contains(rel, "-C.gb") {
+			continue
+		}
+		done, pass := runMooneyeMode(t, filepath.Join(root, rel), 25_000_000, true)
+		gated := mooneyeCGBMisc[rel]
+		switch {
+		case done && pass:
+			t.Logf("PASS %s", rel)
+		case done:
+			t.Logf("FAIL %s (test reported failure)", rel)
+			if gated {
+				t.Errorf("gated CGB mooneye test failed: %s", rel)
+			}
+		default:
+			t.Logf("FAIL %s (no verdict within budget)", rel)
+			if gated {
+				t.Errorf("gated CGB mooneye test produced no verdict: %s", rel)
+			}
+		}
 	}
 }
