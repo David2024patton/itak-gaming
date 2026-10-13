@@ -1,25 +1,30 @@
 // Package holly is the Dreamcast system interrupt controller: the
-// SB_ISTNRM, SB_ISTERR, and SB_ISTEXT status registers and the
+// SB_ISTNRM, SB_ISTEXT, and SB_ISTERR status registers and the
 // SB_IML2LVL, SB_IML4LVL, and SB_IML6LVL per-source level mask
 // registers at 0xA05F6900, per the published Holly documentation.
 //
-// Three source banks collect events: normal (ISTNRM), error
-// (ISTERR), and external (ISTEXT). Each bank has one mask word per
-// delivery level (2, 4, 6); a set source bit whose mask bit is set
-// at any level makes that bank a candidate at the highest such
-// level. The winning level across the banks is presented to the
-// SH-4 as an IRL-style interrupt: level 6 arrives as IRL9 with
-// INTEVT 0x320, level 4 as IRL11 with INTEVT 0x360, and level 2 as
-// IRL13 with INTEVT 0x3A0, the documented external interrupt event
-// codes.
+// Three source banks collect events: normal (ISTNRM), external
+// (ISTEXT), and error (ISTERR). The register order in the window
+// is ISTNRM at +0x00, ISTEXT at +0x04, ISTERR at +0x08, and each
+// mask row holds its three bank words in normal, external, error
+// order. (DC-2 had the external and error banks swapped in this
+// decode; DC-3 corrects it to the published addresses, which the
+// AICA and Maple interrupt paths depend on.) Each bank has one
+// mask word per delivery level (2, 4, 6); a set source bit whose
+// mask bit is set at any level makes that bank a candidate at the
+// highest such level. The winning level across the banks is
+// presented to the SH-4 as an IRL-style interrupt: level 6
+// arrives as IRL9 with INTEVT 0x320, level 4 as IRL11 with
+// INTEVT 0x360, and level 2 as IRL13 with INTEVT 0x3A0, the
+// documented external interrupt event codes.
 //
 // Acknowledgment rules: ISTNRM and ISTERR are write-1-to-clear (a
 // handler acknowledges the sources it serviced by writing their
 // bits back). ISTEXT bits are owned by the external devices and
 // are cleared through ClearExternal, never by a register write.
 // ISTNRM reads additionally carry two summary bits: bit 31 set
-// while any ISTEXT bit is set, bit 30 set while any ISTERR bit is
-// set.
+// while any ISTERR bit is set, bit 30 set while any ISTEXT bit
+// is set.
 package holly
 
 import "encoding/binary"
@@ -46,8 +51,14 @@ const (
 	EvtOpaqueModDone   = 8  // TA opaque modifier list transfer finished
 	EvtTransDone       = 9  // TA translucent list transfer finished
 	EvtTransModDone    = 10 // TA translucent modifier list transfer finished
-	EvtPVRDMADone      = 19 // PVR DMA finished (no DMA this slice)
-	EvtPunchDone       = 21 // TA punchthrough list transfer finished
+	EvtMapleDMADone    = 12 // Maple DMA transfer finished
+	EvtAICADMADone     = 15 // G2 AICA DMA transfer finished
+	// EvtPVRDMADone keeps the value DC-2 assigned. The published
+	// event table puts PVR DMA end at bit 11 and channel-2 DMA
+	// end at bit 19; nothing raises this event yet (there is no
+	// PVR DMA), so the constant is documentation only for now.
+	EvtPVRDMADone = 19 // PVR DMA finished (no DMA this slice)
+	EvtPunchDone  = 21 // TA punchthrough list transfer finished
 )
 
 // ASIC event bit indices in the error bank (the published table
@@ -66,12 +77,26 @@ const (
 // 0x005F6900.
 const (
 	regISTNRM = 0x00
-	regISTERR = 0x04
-	regISTEXT = 0x08
+	regISTEXT = 0x04
+	regISTERR = 0x08
 	regIML2   = 0x10 // mask row for level 2, one word per bank
 	regIML4   = 0x20 // mask row for level 4
 	regIML6   = 0x30 // mask row for level 6
 )
+
+// bankForColumn maps a mask word's position inside its row
+// (0, 1, 2 for the words at +0x0, +0x4, +0x8) to a bank index.
+// The published order is normal, external, error.
+func bankForColumn(col uint32) int {
+	switch col {
+	case 1:
+		return BankExternal
+	case 2:
+		return BankError
+	default:
+		return BankNormal
+	}
+}
 
 // levels are the delivery levels indexed by mask row (row 0 is
 // IML2LVL, row 1 is IML4LVL, row 2 is IML6LVL), and intevt maps a
@@ -169,21 +194,21 @@ func (c *Controller) Read32(pa uint32) uint32 {
 	switch pa & 0x3F {
 	case regISTNRM:
 		v := c.status[BankNormal]
-		if c.status[BankExternal] != 0 {
-			v |= 1 << 31 // external summary
-		}
 		if c.status[BankError] != 0 {
-			v |= 1 << 30 // error summary
+			v |= 1 << 31 // error summary
+		}
+		if c.status[BankExternal] != 0 {
+			v |= 1 << 30 // external summary
 		}
 		return v
-	case regISTERR:
-		return c.status[BankError]
 	case regISTEXT:
 		return c.status[BankExternal]
+	case regISTERR:
+		return c.status[BankError]
 	}
 	off := pa & 0x3F
 	if row, ok := maskRow(off); ok {
-		return c.mask[row][int((off&0xF)>>2)]
+		return c.mask[row][bankForColumn((off&0xF)>>2)]
 	}
 	return 0
 }
@@ -199,14 +224,14 @@ func (c *Controller) Write32(pa uint32, v uint32) {
 		// accident through them (they carry no source bits).
 		c.status[BankNormal] &^= v & 0x3FFFFFFF
 		c.update()
+	case regISTEXT:
+		// Owned by the external devices; writes do nothing.
 	case regISTERR:
 		c.status[BankError] &^= v
 		c.update()
-	case regISTEXT:
-		// Owned by the external devices; writes do nothing.
 	default:
 		if row, ok := maskRow(pa & 0x3F); ok {
-			c.mask[row][int((pa&0xF)>>2)] = v
+			c.mask[row][bankForColumn((pa&0xF)>>2)] = v
 			c.update()
 		}
 	}
