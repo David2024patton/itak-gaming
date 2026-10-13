@@ -12,8 +12,12 @@
 // dummy reads keep the PPU running, and the cartridge's MMC3
 // IRQ is clocked by the PPU's real A12 edges, not a counter.
 //
-// The APU register block is inert in this slice (NES-3 grows
-// the audio): writes are accepted, reads return open bus.
+// The APU (NES-3) ticks once per bus access, which this
+// machine's accounting makes exactly one tick per CPU cycle:
+// register accesses land at the access point of the cycle,
+// the rest of the cycle's APU work (the frame sequencer, the
+// channel timers, DMC fetches through the stall hook) runs
+// right after, and the interrupt lines sync on the result.
 package system
 
 import (
@@ -23,6 +27,7 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-nes/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-nes/chips/cpu6502"
 	"github.com/davidpatton/itak-gaming/cores/go-nes/ppu"
+	"github.com/davidpatton/itak-gaming/cores/go-nes/sound"
 )
 
 // Width and Height mirror the PPU's framebuffer dimensions.
@@ -31,7 +36,7 @@ const (
 	Height = ppu.Height
 )
 
-const serializeVersion = 1
+const serializeVersion = 2
 
 // stateSize is the whole-machine save state size: version
 // byte, the CPU state, a length-prefixed cartridge state, the
@@ -45,6 +50,7 @@ type System struct {
 	cpu  *cpu6502.CPU
 	cart *cart.Cart
 	ppu  *ppu.PPU
+	apu  *sound.APU
 
 	ram     [2048]uint8
 	openBus uint8 // the last byte driven on the CPU data bus
@@ -65,10 +71,42 @@ func New(image []byte) (*System, error) {
 	}
 	s := &System{cart: c}
 	s.ppu = ppu.New(c)
+	s.apu = sound.New()
+	s.apu.FetchDMC = s.fetchDMCSample
 	s.cpu = cpu6502.New()
 	s.cpu.Attach(s)
 	s.cpu.Reset()
 	return s, nil
+}
+
+// fetchDMCSample is the DMC memory reader's DMA: it reads the
+// byte through the side-effect-free peek path and charges the
+// CPU the documented 4-cycle halt through the stall hook (the
+// stall dummy reads then advance the whole machine, the APU
+// included, as they do for OAM DMA).
+func (s *System) fetchDMCSample(addr uint16) uint8 {
+	s.cpu.Stall(4)
+	return s.Peek(addr)
+}
+
+// APU exposes the audio unit for tests and debuggers.
+func (s *System) APU() *sound.APU { return s.apu }
+
+// Reset restarts the machine at the reset vector with the
+// cartridge (and its battery RAM) kept: RAM clears, the PPU
+// and APU return to their post-reset state, the CPU runs its
+// reset sequence.
+func (s *System) Reset() {
+	s.ppu = ppu.New(s.cart)
+	for i := range s.ram {
+		s.ram[i] = 0
+	}
+	s.openBus = 0
+	s.buttons = [2]uint8{}
+	s.shift = [2]uint8{}
+	s.strobe = false
+	s.apu.Reset()
+	s.cpu.Reset()
 }
 
 // CPU exposes the processor for the conformance harness.
@@ -89,6 +127,14 @@ func (s *System) Frames() uint64 { return s.ppu.Frames() }
 // Framebuffer returns the PPU's current frame, XRGB8888,
 // 256 by 240.
 func (s *System) Framebuffer() []uint32 { return s.ppu.Framebuffer() }
+
+// AudioBuffer drains the APU's samples produced since the
+// last call, interleaved stereo int16 at sound.SampleRate.
+func (s *System) AudioBuffer() []int16 { return s.apu.AudioBuffer() }
+
+// SystemRAM returns the console's 2 KB internal RAM, for
+// the libretro memory interface.
+func (s *System) SystemRAM() []uint8 { return s.ram[:] }
 
 // Step executes one CPU step (an instruction, an interrupt
 // sequence, or a stall cycle).
@@ -116,15 +162,15 @@ func (s *System) RunFrame() {
 // syncLines feeds the interrupt pins from the machine's
 // current state: the NMI line is the PPU's derived output
 // (vblank flag AND enable) and the IRQ line is the
-// cartridge's. It runs once per bus access, after the access
-// itself, so the CPU's poll samples at the following accesses
-// see each pulse that an access boundary falls inside, and
-// miss the ones that live and die between two boundaries
-// (the $2002 suppression case). No access forces an edge by
-// hand.
+// cartridge's or the APU's. It runs once per bus access,
+// after the access itself and the APU's tick for the cycle,
+// so the CPU's poll samples at the following accesses see
+// each pulse that an access boundary falls inside, and miss
+// the ones that live and die between two boundaries (the
+// $2002 suppression case). No access forces an edge by hand.
 func (s *System) syncLines() {
 	s.cpu.SetNMILine(s.ppu.NMIOutput())
-	s.cpu.SetIRQLine(s.cart.IRQPending())
+	s.cpu.SetIRQLine(s.cart.IRQPending() || s.apu.IRQAsserted())
 }
 
 // Read is the CPU bus read. The PPU runs two of the cycle's
@@ -136,6 +182,7 @@ func (s *System) Read(addr uint16) uint8 {
 	s.ppu.Tick(2)
 	v := s.readAt(addr)
 	s.openBus = v
+	s.apu.Tick()
 	s.syncLines()
 	s.ppu.Tick(1)
 	return v
@@ -148,14 +195,15 @@ func (s *System) readAt(addr uint16) uint8 {
 		return s.ram[addr&0x07FF]
 	case addr < 0x4000:
 		return s.ppu.ReadReg(int(addr & 7))
+	case addr == 0x4015:
+		return s.apu.ReadStatus()
 	case addr == 0x4016:
 		return s.readController(0)
 	case addr == 0x4017:
 		return s.readController(1)
 	case addr < 0x6000:
-		// APU registers (inert until NES-3), the $4014
-		// write-only register, and the $4020-$5FFF
-		// expansion area read as open bus.
+		// The write-only APU registers and $4014, and the
+		// $4020-$5FFF expansion area, read as open bus.
 		return s.openBus
 	default:
 		s.cart.SetCycle(int64(s.cpu.Cycles()))
@@ -169,6 +217,7 @@ func (s *System) Write(addr uint16, val uint8) {
 	s.ppu.Tick(2)
 	s.openBus = val
 	s.writeAt(addr, val)
+	s.apu.Tick()
 	s.syncLines()
 	s.ppu.Tick(1)
 }
@@ -182,13 +231,12 @@ func (s *System) writeAt(addr uint16, val uint8) {
 		s.ppu.WriteReg(int(addr&7), val)
 	case addr == 0x4014:
 		s.oamDMA(val)
+	case addr == 0x4015 || addr == 0x4017 || addr < 0x4014:
+		s.apu.Write(addr, val)
 	case addr == 0x4016:
 		s.writeStrobe(val)
-	case addr < 0x4020:
-		// APU writes and the $4017 frame counter write are
-		// accepted and ignored until NES-3.
 	case addr < 0x6000:
-		// Expansion writes are ignored.
+		// Expansion writes ($4020-$5FFF) are ignored.
 	default:
 		s.cart.SetCycle(int64(s.cpu.Cycles()))
 		s.cart.WritePRG(addr, val)
@@ -267,11 +315,11 @@ func (s *System) oamDMA(page uint8) {
 // --- Save states ---
 
 // Serialize writes the whole-machine state: version byte, CPU
-// state, length-prefixed cartridge state, PPU state, RAM, and
-// the controller and bus latches.
+// state, length-prefixed cartridge state, PPU state, APU
+// state, RAM, and the controller and bus latches.
 func (s *System) Serialize() []byte {
 	cartState := s.cart.Serialize()
-	out := make([]byte, 0, 1+cpu6502.SerializeSize+2+len(cartState)+ppu.SerializeSize+stateFixedTail)
+	out := make([]byte, 0, 1+cpu6502.SerializeSize+2+len(cartState)+ppu.SerializeSize+sound.SerializeSize+stateFixedTail)
 	out = append(out, serializeVersion)
 	out = append(out, s.cpu.Serialize()...)
 	var lb [2]byte
@@ -279,6 +327,7 @@ func (s *System) Serialize() []byte {
 	out = append(out, lb[:]...)
 	out = append(out, cartState...)
 	out = append(out, s.ppu.Serialize()...)
+	out = append(out, s.apu.Serialize()...)
 	out = append(out, s.ram[:]...)
 	out = append(out, s.openBus, s.buttons[0], s.buttons[1], s.shift[0])
 	out = append(out, s.shift[1])
@@ -293,7 +342,7 @@ func (s *System) Serialize() []byte {
 // StateSize returns the size Serialize will produce for the
 // loaded cartridge.
 func (s *System) StateSize() int {
-	return 1 + cpu6502.SerializeSize + 2 + len(s.cart.Serialize()) + ppu.SerializeSize + stateFixedTail
+	return 1 + cpu6502.SerializeSize + 2 + len(s.cart.Serialize()) + ppu.SerializeSize + sound.SerializeSize + stateFixedTail
 }
 
 // Deserialize restores a state produced by Serialize for the
@@ -312,7 +361,7 @@ func (s *System) Deserialize(in []byte) error {
 	off += cpu6502.SerializeSize
 	cl := int(binary.LittleEndian.Uint16(in[off:]))
 	off += 2
-	if len(in) != off+cl+ppu.SerializeSize+stateFixedTail {
+	if len(in) != off+cl+ppu.SerializeSize+sound.SerializeSize+stateFixedTail {
 		return errors.New("system: state size mismatch")
 	}
 	if err := s.cart.Deserialize(in[off : off+cl]); err != nil {
@@ -323,6 +372,10 @@ func (s *System) Deserialize(in []byte) error {
 		return err
 	}
 	off += ppu.SerializeSize
+	if err := s.apu.Deserialize(in[off : off+sound.SerializeSize]); err != nil {
+		return err
+	}
+	off += sound.SerializeSize
 	copy(s.ram[:], in[off:off+2048])
 	off += 2048
 	s.openBus = in[off]
