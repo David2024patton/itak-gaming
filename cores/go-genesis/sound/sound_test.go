@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/user-none/go-chip-sn76489"
+	"github.com/davidpatton/itak-gaming/cores/go-genesis/chips/psg"
 )
 
 // setTone writes an audible channel 0 tone to the PSG: period 0xEE (238,
@@ -155,8 +155,8 @@ func TestSerializeSizeAndRoundTrip(t *testing.T) {
 		t.Fatalf("header bytes = %02x %02x %02x, want %02x %02x %02x",
 			buf[0], buf[1], buf[2], s.ymAddrA, s.ymAddrB, s.ymStatus)
 	}
-	if got := binary.LittleEndian.Uint32(buf[516:520]); got != sn76489.SerializeSize {
-		t.Fatalf("psgLen = %d, want %d (sn76489.SerializeSize)", got, sn76489.SerializeSize)
+	if got := binary.LittleEndian.Uint32(buf[516:520]); got != psg.SerializeSize {
+		t.Fatalf("psgLen = %d, want %d (psg.SerializeSize)", got, psg.SerializeSize)
 	}
 
 	s2 := New()
