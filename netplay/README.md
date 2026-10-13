@@ -11,6 +11,8 @@ Full design: [PROTOCOL.md](PROTOCOL.md).
 
 The same binary also runs a **global leaderboard**: apps report their players' cumulative play stats (`POST /stats/report`) and the server aggregates them across every device into player, game, and recent-activity boards (`GET /leaderboard/{players,games,recent}`), persisted to `./stats.json` (flag `-statsfile` / env `ITAK_STATS_FILE`). See PROTOCOL.md section 6.
 
+It also keeps **friends lists**: players follow other players by name (`GET`/`POST /friends`, `POST /friends/remove`), and each list read enriches friends with their leaderboard identity and whether they are in a lobby right now, persisted next to the stats file (flag `-friendsfile` / env `ITAK_FRIENDS_FILE`). See PROTOCOL.md section 7.
+
 ## Run it
 
 ```sh
