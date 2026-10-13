@@ -142,7 +142,7 @@ func TestRenderMode3DirectColor(t *testing.T) {
 	wr(p, 0x2105, 0x03)    // mode 3: BG1 8bpp, BG2 4bpp
 	wr(p, 0x2107, 0x04)    // BG1 tilemap at word 0x0400
 	wr(p, 0x210B, 0x00)    // BG1 tiles at word 0
-	wr(p, 0x2130, 0x40)    // CGWSEL: direct color on
+	wr(p, 0x2130, 0x01)    // CGWSEL: direct color on (bit 0)
 	p.vram[0x400] = 0x0000 // tilemap entry: tile 0
 	// 8bpp tile 0 row 0: pixel 0 has index 0xE3
 	// (direct color BB=3, GGG=4, RRR=3). Plane pair
@@ -263,12 +263,15 @@ func TestRenderColorMathHalf(t *testing.T) {
 		p.vram[0x1000+r] = 0x00FF
 	}
 	wr(p, 0x212C, 0x01)
-	wr(p, 0x2131, 0x41) // add + halve addend, BG1
+	wr(p, 0x2131, 0x41) // add + half, BG1
 	setVOFS(p, 0x210E)
 	p.RenderLine(0)
-	// White + halved black fixed color = white.
-	if got := px(p, 0, 0); got != expand15(white) {
-		t.Errorf("pixel(0,0) = %#08x, want white", got)
+	// Half color math divides the result: the average
+	// of white (31) and the black fixed color is mid
+	// gray (15) per channel.
+	gray := uint16(15 | 15<<5 | 15<<10)
+	if got := px(p, 0, 0); got != expand15(gray) {
+		t.Errorf("pixel(0,0) = %#08x, want mid gray %#08x", got, expand15(gray))
 	}
 }
 
@@ -363,5 +366,135 @@ func TestRenderMode5PairAveraging(t *testing.T) {
 	}
 	if got := px(p, 0, 0); got != expand15(red) {
 		t.Errorf("hi-res pixel(0,0) = %#08x, want red", got)
+	}
+}
+
+// The CGWSEL region fields live in the top nibble
+// (bits 7-6 main black region, bits 5-4 sub transparent
+// region). These tests pin that layout: an earlier build
+// read the fields from bits 0-3, which made any game
+// using CGWSEL $12 (sub screen addend, sub transparent
+// outside the color window) clip its whole main screen
+// to black inside the color window.
+
+func cgwBlackSetup(t *testing.T) *PPU {
+	t.Helper()
+	p := setup(t)
+	wr(p, 0x2105, 0x00)
+	wr(p, 0x2107, 0x00)
+	wr(p, 0x210B, 0x01)
+	color(p, 0, 0)
+	color(p, 1, red)
+	p.vram[0] = 0x0000
+	for r := 0; r < 8; r++ {
+		p.vram[0x1000+r] = 0x00FF
+	}
+	// Color window 1 covers x 5..10 (WOBJSEL color
+	// window 1 enable is bit 5).
+	wr(p, 0x2125, 0x20)
+	wr(p, 0x2126, 5)  // WH0
+	wr(p, 0x2127, 10) // WH1
+	wr(p, 0x212C, 0x01)
+	setVOFS(p, 0x210E)
+	return p
+}
+
+func TestRenderCGWSELMainBlackRegion(t *testing.T) {
+	cases := []struct {
+		name         string
+		cgwsel       uint8
+		insideBlack  bool // x=7, inside the color window
+		outsideBlack bool // x=4, outside the color window
+	}{
+		{"never", 0x00, false, false},
+		{"black outside", 0x40, false, true},
+		{"black inside", 0x80, true, false},
+		{"black everywhere", 0xC0, true, true},
+		// The value SMW uses for its title and attract
+		// demo: no main blacking at all.
+		{"smw value 0x12", 0x12, false, false},
+	}
+	for _, c := range cases {
+		p := cgwBlackSetup(t)
+		wr(p, 0x2130, c.cgwsel)
+		p.RenderLine(0)
+		want := func(black bool) uint32 {
+			if black {
+				return expand15(0)
+			}
+			return expand15(red)
+		}
+		if got := px(p, 7, 0); got != want(c.insideBlack) {
+			t.Errorf("%s: pixel(7,0) = %#08x, want %#08x", c.name, got, want(c.insideBlack))
+		}
+		if got := px(p, 4, 0); got != want(c.outsideBlack) {
+			t.Errorf("%s: pixel(4,0) = %#08x, want %#08x", c.name, got, want(c.outsideBlack))
+		}
+	}
+}
+
+func TestRenderCGWSELSubTransparentRegion(t *testing.T) {
+	p := setup(t)
+	wr(p, 0x2105, 0x00) // mode 0
+	wr(p, 0x2107, 0x00) // BG1 map at 0
+	wr(p, 0x2108, 0x00) // BG2 map at 0
+	wr(p, 0x210B, 0x11) // BG1 and BG2 tiles at word 0x1000
+	color(p, 1, 0)      // BG1 pixels: opaque black
+	color(p, 33, green) // BG2 pixels (mode 0 quarter 2): green
+	p.vram[0] = 0x0000
+	for r := 0; r < 8; r++ {
+		p.vram[0x1000+r] = 0x00FF
+	}
+	wr(p, 0x2125, 0x20) // color window 1 enable
+	wr(p, 0x2126, 5)
+	wr(p, 0x2127, 10)
+	wr(p, 0x212C, 0x01) // TM: BG1
+	wr(p, 0x212D, 0x02) // TS: BG2
+	wr(p, 0x2132, 0x20|31)
+	// COLDATA: fixed color = red.
+	wr(p, 0x2131, 0x01) // CGADSUB: add, BG1 math on
+	setVOFS(p, 0x210E)
+	setVOFS(p, 0x2110) // BG2 VOFS
+	// CGWSEL $12: addend = sub screen, sub forced
+	// transparent outside the color window. Inside the
+	// window the green sub pixel is the addend; outside
+	// it the fixed red takes its place.
+	wr(p, 0x2130, 0x12)
+	p.RenderLine(0)
+	if got := px(p, 7, 0); got != expand15(green) {
+		t.Errorf("inside: pixel(7,0) = %#08x, want green (sub addend)", got)
+	}
+	if got := px(p, 4, 0); got != expand15(red) {
+		t.Errorf("outside: pixel(4,0) = %#08x, want red (fixed fallback)", got)
+	}
+	// Control: with the sub region set to nowhere
+	// ($02), the sub pixel is the addend everywhere.
+	wr(p, 0x2130, 0x02)
+	p.RenderLine(0)
+	if got := px(p, 4, 0); got != expand15(green) {
+		t.Errorf("control: pixel(4,0) = %#08x, want green", got)
+	}
+}
+
+func TestRenderCGWSELBlackedPixelStillGetsMath(t *testing.T) {
+	p := cgwBlackSetup(t)
+	wr(p, 0x2132, 0x40|31)
+	// COLDATA: fixed color = green.
+	wr(p, 0x2131, 0x01) // CGADSUB: add, BG1 math on
+	// CGWSEL $C0: main forced black everywhere, addend
+	// is the fixed color. The blacked red pixel still
+	// receives math: 0 + green = green.
+	wr(p, 0x2130, 0xC0)
+	p.RenderLine(0)
+	if got := px(p, 0, 0); got != expand15(green) {
+		t.Errorf("pixel(0,0) = %#08x, want green (math on blacked pixel)", got)
+	}
+	// With half math requested, halving is suppressed
+	// on a force-blacked pixel: still full green, not
+	// the halved (0+31)/2.
+	wr(p, 0x2131, 0x41)
+	p.RenderLine(0)
+	if got := px(p, 0, 0); got != expand15(green) {
+		t.Errorf("half pixel(0,0) = %#08x, want full green (half suppressed)", got)
 	}
 }
