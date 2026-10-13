@@ -10,7 +10,66 @@ dependencies.
 
 ## Status
 
-**SNES-1 (this slice): CPU, cartridge, and test rig.**
+**SNES-2 (this slice): PPU, DMA/HDMA, and the real machine.**
+
+- `ppu`: the full PPU register file ($2100-$213F) and renderer.
+  VRAM (64K words) with the VMAIN increment and rotate
+  translations, the per-half prefetch read buffer (the first read
+  after an address change returns the stale half; a $2139 read
+  refills only the low half, a $213A read only the high half),
+  CGRAM (256 colors, pair latch, writes landing in the active
+  display area dropped), OAM (544 bytes, buffered pair writes),
+  the shared-latch scroll registers, the Mode 7 registers with
+  the $2134-$2136 multiply results, the $2137 counter latch, and
+  $213E/$213F status. Rendering covers background modes 0-7
+  with 8/16-pixel tiles, 2/4/8 bpp planar decode, per-layer
+  tilemap sizes, offset-per-tile (modes 2, 4, 6; horizontal and
+  vertical for mode 2, mode 4's per-column H-or-V entries, mode
+  6 horizontal and vertical), Mode 7 affine with the documented
+  26-bit product wrap and all four screen-over behaviors plus
+  EXTBG, sprites in all eight size pairs with the 32-per-line
+  and 34-tile limits and range/time over flags, OAM priority
+  rotation, mosaic, both window channels with per-layer masks
+  and the color window, color math (add/subtract, halved
+  addend, sub screen or fixed color, clip-to-black and
+  prevent-math window modes), direct color for 8bpp layers,
+  brightness and forced blank, and interlace/overscan/
+  pseudo-hires flags. Output is always 256x224 XRGB8888.
+- `system`: the real frame-clocked machine. Master-clock line
+  timing (1364 clocks per line, 262 lines, pre-render line 0,
+  vblank from line 225, the short line 0 on alternating frames,
+  interlace 262/263 line alternation), the CPU-side registers
+  ($4200-$421F: NMI flag, TIMEUP, HVBJOY, the H/V IRQ timer,
+  the multiply/divide unit with its 8/16-cycle result latency,
+  $420D MEMSEL gating the map's FastROM speed class), the WRAM
+  port, 8 channels of general DMA (all 8 transfer modes, the
+  documented B-register patterns, live address/count readback),
+  HDMA (per-line table walking, direct and indirect modes,
+  repeat lines, the $00 terminator, mid-frame enable starting
+  at the next display line), joypads (auto-read at vblank with
+  the busy window, manual serial ports, both pads), and the APU
+  mailboxes as plain latches (the SPC700 itself is SNES-3).
+  Save states cover the whole machine (CPU, WRAM, SRAM, PPU
+  memory and registers, DMA/HDMA channel state, position and
+  frame counters): 207,237 bytes for a cartridge with 8 KB of
+  SRAM.
+- Proofs for SNES-2: hand-derived synthetic render probes per
+  mode (exact pixel values, not emulator comparisons), DMA and
+  HDMA unit suites (mode 1 into VRAM, mode 3's paired-register
+  pattern into CGRAM, decrement and fixed addressing, HDMA
+  direct/indirect/repeat/terminator), and a whole-machine
+  determinism gate: a synthetic ROM that DMA-uploads tiles, a
+  tilemap, and a palette, then runs an HDMA brightness-band
+  effect under an NMI frame counter; state and framebuffer are
+  bit-identical across a save/restore boundary taken
+  mid-frame. The Peter Lemon (Krom) test ROMs run headlessly
+  as report-only evidence (they expose no CPU-readable
+  verdicts): all five fetched ROMs (8bpp tilemap, Mode 3
+  mosaic, Mode 7 rotate/zoom, HDMA window, HDMA color
+  gradient) render non-blank frames. The Krom gradient ROM is
+  what pinned the DMA mode 3 B-pattern to (0,0,1,1).
+
+**SNES-1: CPU, cartridge, and test rig.**
 
 - `chips/w65c816`: a complete W65C816S: all 256 opcodes, emulation
   and native modes, the M/X width flags with their register and
@@ -47,10 +106,12 @@ dependencies.
   documented placeholder in this slice: reads return an open-bus
   byte, writes are dropped, and the PPU, APU, and DMA slices
   replace it without changing the map's shape.
-- `system`: the SNES-1 test rig only: CPU plus cartridge map,
-  `RunCycles`, and a hand-assembled LoROM smoke program (mode
-  switch, wide registers, long stores, a block move, and a long
-  jump across banks) proving the parts integrate.
+- `system` (SNES-1 form): CPU plus cartridge map, `RunCycles`,
+  and a hand-assembled LoROM smoke program (mode switch, wide
+  registers, long stores, a block move, and a long jump across
+  banks) proving the parts integrate. SNES-2 replaced this rig
+  with the real machine above, keeping its shape (exported
+  CPU/Cart/Map, `New`, `LoadGame`, `Title`).
 - `libretro`: a documented placeholder; the shell lands in
   SNES-4.
 
@@ -60,12 +121,71 @@ dependencies.
   (Done.)
 - **SNES-2**: the PPU (backgrounds, sprites, Mode 7), the console
   timing model, DMA and HDMA, controller IO, and the real IO
-  region.
+  region. (Done.)
 - **SNES-3**: the SPC700 audio CPU and the S-DSP: the SNES sound
   engine, plus the APU IO handshake.
 - **SNES-4**: the libretro shell, the Android build, and the app
   wiring swap (the app keeps shipping the incumbent core until
   this one passes the same proof, per the project rule).
+
+## SNES-2 rendering and timing model (the honesty notes)
+
+- **Render model: per-scanline evaluation.** When the clock
+  crosses into a new line, the machine renders the display line
+  that just ended from the register and memory state as it
+  stands then. Mid-line register changes (a scroll or palette
+  write partway through a line) take effect from the following
+  line, not partway across it. Full dot-level rendering is not
+  modeled; raster effects that rewrite registers at a specific
+  dot within a line will be off by up to one line's phase. This
+  is the documented SNES-2 simplification.
+- **Hi-res:** modes 5 and 6 and pseudo-hires (SETINI bit 4)
+  render at 512 wide internally, then each output pixel is the
+  average of its two sub-pixels after color math. The hardware's
+  main/sub column relationship in hi-res (adjacent columns are
+  main and sub screen, not two main samples) is not modeled.
+- **Overscan:** the framebuffer stays 256x224. In 239-line
+  mode the first 224 display lines land in the buffer and the
+  remaining 15 are timed but not stored.
+- **Interlace:** line counts alternate 263/262 and the field
+  flag flips per frame; the half-line vertical offset of the
+  second field is not applied to sampling.
+- **Sprites:** sprite Y is the 0-based display line the sprite
+  starts on. The 34-tile fetch budget counts tiles spanned by
+  on-screen sprites; a sprite whose fetch would start past the
+  budget is dropped whole.
+- **Mode 4 and 6:** BG2 is the offset-per-tile source and is
+  not itself displayed (its pixels exist only as the offset
+  table), matching the common reading of the mode.
+- **Color math halving** applies to the addend (sub screen or
+  fixed color), per the CGADSUB bit 6 description followed
+  here.
+- **DMA timing:** a flat 8 clocks per channel activation plus
+  8 per byte, charged when the triggering instruction
+  completes; the transfer itself is instantaneous between
+  instructions, so a DMA that crosses a line boundary delivers
+  all of its bytes before that line's HDMA runs. Per-byte bus
+  speed classes during DMA are not modeled.
+- **HDMA timing:** transfers are charged 8 + 8 per unit byte
+  and run at the line boundary; HDMA for a line executes even
+  if a general DMA spanned that boundary (hardware suppresses
+  it). HDMA register writes made mid-line apply at the next
+  line boundary.
+- **Multiply/divide:** results are computed at the write and
+  published after 48 (multiply) or 96 (divide) master clocks;
+  reads before that return the previously completed results,
+  where the hardware exposes intermediate shift state.
+- **Counters:** $2137 latches the H/V counters at the dot and
+  line the machine has reached at instruction granularity, not
+  at the exact bus cycle of the read.
+- **NMI:** modeled as the $4210 flag ANDed with the $4200
+  enable, presented as a level to the CPU's edge-latched NMI
+  input, so enabling NMI during vblank with the flag set fires
+  an NMI, as on hardware.
+- **APU ports:** $2140-$2143 reads return the power-on zero
+  state (no SPC700 until SNES-3); games polling for the IPL
+  handshake (0xAA/0xBB) will wait, which is expected this
+  slice.
 
 Coprocessor chips (SA-1, SuperFX, DSP-1 and family, and the rest)
 are out of scope until the base machine is proven end to end.
@@ -158,7 +278,8 @@ prose. This core matches the corpus; the notable cases:
 ```text
 chips/w65c816/   the CPU, its conformance gate, and its tests
 cart/            header parsing and the console memory map
-system/          the test rig tying CPU and cart together
+ppu/             the PPU: registers, memory, and the renderer
+system/          the whole machine: timing, DMA/HDMA, IO
 libretro/        placeholder for the SNES-4 shell
 testroms/        local-only conformance corpora (gitignored)
 ```
