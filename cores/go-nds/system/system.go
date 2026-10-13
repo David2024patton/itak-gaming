@@ -1,5 +1,6 @@
 // Package system is the Nintendo DS machine: the two CPUs on
-// the dual bus, the DS-2 2D video engines and peripherals, full
+// the dual bus, the 2D video engines, the 3D geometry and
+// rendering engine, the sound unit, the peripherals, full
 // direct boot, scanline-stepped execution, and save states.
 //
 // Boot approach (deliberately no BIOS): no DS BIOS or firmware
@@ -15,11 +16,13 @@
 package system
 
 import (
+	"github.com/davidpatton/itak-gaming/cores/go-nds/audio"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/bus"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/chips/arm7"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/chips/arm9"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/chips/armcore"
+	"github.com/davidpatton/itak-gaming/cores/go-nds/gx"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/periph"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/video"
 )
@@ -46,6 +49,8 @@ type Machine struct {
 	CPU7   *armcore.CPU
 	Periph *periph.Set
 	Video  *video.Video
+	GX     *gx.GX
+	Audio  *audio.Sound
 
 	header *cart.Header
 	rom    []byte
@@ -58,6 +63,9 @@ type Machine struct {
 	touchX    uint16
 	touchY    uint16
 	touchDown bool
+
+	micSamples []int16
+	micIdx     int
 }
 
 // New returns a machine with both CPUs halted and no cartridge.
@@ -74,8 +82,23 @@ func New() *Machine {
 		func() []byte { return m.rom },
 		func() uint32 { return m.buttons },
 		func() (uint16, uint16, bool) { return m.touchX, m.touchY, m.touchDown })
+	m.GX = gx.New(b)
+	m.Audio = audio.New(audioMem{v: b.ARM7()})
+	m.Video.Line3D = m.GX.Line3D
+	m.Periph.SetMicrophoneSource(m.micNext)
 	b.SetIOHook(m)
 	return m
+}
+
+// audioMem adapts the ARM7 bus view to the sound unit's
+// memory interface.
+type audioMem struct{ v bus.View }
+
+func (a audioMem) Read8(addr uint32) uint8     { return uint8(a.v.Read(addr, 1)) }
+func (a audioMem) Read16(addr uint32) uint16   { return uint16(a.v.Read(addr, 2)) }
+func (a audioMem) Write8(addr uint32, v uint8) { a.v.Write(addr, 1, uint32(v)) }
+func (a audioMem) Write16(addr uint32, v uint16) {
+	a.v.Write(addr, 2, uint32(v))
 }
 
 // LoadROM parses the cartridge header and performs the full
@@ -144,6 +167,9 @@ func (m *Machine) RunFrame() {
 				m.Periph.Raise(true, periph.IRQVBlank)
 				m.Periph.Raise(false, periph.IRQVBlank)
 			}
+			// The geometry engine's deferred swap and render
+			// happen at the VBlank edge.
+			m.GX.OnVBlank()
 			m.Periph.TriggerDMA(periph.TrigVBlank)
 			m.Video.LatchAffine()
 		}
@@ -177,7 +203,15 @@ func (m *Machine) RunFrame() {
 // so a handler that acknowledges its interrupt source
 // deasserts the line at the next instruction boundary instead
 // of re-entering until the chunk ends.
+// irqGXFIFO is the ARM9 geometry FIFO interrupt bit (21); it
+// is level-triggered by the GXSTAT FIFO IRQ mode, so the
+// system re-asserts it whenever the condition holds.
+const irqGXFIFO = 21
+
 func (m *Machine) runChunk(n9, n7 int) {
+	if m.GX.FIFOIRQCondition() {
+		m.Periph.Raise(true, irqGXFIFO)
+	}
 	if m.started9 {
 		m.CPU9.IRQLine = m.Periph.PendingIRQ(true)
 		n := 0
@@ -196,7 +230,12 @@ func (m *Machine) runChunk(n9, n7 int) {
 			m.CPU7.IRQLine = m.Periph.PendingIRQ(false)
 		}
 		m.Periph.AdvanceTimers(false, n)
+		m.Audio.Advance(uint64(n))
 		m.evalKeyIRQ(false, 0x132)
+	} else {
+		// The sound unit is free-running even while the
+		// ARM7 is halted.
+		m.Audio.Advance(uint64(n7))
 	}
 }
 
@@ -259,14 +298,39 @@ func (m *Machine) Touch() (x, y uint16, down bool) {
 // EEPROM backing, 512 bytes in this slice).
 func (m *Machine) SaveRAM() []byte { return m.Periph.SaveRAM() }
 
-// GXFIFOCount returns the number of 32-bit words consumed
-// into the geometry FIFO sink (DS-3 drains it for real).
-func (m *Machine) GXFIFOCount() uint32 { return m.Periph.GXCount }
+// GXFIFOCount returns the number of 32-bit words written to
+// the geometry FIFO port (the DS-3 geometry engine drains
+// them for real; see the gx package).
+func (m *Machine) GXFIFOCount() uint32 { return m.GX.FIFOWords }
 
-// stateVersion is the save-state format version. Version 1
-// states (DS-1) are rejected: the layout grew by the
-// peripheral and video blocks.
-const stateVersion = 2
+// AudioSamples drains the sound unit's stereo output buffer
+// (interleaved L,R int16 at 32,768 Hz).
+func (m *Machine) AudioSamples() []int16 { return m.Audio.Drain() }
+
+// SetMicrophone installs the microphone sample stream. The
+// ARM7 reads samples through the SPI touchscreen ADC aux
+// channel, one sample per read; with no stream installed (or
+// once it is exhausted) the ADC returns its idle center
+// value.
+func (m *Machine) SetMicrophone(samples []int16) {
+	m.micSamples = samples
+	m.micIdx = 0
+}
+
+// micNext consumes one microphone sample for the SPI path.
+func (m *Machine) micNext() (int16, bool) {
+	if m.micIdx >= len(m.micSamples) {
+		return 0, false
+	}
+	v := m.micSamples[m.micIdx]
+	m.micIdx++
+	return v, true
+}
+
+// stateVersion is the save-state format version. Version 3
+// adds the geometry engine and sound unit blocks; version 2
+// states are rejected.
+const stateVersion = 3
 
 // trailerSize is the fixed machine-state block after the
 // device states.
@@ -274,7 +338,8 @@ const trailerSize = 32
 
 // StateSize is the exact serialized size of a machine state.
 const StateSize = 1 + bus.StateSize + 2*armcore.StateSize +
-	periph.StateSize + video.StateSize + trailerSize
+	periph.StateSize + video.StateSize + gx.StateSize +
+	audio.StateSize + trailerSize
 
 // Serialize writes the full machine state. The cartridge
 // image itself is not part of the state; Deserialize expects
@@ -288,6 +353,8 @@ func (m *Machine) Serialize() []byte {
 	n += m.CPU7.Serialize(out[n:])
 	n += m.Periph.Serialize(out[n:])
 	n += m.Video.Serialize(out[n:])
+	n += m.GX.Serialize(out[n:])
+	n += m.Audio.Serialize(out[n:])
 	t := out[n:]
 	if m.started9 {
 		t[0] |= 1
@@ -309,6 +376,7 @@ func (m *Machine) Serialize() []byte {
 	if m.touchDown {
 		t[12] = 1
 	}
+	put32(16, uint32(m.micIdx))
 	return out
 }
 
@@ -333,6 +401,8 @@ func (m *Machine) Deserialize(src []byte) bool {
 	n += armcore.StateSize
 	n += m.Periph.Deserialize(src[n:])
 	n += m.Video.Deserialize(src[n:])
+	n += m.GX.Deserialize(src[n:])
+	n += m.Audio.Deserialize(src[n:])
 	t := src[n:]
 	m.started9 = t[0]&1 != 0
 	m.started7 = t[0]&2 != 0
@@ -340,5 +410,6 @@ func (m *Machine) Deserialize(src []byte) bool {
 	m.touchX = uint16(t[8]) | uint16(t[9])<<8
 	m.touchY = uint16(t[10]) | uint16(t[11])<<8
 	m.touchDown = t[12] != 0
+	m.micIdx = int(uint32(t[16]) | uint32(t[17])<<8 | uint32(t[18])<<16 | uint32(t[19])<<24)
 	return true
 }
