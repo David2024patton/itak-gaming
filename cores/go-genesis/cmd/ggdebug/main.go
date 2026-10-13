@@ -155,8 +155,8 @@ func savetest(romPath string) {
 		{"z80 cpu", 80, 127},
 		{"bus", 127, 139411},
 		{"vdp", 139411, 205189},
-		{"sound", 205189, 206733},
-		{"trailer", 206733, len(state)},
+		{"sound", 205189, 207109},
+		{"trailer", 207109, len(state)},
 	}
 	ndiff := 0
 	for i := range state {
