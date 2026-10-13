@@ -1,8 +1,18 @@
 // Package system is the whole SNES machine: the W65C816 CPU
 // and the cartridge map from SNES-1, plus the PPU, the DMA
 // and HDMA engines, the CPU-side registers ($4200-$421F),
-// joypads, the WRAM port, the APU mailboxes, and the
-// master-clock line timing that ties them together.
+// joypads, the WRAM port, the APU (the SPC700/SMP/S-DSP
+// audio unit from SNES-3, reached through the mailboxes at
+// $2140-$2143), and the master-clock line timing that ties
+// them together.
+//
+// The APU runs on its own 1.024 MHz oscillator, independent
+// of the 21.477272 MHz NTSC master clock. The machine
+// advances it by exact ratio accumulation: every master
+// clock delta is multiplied by 1024000 and divided by
+// 21477272, with the remainder carried in apuRem, so the
+// long-term SPC rate is exact and save states resume the
+// phase bit-exactly (apuRem is part of the system block).
 //
 // Timing model: the CPU reports consumed master clocks
 // (21477272 per second on NTSC). The machine advances in
@@ -35,6 +45,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"github.com/davidpatton/itak-gaming/cores/go-snes/apu"
 	"github.com/davidpatton/itak-gaming/cores/go-snes/cart"
 	"github.com/davidpatton/itak-gaming/cores/go-snes/chips/w65c816"
 	"github.com/davidpatton/itak-gaming/cores/go-snes/ppu"
@@ -99,6 +110,11 @@ type System struct {
 	Map  *cart.Map
 
 	ppu *ppu.PPU
+	apu *apu.APU
+
+	// apuRem is the carried remainder of the master to
+	// SPC clock ratio accumulation (see pumpAPU).
+	apuRem int64
 
 	// Clock and position.
 	now        int64
@@ -140,11 +156,9 @@ type System struct {
 	wmadd  uint32 // 17 bits
 	wmbank uint8
 
-	// APU mailboxes ($2140-$2143): values from the SPC
-	// side. Nothing writes them until SNES-3 adds the
-	// SPC700, so reads return the power-on zero state.
-	apuIn  [4]uint8
-	apuOut [4]uint8
+	// The APU mailboxes ($2140-$2143) are the APU's own
+	// port latches: reads return apu.ReadPort, writes go
+	// to apu.WritePort. No shadow copies live here.
 
 	// DMA/HDMA.
 	dma [8]dmaChannel
@@ -195,6 +209,8 @@ func (s *System) LoadGame(rom []byte) error {
 // vector and all machine state returns to power-on values.
 func (s *System) Reset() {
 	s.ppu = ppu.New()
+	s.apu = apu.New()
+	s.apuRem = 0
 	s.dma = [8]dmaChannel{}
 	s.now, s.lineStart, s.line = 0, 0, 0
 	s.frame, s.vblCount = 0, 0
@@ -206,8 +222,6 @@ func (s *System) Reset() {
 	s.mdmaen, s.hdmaen, s.memsel = 0, 0, 0
 	s.nmiFlag, s.timeup = false, false
 	s.wmadd, s.wmbank = 0, 0
-	s.apuIn = [4]uint8{}
-	s.apuOut = [4]uint8{}
 	s.joyData = [8]uint8{}
 	s.joyBusy, s.strobe = false, false
 	s.shiftVal = [2]uint16{}
@@ -222,6 +236,16 @@ func (s *System) Reset() {
 
 // PPU returns the picture processing unit.
 func (s *System) PPU() *ppu.PPU { return s.ppu }
+
+// APU returns the audio processing unit (SPC700, SMP,
+// and S-DSP), for tools and tests.
+func (s *System) APU() *apu.APU { return s.apu }
+
+// AudioBuffer drains the APU's pending stereo samples:
+// interleaved L, R int16 at 32000 Hz. A frame of NTSC
+// runtime produces about 534 samples (1068 values). The
+// buffer is empty until the machine has run.
+func (s *System) AudioBuffer() []int16 { return s.apu.DrainAudio() }
 
 // Framebuffer returns the current frame as Width*Height
 // XRGB8888 pixels. The slice is owned by the PPU and is
@@ -314,9 +338,31 @@ func (s *System) RunFrame() {
 
 func (s *System) syncTime() {
 	mc := s.CPU.MasterCycles()
-	s.now += int64(mc - s.prevMaster)
+	delta := int64(mc - s.prevMaster)
+	s.now += delta
 	s.prevMaster = mc
+	s.pumpAPU(delta)
 	s.advance(0)
+}
+
+// pumpAPU advances the APU by the SPC cycles that the
+// given number of master clocks corresponds to, at the
+// exact 1024000/21477272 ratio with the remainder
+// carried in apuRem. DMA and HDMA costs arrive through
+// advance; CPU instruction clocks arrive through
+// syncTime. The two never double count: instruction
+// clocks are reported only by the CPU counter, transfer
+// costs only by the advance argument.
+func (s *System) pumpAPU(masterDelta int64) {
+	if masterDelta <= 0 {
+		return
+	}
+	total := masterDelta*1024000 + s.apuRem
+	steps := total / 21477272
+	s.apuRem = total % 21477272
+	if steps > 0 {
+		s.apu.Step(int(steps))
+	}
 }
 
 // advance moves machine time forward by the given master
@@ -324,6 +370,7 @@ func (s *System) syncTime() {
 // and the CPU interrupt lines.
 func (s *System) advance(clocks int64) {
 	s.now += clocks
+	s.pumpAPU(clocks)
 	for s.now-s.lineStart >= int64(s.lineLength()) {
 		s.lineStart += int64(s.lineLength())
 		s.enterLine(s.line + 1)
@@ -505,7 +552,7 @@ func (s *System) readIO(addr uint16) uint8 {
 		}
 		return s.openBus // write-only PPU registers
 	case addr < 0x2180:
-		return s.apuIn[addr&3]
+		return s.apu.ReadPort(int(addr & 3))
 	case addr == 0x2180:
 		v := s.Map.WRAM()[s.wmadd&0x1FFFF]
 		s.wmadd = (s.wmadd + 1) & 0x1FFFF
@@ -579,7 +626,7 @@ func (s *System) writeIO(addr uint16, val uint8) {
 	case addr < 0x2140:
 		s.ppu.WriteReg(addr, val)
 	case addr < 0x2180:
-		s.apuOut[addr&3] = val
+		s.apu.WritePort(int(addr&3), val)
 	case addr == 0x2180:
 		s.Map.WRAM()[s.wmadd&0x1FFFF] = val
 		s.wmadd = (s.wmadd + 1) & 0x1FFFF
@@ -989,7 +1036,9 @@ func boolBit(b bool) uint8 {
 // --- save states ---------------------------------------------------------
 
 const (
-	stateVersion = 1
+	// Version 2 added the APU block (SNES-3). Version 1
+	// states have no APU block and are rejected.
+	stateVersion = 2
 	sysBlockSize = 1024
 	// stateHead = version + CPU + WRAM + SRAM length word.
 	stateHead = 1 + 96 + 131072 + 4
@@ -998,7 +1047,7 @@ const (
 // StateSize returns the exact byte size of a serialized
 // state for this cartridge.
 func (s *System) StateSize() int {
-	return stateHead + len(s.Map.SRAM()) + ppu.SerializeSize + sysBlockSize
+	return stateHead + len(s.Map.SRAM()) + ppu.SerializeSize + apu.SerializeSize + sysBlockSize
 }
 
 // Hash is a quick content digest of the full state (used
@@ -1010,8 +1059,10 @@ func (s *System) Hash() uint64 {
 }
 
 // Serialize captures the whole machine: CPU, WRAM, SRAM,
-// the PPU block, and the system block (registers, DMA
-// channel state, position counters, joypad state).
+// the PPU block, the APU block, and the system block
+// (registers, DMA channel state, position counters,
+// joypad state). Pending undrained audio is not part of
+// the state; call AudioBuffer first if it matters.
 func (s *System) Serialize() []byte {
 	out := make([]byte, s.StateSize())
 	out[0] = stateVersion
@@ -1022,7 +1073,9 @@ func (s *System) Serialize() []byte {
 	copy(out[soff:], s.Map.SRAM())
 	poff := soff + len(s.Map.SRAM())
 	s.ppu.Serialize(out[poff : poff+ppu.SerializeSize])
-	s.serializeSys(out[poff+ppu.SerializeSize:])
+	aoff := poff + ppu.SerializeSize
+	copy(out[aoff:aoff+apu.SerializeSize], s.apu.Serialize())
+	s.serializeSys(out[aoff+apu.SerializeSize:])
 	return out
 }
 
@@ -1055,8 +1108,11 @@ func (s *System) serializeSys(b []byte) {
 	b[44] = boolBit(s.vblank)
 	binary.LittleEndian.PutUint32(b[45:], s.wmadd)
 	b[49] = s.wmbank
-	copy(b[50:54], s.apuIn[:])
-	copy(b[54:58], s.apuOut[:])
+	// Bytes 50..57 held the SNES-2 shadow APU port
+	// latches; in version 2 they carry the APU clock
+	// ratio remainder, so a restored machine keeps the
+	// exact master to SPC phase it was saved with.
+	binary.LittleEndian.PutUint64(b[50:], uint64(s.apuRem))
 	copy(b[58:66], s.joyData[:])
 	b[66] = boolBit(s.joyBusy)
 	binary.LittleEndian.PutUint16(b[67:], uint16(s.joyDone))
@@ -1122,7 +1178,11 @@ func (s *System) Deserialize(in []byte) error {
 	if err := s.ppu.Deserialize(in[poff : poff+ppu.SerializeSize]); err != nil {
 		return err
 	}
-	sb := in[poff+ppu.SerializeSize:]
+	aoff := poff + ppu.SerializeSize
+	if err := s.apu.Deserialize(in[aoff : aoff+apu.SerializeSize]); err != nil {
+		return err
+	}
+	sb := in[aoff+apu.SerializeSize:]
 	s.deserializeSys(sb)
 	// Time position reconstruction: the clock is rebased
 	// so the current line started at 0; the saved phase is
@@ -1164,8 +1224,7 @@ func (s *System) deserializeSys(b []byte) {
 	s.vblank = b[44] != 0
 	s.wmadd = binary.LittleEndian.Uint32(b[45:])
 	s.wmbank = b[49]
-	copy(s.apuIn[:], b[50:54])
-	copy(s.apuOut[:], b[54:58])
+	s.apuRem = int64(binary.LittleEndian.Uint64(b[50:]))
 	copy(s.joyData[:], b[58:66])
 	s.joyBusy = b[66] != 0
 	s.joyDone = int(binary.LittleEndian.Uint16(b[67:]))
