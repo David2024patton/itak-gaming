@@ -283,6 +283,11 @@ func (m *Machine) DSP() *dsp.DSP { return m.dsp }
 // stereo samples at AudioRate.
 func (m *Machine) AudioBuffer() []int16 { return m.ai.Drain() }
 
+// SystemRAM returns the live MEM1 backing store, for the
+// libretro memory interface (RETRO_MEMORY_SYSTEM_RAM).
+// Writes through it are writes to machine memory.
+func (m *Machine) SystemRAM() []byte { return m.mem1 }
+
 // AudioRate returns the AI sample rate in Hz.
 func (m *Machine) AudioRate() int { return m.ai.Rate() }
 
