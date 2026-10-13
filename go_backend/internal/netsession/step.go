@@ -56,6 +56,13 @@ func (s *Session) reader() {
 		// handled exactly as it always was.
 		fromPeer := s.peerName == "" || e.From == "" || e.From == s.peerName
 		switch e.Type {
+		case "roster":
+			// The server's member list (roster.go): who holds
+			// the seats, who is watching. Server notices are
+			// accepted from the relay as they come; the list
+			// is display state for the UI and never touches
+			// lockstep.
+			s.noteRosterLocked(e.Members)
 		case "peer_joined":
 			s.peerJoined = true
 			if !s.peerPresent {
