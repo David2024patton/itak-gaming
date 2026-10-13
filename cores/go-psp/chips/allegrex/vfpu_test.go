@@ -10,12 +10,41 @@ import (
 func fb(v float32) uint32 { return math.Float32bits(v) }
 func fv(b uint32) float32 { return math.Float32frombits(b) }
 
-func sReg(m, r, c uint32) uint32    { return m<<4 | r<<2 | c }
-func qRow(m, r uint32) uint32       { return m<<4 | r<<2 }
-func qCol(m, c uint32) uint32       { return m<<4 | c<<2 | 1 }
-func pRow(m, r, half uint32) uint32 { return m<<4 | r<<2 | half<<1 }
-func tRow(m, r uint32) uint32       { return m<<4 | r<<2 }
-func lin(m, r, c int) int           { return m*16 + r*4 + c }
+// Operand field builders in the real layouts (see the layout
+// notes at the top of vfpu.go): arithmetic fields carry the
+// matrix in bits [4:2]; a single takes row in bits [1:0] and
+// column in bits [6:5]; a vector takes its fixed coordinate in
+// bits [1:0], the transpose flag in bit 5 and the end anchor in
+// bit 6.
+func sReg(m, r, c uint32) uint32 { return r | m<<2 | c<<5 }
+func qRow(m, r uint32) uint32    { return 32 | m<<2 | r }
+func qCol(m, c uint32) uint32    { return m<<2 | c }
+func pRow(m, r, half uint32) uint32 {
+	f := 32 | m<<2 | r
+	if half != 0 {
+		f |= 64 // end anchor: the pair starts at column 2
+	}
+	return f
+}
+func tRow(m, r uint32) uint32 { return 32 | m<<2 | r }
+func lin(m, r, c int) int     { return m*16 + r*4 + c }
+
+// Load/store field builders (layout L): (matrix << 4) |
+// (fixed << 2) | start, bit 0 the transpose flag.
+func lsReg(m, r, c uint32) uint32 { return m<<4 | c<<2 | r }
+func lsQRow(m, r uint32) uint32   { return m<<4 | r<<2 | 1 }
+func lsQCol(m, c uint32) uint32   { return m<<4 | c<<2 }
+
+// Matrix operand field builder: anchor row in bits [1:0],
+// matrix in bits [4:2], transpose in bit 5, anchor column (even)
+// in bit 6.
+func matF(m, row0, col0 uint32, tr bool) uint32 {
+	f := row0 | m<<2 | (col0>>1)<<6
+	if tr {
+		f |= 32
+	}
+	return f
+}
 
 func encVV(op, g, vd, vs, vt, size uint32) uint32 {
 	return op<<26 | g<<23 | vt<<16 | ((size>>1)&1)<<15 | vs<<8 | (size&1)<<7 | vd
@@ -59,11 +88,15 @@ func encMTC2(rt, reg7 uint32) uint32 {
 }
 func encCFC2(rt, rd uint32) uint32 { return 0x12<<26 | 2<<21 | rt<<16 | rd<<11 }
 func encCTC2(rt, rd uint32) uint32 { return 0x12<<26 | 6<<21 | rt<<16 | rd<<11 }
+
+// MFVC and MTVC carry the control index in the low byte of
+// the word (pinned by the vrnd corpus binary's words, for
+// example 0x48680088 for mfvc $t0, $136).
 func encMFVC(rt, idx uint32) uint32 {
-	return 0x12<<26 | 3<<21 | rt<<16 | idx<<8
+	return 0x12<<26 | 3<<21 | rt<<16 | idx
 }
 func encMTVC(rt, idx uint32) uint32 {
-	return 0x12<<26 | 7<<21 | rt<<16 | idx<<8
+	return 0x12<<26 | 7<<21 | rt<<16 | idx
 }
 func encBC2(tf, likely bool, off int32) uint32 {
 	var rt uint32
@@ -158,7 +191,13 @@ func TestVFPUMinMaxNaN(t *testing.T) {
 		t.Errorf("vmin both NaN bits = %#08x, want canonical NaN", got)
 	}
 	checkVec(t, "vmin lane3", getVec(h, qRow(1, 0), 4)[3:], 3)
-	checkVec(t, "vmax", getVec(h, qRow(1, 1), 4)[:2], 2, 7)
+	// vmax follows the float totalOrder the corpus minmax test
+	// pins: a positive NaN sorts above every value, so vmax of
+	// NaN and 7 is the NaN pattern itself, not 7.
+	checkVec(t, "vmax lane0", getVec(h, qRow(1, 1), 4)[:1], 2)
+	if got := h.c.VSingle(vecIndices(qRow(1, 1), 4)[1]); got != canonicalNaN {
+		t.Errorf("vmax NaN lane bits = %#08x, want the NaN pattern", got)
+	}
 	if got := h.c.VSingle(vecIndices(qRow(1, 1), 4)[2]); got != canonicalNaN {
 		t.Errorf("vmax both NaN bits = %#08x, want canonical NaN", got)
 	}
@@ -174,8 +213,16 @@ func TestVFPUSatAndUnary(t *testing.T) {
 		encVUnary(0x05, qRow(1, 1), qRow(0, 0), 3), // vsat1
 	)
 	h.run(2)
-	checkVec(t, "vsat0", getVec(h, qRow(1, 0), 4), 0, 0.5, 1, 0)
-	checkVec(t, "vsat1", getVec(h, qRow(1, 1), 4), -0.5, 0.5, 1, 0)
+	checkVec(t, "vsat0", getVec(h, qRow(1, 0), 4)[:3], 0, 0.5, 1)
+	checkVec(t, "vsat1", getVec(h, qRow(1, 1), 4)[:3], -0.5, 0.5, 1)
+	// vsat0 and vsat1 pass a NaN pattern through unchanged
+	// (corpus prefix_sat), they do not zero it.
+	if got := h.c.VSingle(vecIndices(qRow(1, 0), 4)[3]); got != canonicalNaN {
+		t.Errorf("vsat0 NaN bits = %#08x, want the pattern preserved", got)
+	}
+	if got := h.c.VSingle(vecIndices(qRow(1, 1), 4)[3]); got != canonicalNaN {
+		t.Errorf("vsat1 NaN bits = %#08x, want the pattern preserved", got)
+	}
 	// vmov, vabs, vneg
 	h = newHarness()
 	setVec(h, qRow(0, 0), 4, -1.5, 2, -3, 4)
@@ -241,8 +288,8 @@ func TestVFPUFloatFuncs(t *testing.T) {
 		encVUnary(0x10, sReg(1, 0, 1), sReg(0, 0, 1), 0),
 	)
 	h.run(2)
-	if got := h.c.VSingle(lin(1, 0, 0)); got != canonicalNaN {
-		t.Errorf("vsqrt(-1) bits = %#08x, want canonical NaN", got)
+	if got := h.c.VSingle(lin(1, 0, 0)); got != 0x7F800001 {
+		t.Errorf("vsqrt(-1) bits = %#08x, want the VFPU NaN pattern 0x7F800001", got)
 	}
 	if got := h.c.VSingle(lin(1, 0, 1)); got != 0x7F800000 {
 		t.Errorf("vrcp(0) bits = %#08x, want +Inf", got)
@@ -279,18 +326,24 @@ func TestVFPUHalfConversions(t *testing.T) {
 	if got := h.c.VSingle(idx[1]); got != 0xB4003800 {
 		t.Errorf("vf2h lane1 = %#08x, want 0xB4003800", got)
 	}
-	// Round trip back with vh2f.q.
-	h.r.load(0x40, encVUnary(0x33, qRow(2, 0), pRow(1, 0, 0), 3))
+	// Round trip back with vh2f: the size bits name the SOURCE
+	// size in words (the corpus convert checkHalf wrapper runs
+	// vh2f.p from a pair source into a quad destination), so a
+	// pair source expanding to a quad encodes size 1, not 3.
+	h.r.load(0x40, encVUnary(0x33, qRow(2, 0), pRow(1, 0, 0), 1))
 	h.c.SetPC(0x40)
 	h.run(1)
 	checkVec(t, "vh2f round trip", getVec(h, qRow(2, 0), 4), 1.0, -2.5, 0.5, -0.25)
-	// vf2h of NaN: half exponent all ones with nonzero mantissa.
+	// vf2h of the canonical NaN: the hardware keeps only the
+	// low 10 mantissa bits of a NaN input, which are zero
+	// here, so the result is the infinity pattern 0x7C00 (a
+	// documented hardware quirk in the VFPU document).
 	h = newHarness()
 	h.c.SetVSingle(lin(0, 0, 0), canonicalNaN)
 	h.r.load(0, encVUnary(0x32, sReg(1, 0, 0), sReg(0, 0, 0), 0))
 	h.run(1)
-	if got := h.c.VSingle(lin(1, 0, 0)) & 0xFFFF; got != 0x7E00 {
-		t.Errorf("vf2h NaN half = %#04x, want 0x7E00", got)
+	if got := h.c.VSingle(lin(1, 0, 0)) & 0xFFFF; got != 0x7C00 {
+		t.Errorf("vf2h NaN half = %#04x, want 0x7C00", got)
 	}
 	// vh2f of the smallest denormal half: 2^-24.
 	h = newHarness()
@@ -326,17 +379,21 @@ func TestVFPUIntConversions(t *testing.T) {
 		return out
 	}
 	nan := math.Float32frombits(canonicalNaN)
-	if got := run(0, 2.5, -2.5, 3.5, nan); got[0] != 2 || got[1] != 0xFFFFFFFE || got[2] != 4 || got[3] != 0 {
-		t.Errorf("vf2in = %v, want [2 -2 4 0]", got)
+	// NaN clamps to the positive extreme 0x7FFFFFFF in all
+	// four modes, per the pspautotests convert_scaled matrix;
+	// PSP-2 pinned 0 here and the corpus refutes it. vf2iu is
+	// round UP (ceil), still signed: -2.5 gives -2.
+	if got := run(0, 2.5, -2.5, 3.5, nan); got[0] != 2 || got[1] != 0xFFFFFFFE || got[2] != 4 || got[3] != 0x7FFFFFFF {
+		t.Errorf("vf2in = %v, want [2 -2 4 0x7FFFFFFF]", got)
 	}
-	if got := run(1, 2.5, -2.5, 3.5, nan); got[0] != 2 || got[1] != 0xFFFFFFFE || got[2] != 3 || got[3] != 0 {
-		t.Errorf("vf2iz = %v, want [2 -2 3 0]", got)
+	if got := run(1, 2.5, -2.5, 3.5, nan); got[0] != 2 || got[1] != 0xFFFFFFFE || got[2] != 3 || got[3] != 0x7FFFFFFF {
+		t.Errorf("vf2iz = %v, want [2 -2 3 0x7FFFFFFF]", got)
 	}
-	if got := run(2, 2.5, -2.5, 3.5, nan); got[0] != 3 || got[1] != 0 || got[2] != 4 || got[3] != 0 {
-		t.Errorf("vf2iu = %v, want [3 0 4 0]", got)
+	if got := run(2, 2.5, -2.5, 3.5, nan); got[0] != 3 || got[1] != 0xFFFFFFFE || got[2] != 4 || got[3] != 0x7FFFFFFF {
+		t.Errorf("vf2iu = %v, want [3 -2 4 0x7FFFFFFF]", got)
 	}
-	if got := run(3, 2.5, -2.5, 3.5, nan); got[0] != 2 || got[1] != 0xFFFFFFFD || got[2] != 3 || got[3] != 0 {
-		t.Errorf("vf2id = %v, want [2 -3 3 0]", got)
+	if got := run(3, 2.5, -2.5, 3.5, nan); got[0] != 2 || got[1] != 0xFFFFFFFD || got[2] != 3 || got[3] != 0x7FFFFFFF {
+		t.Errorf("vf2id = %v, want [2 -3 3 0x7FFFFFFF]", got)
 	}
 	if got := run(0, 1e30); got[0] != 0x7FFFFFFF {
 		t.Errorf("vf2in overflow = %#08x, want 0x7FFFFFFF", got[0])
@@ -379,11 +436,15 @@ func TestVFPUDotCrossScalCmp(t *testing.T) {
 	h.r.load(0, encMatrix(5, tRow(1, 0), tRow(0, 0), tRow(0, 1), 2))
 	h.run(1)
 	checkVec(t, "vcrsp general", getVec(h, tRow(1, 0), 3), -3, 6, -3)
-	// vscl
+	// vscl: the scalar operand reads at the dot family's
+	// scalar position (dotDestIndex; the corpus overlap test
+	// pins it). sReg(2, 0, 3) is a field where that position
+	// and the plain single layout agree (position 35), clear
+	// of both quads in play.
 	h = newHarness()
 	setVec(h, qRow(0, 0), 4, 1, -2, 3, -4)
-	setVec(h, sReg(0, 3, 3), 1, 2.5)
-	h.r.load(0, encVV(0x19, 2, qRow(1, 0), qRow(0, 0), sReg(0, 3, 3), 3))
+	setVec(h, sReg(2, 0, 3), 1, 2.5)
+	h.r.load(0, encVV(0x19, 2, qRow(1, 0), qRow(0, 0), sReg(2, 0, 3), 3))
 	h.run(1)
 	checkVec(t, "vscl", getVec(h, qRow(1, 0), 4), 2.5, -5, 7.5, -10)
 	// vsge and vslt, with a NaN lane giving 0.
@@ -408,28 +469,39 @@ func TestVFPUMatrixOps(t *testing.T) {
 			}
 		}
 	}
-	// vmmul: the VS field carries the matrix operand with its
-	// bit 5 inverted by the decoder, so the field for matrix 1
-	// is the matrix 3 field. B is the VT matrix operand.
+	// vmmul: the corpus matrix test's checkMultiplyFull case,
+	// restated. The instruction fields are the corpus binary's
+	// own (vd 8, vs 32, vt 4): under the per-slot anchor
+	// decode (matrixOriginVmmul) vs 32 is the matrix 0 block,
+	// vt 4 the matrix 1 block, vd 8 the matrix 2 block, and
+	// the product is stored transposed: dest[i][j] is the
+	// ordinary product's [j][i]. m1 and m2 are the corpus's
+	// prime tables; the ordinary product's row 0 is
+	// (1585, 1655, 1787, 1861), hand-verified.
 	h := newHarness()
-	setMat(h, 0, [4][4]float32{{0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}, {1, 0, 0, 0}})
-	setMat(h, 1, [4][4]float32{{2, 0, 0, 0}, {0, 3, 0, 0}, {0, 0, 4, 0}, {0, 0, 0, 5}})
-	h.r.load(0, encMatrix(0, qRow(2, 0), qRow(1, 0)^0x20, qRow(0, 0), 3)) // vmmul VD=M2, VS=M1, VT=M0
+	m1 := [4][4]float32{{2, 3, 5, 7}, {11, 13, 17, 19}, {23, 29, 31, 37}, {41, 43, 47, 53}}
+	m2 := [4][4]float32{{59, 61, 67, 71}, {73, 79, 83, 89}, {97, 101, 103, 107}, {109, 113, 127, 131}}
+	setMat(h, 0, m1)
+	setMat(h, 1, m2)
+	h.r.load(0, encMatrix(0, 8, 32, 4, 3)) // vmmul.q vd=8, vs=32, vt=4
 	h.run(1)
-	want := [4][4]float32{{0, 2, 0, 0}, {0, 0, 3, 0}, {0, 0, 0, 4}, {5, 0, 0, 0}}
 	for i := 0; i < 4; i++ {
 		for j := 0; j < 4; j++ {
-			if got := fv(h.c.VSingle(lin(2, i, j))); got != want[i][j] {
-				t.Errorf("vmmul [%d][%d] = %v, want %v", i, j, got, want[i][j])
+			var p float32
+			for k := 0; k < 4; k++ {
+				p += m1[j][k] * m2[k][i]
+			}
+			if got := fv(h.c.VSingle(lin(2, i, j))); got != p {
+				t.Errorf("vmmul [%d][%d] = %v, want %v", i, j, got, p)
 			}
 		}
 	}
-	// vmscl: the scalar is the VT single at field 1 (matrix 0,
-	// row 0, col 1).
+	// vmscl: the scalar is the VT single S001 (matrix 0, row 0,
+	// col 1).
 	h = newHarness()
 	setMat(h, 1, [4][4]float32{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}, {13, 14, 15, 16}})
 	h.c.SetVSingle(lin(0, 0, 1), fb(2))
-	h.r.load(0, encMatrix(4, qRow(2, 0), qRow(1, 0)^0x20, 1, 3)) // vmscl
+	h.r.load(0, encMatrix(4, matF(2, 0, 0, false), matF(1, 0, 0, false), sReg(0, 0, 1), 3)) // vmscl
 	h.run(1)
 	for i := 0; i < 4; i++ {
 		for j := 0; j < 4; j++ {
@@ -442,7 +514,7 @@ func TestVFPUMatrixOps(t *testing.T) {
 	// Matrix vmov: group 7, F=0, source copied raw.
 	h = newHarness()
 	setMat(h, 1, [4][4]float32{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}, {13, 14, 15, 16}})
-	h.r.load(0, encMatrixF(0, qRow(3, 0), qRow(1, 0), 3))
+	h.r.load(0, encMatrixF(0, matF(3, 0, 0, false), matF(1, 0, 0, false), 3))
 	h.run(1)
 	if got := fv(h.c.VSingle(lin(3, 2, 1))); got != 10 {
 		t.Errorf("vmov matrix [2][1] = %v, want 10", got)
@@ -455,43 +527,45 @@ func TestVFPUPrefixes(t *testing.T) {
 	setVec(h, qRow(0, 0), 4, 1, 2, 3, 4)
 	setVec(h, qRow(2, 1), 4, 0, 0, 0, 0)
 	h.r.load(0,
-		encVPrefix(0, 0x0123), // fields: lane0 w, lane1 z, lane2 y, lane3 x
+		encVPrefix(0, 0x1B), // swizzle lanes: w, z, y, x
 		encVV(0x18, 0, qRow(1, 0), qRow(0, 0), qRow(2, 1), 3),
 		encVV(0x18, 0, qRow(1, 1), qRow(0, 0), qRow(2, 1), 3), // prefix consumed: plain
 	)
 	h.run(3)
 	checkVec(t, "swizzle reverse", getVec(h, qRow(1, 0), 4), 4, 3, 2, 1)
 	checkVec(t, "prefix one shot", getVec(h, qRow(1, 1), 4), 1, 2, 3, 4)
-	// Abs on some lanes, neg on others (both bits together on one
-	// lane would select a constant instead).
+	// Abs on some lanes, neg on others, in the planar layout:
+	// swizzle identity 0xE4, abs lanes 0 and 2, neg lanes 1
+	// and 3.
 	h = newHarness()
 	setVec(h, qRow(0, 0), 4, -2, 3, -4, 5)
 	setVec(h, qRow(2, 1), 4, 0, 0, 0, 0)
-	// lane0: abs x (4|0), lane1: neg y (8|1), lane2: abs z (4|2), lane3: neg w (8|3)
-	imm := uint32(4) | uint32(9)<<4 | uint32(6)<<8 | uint32(11)<<12
+	imm := uint32(0xE4) | uint32(0x5)<<8 | uint32(0xA)<<16
 	h.r.load(0,
 		encVPrefix(0, imm),
 		encVV(0x18, 0, qRow(1, 0), qRow(0, 0), qRow(2, 1), 3),
 	)
 	h.run(2)
 	checkVec(t, "abs and neg", getVec(h, qRow(1, 0), 4), 2, -3, 4, -5)
-	// Constant: abs and neg together, swizzle 1, bank bit clear
-	// gives constant index 1 = 1.0.
+	// Constant lane: the constant select bit (bits [15:12])
+	// with swizzle 1 and the abs bit clear gives constant
+	// index 1 = 1.0.
 	h = newHarness()
 	setVec(h, sReg(0, 0, 0), 1, 99)
 	setVec(h, sReg(2, 0, 1), 1, 0)
 	h.r.load(0,
-		encVPrefix(0, 0xD), // lane0 field: swizzle 1, abs, neg
+		encVPrefix(0, 0x1001),
 		encVV(0x18, 0, sReg(1, 0, 0), sReg(0, 0, 0), sReg(2, 0, 1), 0),
 	)
 	h.run(2)
 	checkVec(t, "prefix constant 1", getVec(h, sReg(1, 0, 0), 1), 1)
-	// Bank bit set: constant index 5 = 1/6.
+	// Constant index 7 (swizzle 3 with the abs bit as the
+	// index high bit) = 1/6.
 	h = newHarness()
 	setVec(h, sReg(0, 0, 0), 1, 99)
 	setVec(h, sReg(2, 0, 1), 1, 0)
 	h.r.load(0,
-		encVPrefix(0, 0x1000D),
+		encVPrefix(0, 0x1103),
 		encVV(0x18, 0, sReg(1, 0, 0), sReg(0, 0, 0), sReg(2, 0, 1), 0),
 	)
 	h.run(2)
@@ -505,7 +579,7 @@ func TestVFPUDestPrefix(t *testing.T) {
 	setVec(h, qRow(2, 1), 4, 1, 1, 1, 1)
 	setVec(h, qRow(1, 0), 4, 7, 7, 7, 7)
 	h.r.load(0,
-		encVPrefix(2, 1<<5), // dpfx: lane1 mask bit at 3*1+2
+		encVPrefix(2, 1<<9), // dpfx: lane1 mask bit at 8+1
 		encVV(0x18, 0, qRow(1, 0), qRow(0, 0), qRow(2, 1), 3),
 	)
 	h.run(2)
@@ -525,7 +599,7 @@ func TestVFPUDestPrefix(t *testing.T) {
 	setVec(h, sReg(0, 0, 0), 1, -1.5)
 	setVec(h, sReg(2, 0, 1), 1, 0)
 	h.r.load(0,
-		encVPrefix(2, 2), // lane0 sat = 2
+		encVPrefix(2, 3), // lane0 sat = 3 ([-1, 1])
 		encVV(0x18, 0, sReg(1, 0, 0), sReg(0, 0, 0), sReg(2, 0, 1), 0),
 	)
 	h.run(2)
@@ -544,17 +618,13 @@ func TestVFPUReplSplt(t *testing.T) {
 	checkVec(t, "vrepl", getVec(h, qRow(1, 0), 4), 9.5, 9.5, 9.5, 9.5)
 	// vsplt uses lane = VS & 3. qRow(0,0) field is 0, so lane 0.
 	checkVec(t, "vsplt lane0", getVec(h, qRow(1, 1), 4), 1, 1, 1, 1)
-	// vsplt with a field whose low bits select lane 2: use a pair
-	// style field value 2 as the VS field of a quad op.
+	// vsplt with a field whose low bits select lane 2: field 2
+	// is column 2 of matrix 0, whose lanes are 1,2,3,4 here, so
+	// lane 2 is 3.
 	h = newHarness()
-	setVec(h, qRow(0, 0), 4, 1, 2, 3, 4)
-	h.r.load(0, encVUnary(0x09, qRow(1, 0), 2, 3))
+	setVec(h, qCol(0, 2), 4, 1, 2, 3, 4)
+	h.r.load(0, encVUnary(0x09, qRow(1, 0), qCol(0, 2), 3))
 	h.run(1)
-	// Field 2 decodes as single row 0 col 2 for the padded read;
-	// the splat lane is 2, giving the third lane of the padded
-	// source read through that field. The padded read of field 2
-	// as a quad gives lanes from row 0 (since low bit 0): values
-	// 1,2,3,4, so lane 2 is 3.
 	checkVec(t, "vsplt lane2", getVec(h, qRow(1, 0), 4), 3, 3, 3, 3)
 }
 
@@ -640,8 +710,8 @@ func TestVFPULoadStore(t *testing.T) {
 	h.r.Write32(0x200, fb(3.5))
 	h.c.SetReg(8, 0x200)
 	h.r.load(0,
-		encVLoad(0x32, 8, sReg(1, 2, 3), 0, 0), // lv.s
-		encVLoad(0x3A, 8, sReg(1, 2, 3), 4, 0), // sv.s to 0x204
+		encVLoad(0x32, 8, lsReg(1, 2, 3), 0, 0), // lv.s
+		encVLoad(0x3A, 8, lsReg(1, 2, 3), 4, 0), // sv.s to 0x204
 	)
 	h.run(2)
 	if got := fv(h.c.VSingle(lin(1, 2, 3))); got != 3.5 {
@@ -650,16 +720,26 @@ func TestVFPULoadStore(t *testing.T) {
 	if got := fv(h.r.Read32(0x204)); got != 3.5 {
 		t.Errorf("sv.s stored %v, want 3.5", got)
 	}
-	// LV.Q and SV.Q round trip.
+	// LV.Q and SV.Q round trip: the load/store walk strides
+	// by 4, covering the file positions the arithmetic side
+	// calls a column.
 	h = newHarness()
-	setVec(h, qRow(0, 0), 4, 1, 2, 3, 4)
+	setVec(h, qCol(0, 0), 4, 1, 2, 3, 4)
 	h.c.SetReg(8, 0x200)
 	h.r.load(0,
-		encVLoad(0x3E, 8, qRow(0, 0), 0, 0), // sv.q
-		encVLoad(0x36, 8, qRow(1, 0), 0, 0), // lv.q
+		encVLoad(0x3E, 8, lsQRow(0, 0), 0, 0), // sv.q
+		encVLoad(0x36, 8, lsQRow(1, 0), 0, 0), // lv.q
 	)
 	h.run(2)
-	checkVec(t, "lv.q round trip", getVec(h, qRow(1, 0), 4), 1, 2, 3, 4)
+	// The load's field (17) is odd, so the load walks the
+	// four consecutive positions of the row (the corpus
+	// colors and vector tests pin the odd-field load rule;
+	// stores always stride by 4 from the index).
+	for i, want := range []float32{1, 2, 3, 4} {
+		if got := fv(h.c.VSingle(16 + i)); got != want {
+			t.Errorf("lv.q round trip lane %d = %v, want %v", i, got, want)
+		}
+	}
 	for i := 0; i < 4; i++ {
 		if got := fv(h.r.Read32(0x200 + uint32(4*i))); got != float32(i+1) {
 			t.Errorf("sv.q mem word %d = %v", i, got)
@@ -668,63 +748,81 @@ func TestVFPULoadStore(t *testing.T) {
 }
 
 func TestVFPULvlLvr(t *testing.T) {
+	// The expectations are the corpus vector test's lvl/lvr
+	// rows restated: at byte offset a the LVL.Q count is
+	// (a + 12) & 15 (0 means 16), the loaded window ends at
+	// addr + 4 and lands in the quad's high bytes; LVR.Q
+	// takes the remaining 20 - count bytes starting at addr
+	// into the low bytes. The quad is read back through the
+	// load walk's own positions.
+	// The test's field (lsQRow(0, 0) = 1) is odd, so the load
+	// walk is the four consecutive positions {0, 1, 2, 3}
+	// (the odd-field load rule; see TestVFPULoadStore).
 	preload := func(h *harness) {
-		for i := 0; i < 4; i++ {
-			var w uint32
-			for k := 0; k < 4; k++ {
-				w |= uint32(0xA0+i*4+k) << uint(8*k)
-			}
-			h.c.SetVSingle(lin(0, 0, i), w)
+		for p := 0; p < 4; p++ {
+			h.c.SetVSingle(p, 0xEEEEEEEE)
 		}
 	}
 	quadBytes := func(h *harness) [16]byte {
 		var out [16]byte
-		idx := vecIndices(qRow(0, 0), 4)
 		for i := 0; i < 16; i++ {
-			out[i] = uint8(h.c.VSingle(idx[i/4]) >> uint(8*(i%4)))
+			out[i] = uint8(h.c.VSingle(i/4) >> uint(8*(i%4)))
 		}
 		return out
 	}
-	// LVL.Q at base 0x100 plus offset 20: a = 4, first 12 bytes
-	// come from memory, last 4 keep the preload.
+	fill := func(h *harness) {
+		for i := 0; i < 128; i++ {
+			h.r.Write8(0x100+uint32(i), uint8(i))
+		}
+		h.c.SetReg(8, 0x100)
+	}
+	// LVL.Q at +52 (a = 4): count 16, window [40, 56) into
+	// quad bytes [0, 16).
 	h := newHarness()
 	preload(h)
-	for i := 0; i < 12; i++ {
-		h.r.Write8(0x100+20+uint32(i), uint8(0x10+i))
-	}
-	h.c.SetReg(8, 0x100)
-	h.r.load(0, encVLoad(0x36, 8, qRow(0, 0), 20, 2))
+	fill(h)
+	h.r.load(0, encVLoad(0x35, 8, lsQRow(0, 0), 52, 0))
 	h.run(1)
 	b := quadBytes(h)
-	for i := 0; i < 12; i++ {
-		if b[i] != uint8(0x10+i) {
-			t.Errorf("lvl byte %d = %#x, want %#x", i, b[i], 0x10+i)
+	for i := 0; i < 16; i++ {
+		if b[i] != uint8(40+i) {
+			t.Errorf("lvl(a=4) byte %d = %#x, want %#x", i, b[i], 40+i)
 		}
 	}
-	for i := 12; i < 16; i++ {
-		if b[i] != uint8(0xA0+i) {
-			t.Errorf("lvl kept byte %d = %#x, want %#x", i, b[i], 0xA0+i)
-		}
-	}
-	// LVR.Q at the same address: a = 4, bytes 11..15 come from
-	// memory at 0x114..0x118, first 11 keep the preload.
+	// LVR.Q at +52: count 4, window [52, 56) into quad bytes
+	// [0, 4); the rest keeps the preload.
 	h = newHarness()
 	preload(h)
-	for i := 0; i < 5; i++ {
-		h.r.Write8(0x100+16+uint32(i), uint8(0x20+i))
-	}
-	h.c.SetReg(8, 0x100)
-	h.r.load(0, encVLoad(0x36, 8, qRow(0, 0), 20, 3))
+	fill(h)
+	h.r.load(0, encVLoad(0x35, 8, lsQRow(0, 0), 52, 2))
 	h.run(1)
 	b = quadBytes(h)
-	for i := 0; i < 11; i++ {
-		if b[i] != uint8(0xA0+i) {
-			t.Errorf("lvr kept byte %d = %#x, want %#x", i, b[i], 0xA0+i)
+	for i := 0; i < 4; i++ {
+		if b[i] != uint8(52+i) {
+			t.Errorf("lvr(a=4) byte %d = %#x, want %#x", i, b[i], 52+i)
 		}
 	}
-	for i := 11; i < 16; i++ {
-		if b[i] != uint8(0x20+i-11) {
-			t.Errorf("lvr byte %d = %#x, want %#x", i, b[i], 0x20+i-11)
+	for i := 4; i < 16; i++ {
+		if b[i] != 0xEE {
+			t.Errorf("lvr(a=4) kept byte %d = %#x, want 0xEE", i, b[i])
+		}
+	}
+	// LVL.Q at +96 (a = 0): count 12, window [88, 100) into
+	// quad bytes [4, 16); the low 4 bytes keep the preload.
+	h = newHarness()
+	preload(h)
+	fill(h)
+	h.r.load(0, encVLoad(0x35, 8, lsQRow(0, 0), 96, 0))
+	h.run(1)
+	b = quadBytes(h)
+	for i := 0; i < 4; i++ {
+		if b[i] != 0xEE {
+			t.Errorf("lvl(a=0) kept byte %d = %#x, want 0xEE", i, b[i])
+		}
+	}
+	for i := 4; i < 16; i++ {
+		if b[i] != uint8(88+i-4) {
+			t.Errorf("lvl(a=0) byte %d = %#x, want %#x", i, b[i], 88+i-4)
 		}
 	}
 }
@@ -976,17 +1074,25 @@ func TestVFPUMFVCRevAndRNGSeed(t *testing.T) {
 	if c0 == a0 {
 		t.Errorf("vrndi seed had no effect: %#x", c0)
 	}
-	// vrnds.s seeds from the raw VS register bits and lands on
-	// the same sequence as the MTVC seed.
+	// vrnds.s expands the seed across all eight RCX words, the
+	// expansion the pspautotests vrnd recordings pin for six
+	// seeds: RCXk becomes 1.0f with seed nibble k above the
+	// seed half the word indexes. For seed 12345 = 0x3039 the
+	// state is fully determined, so pin it word for word.
 	h = newHarness()
 	h.c.SetVSingle(lin(0, 0, 0), 12345)
-	h.r.load(0,
-		encVUnary(0x20, 0, sReg(0, 0, 0), 0), // vrnds.s
-		encVUnary(0x21, sReg(1, 0, 0), 0, 0),
-	)
-	h.run(2)
-	if got := h.c.VSingle(lin(1, 0, 0)); got != a0 {
-		t.Errorf("vrnds/vrndi = %#x, want %#x (MTVC seeded)", got, a0)
+	prog := []uint32{encVUnary(0x20, 0, sReg(0, 0, 0), 0)} // vrnds.s
+	for k := 0; k < 8; k++ {
+		prog = append(prog, encMFVC(uint32(8+k), uint32(136+k)))
+	}
+	h.r.load(0, prog...)
+	h.run(len(prog))
+	wantRCX := [8]uint32{0x3F893039, 0x3F833039, 0x3F803039, 0x3F833039,
+		0x3F800000, 0x3F800000, 0x3F800000, 0x3F800000}
+	for k := 0; k < 8; k++ {
+		if got := h.c.Reg(8 + k); got != wantRCX[k] {
+			t.Errorf("vrnds RCX%d = %#08x, want %#08x", k, got, wantRCX[k])
+		}
 	}
 	// MTVC to the read only REV index is ignored.
 	h = newHarness()
@@ -1043,13 +1149,23 @@ func TestVFPUMatrixTransform(t *testing.T) {
 		}
 	}
 	diag := [4][4]float32{{1, 0, 0, 0}, {0, 2, 0, 0}, {0, 0, 3, 0}, {0, 0, 0, 4}}
+	// The transform destination is a strided matrix row
+	// (the corpus matrix test pins it): for vd field 44 the
+	// lanes land at file positions 48, 52, 56, 60.
+	tfmDest := func(h *harness, n int) []float32 {
+		out := make([]float32, n)
+		for i := 0; i < n; i++ {
+			out[i] = fv(h.c.VSingle(48 + 4*i))
+		}
+		return out
+	}
 	// vtfm4.q: full vector operand.
 	h := newHarness()
 	setMat(h, 1, diag)
 	setVec(h, qRow(2, 0), 4, 1, 1, 1, 1)
 	h.r.load(0, encMatrix(3, qRow(3, 0), qRow(1, 0)^0x20, qRow(2, 0), 3))
 	h.run(1)
-	checkVec(t, "vtfm4", getVec(h, qRow(3, 0), 4), 1, 2, 3, 4)
+	checkVec(t, "vtfm4", tfmDest(h, 4), 1, 2, 3, 4)
 	// vhtfm4: size enum is triple; the last matrix column is
 	// weighted by an implicit 1.0.
 	h = newHarness()
@@ -1057,20 +1173,20 @@ func TestVFPUMatrixTransform(t *testing.T) {
 	setVec(h, tRow(2, 0), 3, 5, 6, 7)
 	h.r.load(0, encMatrix(3, qRow(3, 0), qRow(1, 0)^0x20, tRow(2, 0), 2))
 	h.run(1)
-	checkVec(t, "vhtfm4", getVec(h, qRow(3, 0), 4), 5, 12, 21, 4)
+	checkVec(t, "vhtfm4", tfmDest(h, 4), 5, 12, 21, 4)
 	// vtfm2.p and vhtfm2 under group 1.
 	h = newHarness()
 	setMat(h, 1, diag)
 	setVec(h, pRow(2, 0, 0), 2, 3, 4)
 	h.r.load(0, encMatrix(1, pRow(3, 0, 0), qRow(1, 0)^0x20, pRow(2, 0, 0), 1))
 	h.run(1)
-	checkVec(t, "vtfm2", getVec(h, pRow(3, 0, 0), 2), 3, 8)
+	checkVec(t, "vtfm2", tfmDest(h, 2), 3, 8)
 	h = newHarness()
 	setMat(h, 1, diag)
 	setVec(h, sReg(2, 0, 0), 1, 3)
 	h.r.load(0, encMatrix(1, pRow(3, 0, 0), qRow(1, 0)^0x20, sReg(2, 0, 0), 0))
 	h.run(1)
-	checkVec(t, "vhtfm2", getVec(h, pRow(3, 0, 0), 2), 3, 2)
+	checkVec(t, "vhtfm2", tfmDest(h, 2), 3, 2)
 	// Anchor words for the matrix fill group.
 	h = newHarness()
 	h.r.load(0, 0xF3838080, 0xF3868080) // vmidt.q M0, then vmzero.q M0
@@ -1095,11 +1211,16 @@ func TestVFPUVsbnVcstPack(t *testing.T) {
 	h.r.load(0, encVV(0x18, 2, sReg(1, 0, 0), sReg(0, 0, 0), sReg(0, 0, 1), 0))
 	h.run(1)
 	checkVec(t, "vsbn", getVec(h, sReg(1, 0, 0), 1), 3)
-	// vcst.s with constant index 2 loads 2.0.
+	// vcst.s index 2 is sqrt(2) in the hardware constant
+	// table (index 1 is the huge value). PSP-2 wrapped the
+	// index into the prefix constant table and read 2.0; the
+	// VFPU document's constant list refutes that.
 	h = newHarness()
 	h.r.load(0, encVUnary(0x62, sReg(1, 0, 0), 0, 0))
 	h.run(1)
-	checkVec(t, "vcst 2", getVec(h, sReg(1, 0, 0), 1), 2)
+	if got := h.c.VSingle(lin(1, 0, 0)); got != 0x3FB504F3 {
+		t.Errorf("vcst 2 bits = %#08x, want 0x3FB504F3 (sqrt 2)", got)
+	}
 	// vi2uc.q packs top bytes, negatives clamped to zero.
 	h = newHarness()
 	idx := vecIndices(qRow(0, 0), 4)
