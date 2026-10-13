@@ -90,6 +90,14 @@ type ymState struct {
 	timerBAcc uint32 // master clocks accumulated toward timer B expiry
 	egDiv     uint8  // envelope divider counter, ticks every 3 samples
 	prev27    uint8  // last register 0x27 value, for timer load edges
+	// advLedger is the master clocks of timer time the system has
+	// already stepped through AdvanceClocks but the render loop has
+	// not yet accounted for. ymGenerate consumes it instead of
+	// stepping the timers a second time for the same span, so a
+	// span of emulated time is never counted twice. Serialized:
+	// without it a restore would re-step (or skip) timer time and
+	// the flag pattern after the restore would drift.
+	advLedger int64
 }
 
 // opSlot maps between logical operator index (0..3 for OP1..OP4) and
@@ -240,17 +248,21 @@ func (s *Sound) ymKey(val uint8) {
 	}
 }
 
-// ymTimers advances timers A and B by one native sample (144 master
-// clocks) and sets the status flags for expiries whose enable bit
-// in register 0x27 is set. A timer only counts while its load bit
-// is set; the accumulator restarts when the load bit rises, which
-// WriteYM handles through prev27.
-func (s *Sound) ymTimers() {
+// ymAdvanceTimers advances timers A and B by the given number of
+// master clocks and sets the status flags for expiries whose
+// enable bit in register 0x27 is set. A timer only counts while
+// its load bit is set; the accumulator restarts when the load bit
+// rises, which WriteYM handles through prev27. Expiry drains whole
+// periods off the accumulator, so the timers auto-reload and any
+// chunk size (one native sample of 144 clocks from the render
+// loop, a scanline of 68000 cycles from the system) behaves the
+// same.
+func (s *Sound) ymAdvanceTimers(clocks uint32) {
 	r27 := s.ymRegsA[0x27]
 	if r27&0x01 != 0 { // timer A load
 		na := (int(s.ymRegsA[0x24]) << 2) | (int(s.ymRegsA[0x25]) >> 6)
 		period := uint32(18 * (1024 - na))
-		s.ym.timerAAcc += 144
+		s.ym.timerAAcc += clocks
 		for s.ym.timerAAcc >= period {
 			s.ym.timerAAcc -= period
 			if r27&0x04 != 0 { // timer A enable
@@ -260,7 +272,7 @@ func (s *Sound) ymTimers() {
 	}
 	if r27&0x02 != 0 { // timer B load
 		period := uint32(288 * (256 - int(s.ymRegsA[0x26])))
-		s.ym.timerBAcc += 144
+		s.ym.timerBAcc += clocks
 		for s.ym.timerBAcc >= period {
 			s.ym.timerBAcc -= period
 			if r27&0x08 != 0 { // timer B enable
@@ -571,7 +583,21 @@ func (s *Sound) ymGenerate(n int) {
 	lfoInc := lfoIncTab[lfoReg&0x07]
 
 	for i := 0; i < n; i++ {
-		s.ymTimers()
+		// Timer time for this native sample (144 master clocks):
+		// whatever the system already stepped through
+		// AdvanceClocks is consumed from the ledger instead of
+		// being stepped again; only the uncovered remainder is
+		// stepped here, so total timer time tracks emulated time
+		// exactly once no matter who drove it.
+		switch {
+		case s.ym.advLedger >= 144:
+			s.ym.advLedger -= 144
+		case s.ym.advLedger > 0:
+			s.ymAdvanceTimers(uint32(144 - s.ym.advLedger))
+			s.ym.advLedger = 0
+		default:
+			s.ymAdvanceTimers(144)
+		}
 
 		var lfoSigned, lfoTri float64
 		if lfoOn {
