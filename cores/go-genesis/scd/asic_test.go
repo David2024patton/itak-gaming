@@ -549,10 +549,15 @@ func TestASICStateRoundTrip(t *testing.T) {
 	}
 
 	// An SCD-2 era state (ASIC extension bytes all zero) loads
-	// with the ASIC at power-on state.
-	old := make([]byte, len(buf))
+	// with the ASIC at power-on state. In the SCD-4 layout a
+	// legacy state is the current layout truncated to the
+	// pre-SCD-4 unit size: the BRAM and BIOS sections were
+	// appended after everything the SCD-2 layout held, so the
+	// register block tail keeps its legacy offset.
+	legacySize := 0x80000 + 0x40000 + 0x10000 + 2048 + 256
+	old := make([]byte, legacySize)
 	copy(old, buf)
-	tail := len(old) - 256
+	tail := legacySize - 256
 	for i := tail + 242; i < tail+255; i++ {
 		old[i] = 0
 	}
@@ -564,8 +569,9 @@ func TestASICStateRoundTrip(t *testing.T) {
 		t.Fatal("SCD-2 era state did not load the ASIC at power-on state")
 	}
 
-	// The unit serialized size is unchanged from SCD-1/SCD-2.
-	if got, want := u.SerializeSize(), 0x80000+0x40000+0x10000+2048+256; got != want {
+	// The unit serialized size grew in SCD-4 by the appended
+	// BRAM and BIOS state sections.
+	if got, want := u.SerializeSize(), 0x80000+0x40000+0x10000+2048+256+BRAMSize+BIOSStateSize; got != want {
 		t.Fatalf("SerializeSize = %d, want %d", got, want)
 	}
 }
