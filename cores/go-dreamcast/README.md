@@ -263,7 +263,7 @@ bus, G2 DMA, and the fog unit deferred from DC-2.
 
 | Range | Contents |
 | :--- | :--- |
-| 0x00000000 to 0x001FFFFF | BIOS window, HLE NOP stub (see honesty notes) |
+| 0x00000000 to 0x001FFFFF | BIOS window, HLE NOP sled plus the handler stub page at 0x800 (see the DC-4 section) |
 | 0x00200000 to 0x002FFFFF | Flash ROM, 256 KB mirrored across the window |
 | 0x00500000 to 0x005FFFFF | TA FIFO (polygon parameter stream) |
 | 0x005F6900 to 0x005F693F | Holly interrupt block (real behavior) |
@@ -298,11 +298,174 @@ FB_R_SOF1 and odd rows from FB_R_SOF2, each field holding half
 the lines at the same stride, while the SPG field bit flips per
 field. Progressive output reads FB_R_SOF1 only.
 
+## DC-4: what is in this slice
+
+The BIOS HLE boot, the libretro shell, the enginetest gate, and
+the app wiring preparation. With this slice the core is
+complete: a disc image boots end to end through our own BIOS
+high-level emulation, plays through the shell, and passes the
+shared engine test.
+
+### The boot model
+
+`Machine.BootDisc` performs the machine side of the documented
+Dreamcast boot sequence:
+
+* The disc's IP.BIN (the first 16 sectors of the data area,
+  32 KB) is read through the `gd` layer and validated with the
+  DC-1 parser (`gd.ParseIPBin`); an absent or malformed IP.BIN
+  fails the boot with a clean error before the CPU is touched.
+* The IP image is copied to its documented load address
+  0x8C008000. The BIOS variables page (0x8C000000 to
+  0x8C001000) is cleared, then the documented syscall vector
+  table is written: sysinfo at 0x8C0000B0, ROM font at
+  0x8C0000B4, flashrom at 0x8C0000B8, GD-ROM at 0x8C0000BC and
+  0x8C0000C0, system boot at 0x8C0000E0, and the GD-ROM direct
+  entry pointer at 0x8C0010F0. The SYSINFO id block at
+  0x8C000068 stays zeroed: the real BIOS copies it from the
+  flash sysinfo partition, which this core does not model.
+* The CPU enters the IP at 0x8C008300 with SP 0x8C00F000 (the
+  boot stack region the public boot documentation places just
+  below the 0x8C00F000 vector and scratch block) and PR 0. SR
+  keeps its power-on value; a real IP sets its own SR, VBR,
+  and stack as its first act, and the fixture IP does exactly
+  that.
+
+No BIOS bytes are embedded or executed. The vector slots point
+at handler stubs in the BIOS window: one page at physical
+0x800, written by us, holding eight stubs of eight bytes each
+(RTS, NOP, NOP, NOP). The machine intercepts execution when
+the program counter reaches a stub, services the call in Go,
+and returns through PR; the stub's own RTS is a safety net for
+execution arriving by any other path.
+
+### The syscall subset
+
+The implemented subset is what a boot IP needs, at the
+documented vectors, with the documented GD request model
+(REQ_CMD returns a request id or 0 while busy, EXEC_SERVER
+executes, GET_CMD_STAT reports busy, complete, or error with
+the result words):
+
+* GD-ROM (vector 0x8C0000BC and 0x8C0000C0, R6 = 0): REQ_CMD,
+  GET_CMD_STAT, EXEC_SERVER, INIT_SYSTEM, GET_DRV_STAT, and
+  RESET. Commands: PIOREAD and DMAREAD (FAD addressed sector
+  reads through the `gd` layer; result word 0 is bytes
+  transferred), GETTOC2 (the session and track table),
+  INIT, GET_VERSION (this HLE's own banner, never a Sega
+  string), GETSCD (a zeroed subcode block), and PLAY, PLAY2,
+  PAUSE, RELEASE completing at once (no CD audio model).
+* Misc (same vector, R6 = -1): INIT.
+* SYSINFO (0x8C0000B0): init, and the id block read (zeroed,
+  see above).
+* System boot (0x8C0000E0): function 0, the exit to the BIOS
+  menu. There is no menu in this HLE, so the CPU halts and
+  the machine idles on its last frame.
+
+Everything else (the font and flashrom vectors in full, the
+remaining GD functions and commands, further sysinfo and
+system functions) is a logged stub: it returns the
+documented error shape (0xFFFFFFFF, or the GD error status)
+and is recorded in `Machine.UnimplementedBIOSCalls`, with a
+summary (`Machine.BIOSDiagnostics`) the shell prints through
+the frontend log at unload, the PS1 core's pattern. Handlers
+preserve every register except R0. The requests execute
+synchronously at EXEC_SERVER, so a poll loop sees busy only
+when no request was queued. One read is bounded to 8192
+sectors.
+
+Two boundaries of the boot model, stated plainly: the boot
+file is served as stored, so the retail descramble step is
+not implemented and unscrambled (homebrew layout) images are
+the supported form; and retail discs' own IP.BIN programs are
+Sega code this repository does not contain, so a retail image
+boots only as far as its IP runs on this syscall subset (see
+the honesty notes). No retail game has been booted on this
+core yet.
+
+### The enginetest gate
+
+`system/dc4_test.go` builds a synthetic disc (.gdi and .iso
+forms) whose IP.BIN is a hand-assembled SH-4 program (a small
+two-pass assembler in the test file; every encoding is the
+documented one) that does the real boot work through the BIOS
+calls: GD init, GETTOC2, a PVD read, an ISO9660 root walk
+that finds the boot file named in its own header, and sector
+by sector PIOREAD loads of the payload to 0x8C010000. The
+payload keys the DC-3 ARM7 sound driver tone, polls Maple
+port 0 through a DMA table, renders the DC-2 textured quad
+scene, arms the vblank interrupt, and idles on SLEEP while
+its handler counts vblanks. Milestones land in order at
+0x8C300000, all inside the first frame.
+
+Gate results (2026-10-13): all five milestones observed in
+frame 0, in order; framebuffer probes exact (0xF800, 0x07E0,
+0x8400, 0x001F, 0xFFFF raw, and the presented red texel
+0xFFFF0000 and bilinear midpoint 0xFF848200); the recorded
+Maple condition words match the host pad state exactly
+(0x07002003, 0x01000000, 0xFFF300C8, 0x8080C81E for A and
+Start pressed, trigger 200, stick (30, 200)); the tone's
+period is found verbatim in the drained audio and measures
+exactly 64.00 samples (689 Hz at 44100 Hz) over 46 rising
+edges; the boot used zero unimplemented BIOS calls; a
+mid-run save restores byte-identical continuation (state,
+framebuffer, and audio). The same disc through the built
+desktop core (`builds/libgo_dc_desktop.so`) in the shared
+harness (`go_backend/cmd/enginetest`): ALL TESTS PASSED
+(640x480 non-blank video, non-silent audio, save state
+28,162,901 bytes with the scene loaded, restore frame hash
+equal). Debugging the gate caught three real fixture bugs
+worth naming: an LDS encoding mixup (PR vs MACH), and the
+two SH-4 delay slot traps (a conditional branch's delay slot
+runs only when taken; a call's delay slot reads pre-call
+registers).
+
+### The shell
+
+`libretro` follows the family pattern: core name
+"iTaK GoDC", extensions `gdi|iso|bin` (the `gd` layer has no
+.cue parser, so cue is not advertised), `need_fullpath` set
+(a .gdi resolves its track files relative to its own
+directory), geometry fixed at the PVR Present output
+640x480, XRGB8888. The declared fps is the quotient of the
+machine's own documented constants, 200,000,000 Hz over the
+3,333,333 cycle frame budget = 60.000006, not the 59.94
+NTSC figure: the core's flat model runs at 60, and the shell
+says so. Audio is the AICA's native 44,100 Hz stereo. The
+pad maps the libretro standard layout to the DC pad (A, B,
+X, Y, Start, dpad), the analog triggers from the libretro
+analog button axes (L2 and R2) with a digital full-press
+fallback from L and R, and the main stick from the left
+analog axes scaled to 0..255 with 128 centered; through the
+iTaK Go bridge (digital joypad only) the stick reads
+centered and the triggers read through L and R.
+RETRO_MEMORY_SYSTEM_RAM is the 16 MB main RAM;
+RETRO_MEMORY_SAVE_RAM is port 0's live 128 KB VMU image.
+Serialize goes through the system save states; reset
+reboots the loaded disc.
+
+### Fixes and wiring state
+
+* The Holly PVR DMA done event constant is corrected to the
+  documented table value 11 (DC-2 and DC-3 carried 19, the
+  channel-2 DMA end value). A module-wide grep before the
+  fix found the declaration as the constant's only use;
+  nothing raised or tested it, so the fix is free. There is
+  still no PVR DMA to raise it.
+* App wiring preparation is done locally and NOT pushed:
+  `go_backend/internal/core/types.go` (the Cores64BitOnly
+  Dreamcast entry is now "iTaK GoDC" / libgo_dc.so with
+  extensions gdi, iso, bin) and `flutter_ui/lib/main.dart`
+  (the 'dc' entry uses libgo_dc.so with the same extensions;
+  `requires64: true` unchanged). `tools/autobuild-server.sh`
+  is untouched: it has no 64-bit branch, which is the
+  parent's pipeline task.
+
 ## Save states
 
 `Machine.Serialize` writes, in order:
 
-1. One version byte, currently 0x03.
+1. One version byte, currently 0x04.
 2. The CPU state (`sh4.SerializeSize` bytes, which now includes
    the latched pending interrupt).
 3. Main RAM, then VRAM, then flash, then AICA RAM, each at its
@@ -322,11 +485,14 @@ field. Progressive output reads FB_R_SOF1 only.
 8. The G2 DMA registers and channel state, then a 16 byte
    machine tail: the AICA clock accumulator remainder and
    the Maple vblank trigger edge flag.
+9. The BIOS HLE block (192 bytes, DC-4): the booted flag,
+   the GD request queue, and the unimplemented-call
+   diagnostics.
 
 A fresh machine measures:
 
 ```text
-StateSize = 28,162,473 bytes (version 3, empty TA scene)
+StateSize = 28,162,665 bytes (version 4, empty TA scene)
 ```
 
 `Machine.Deserialize` checks the version byte and the PVR
@@ -345,21 +511,36 @@ gate proves the same for a mid-run state with sound playing
   the DSP effect unit, G2 DMA, the Maple bus delivering
   controller state to games, and the fog unit deferred from
   DC-2.
-* DC-4: BIOS HLE and shipping shape. High-level emulation of
-  the BIOS boot sequence (our own boot code reads IP.BIN and
-  loads 1ST_READ.BIN per the documented sequence), a libretro
-  style shell, an engine test running a synthetic 1ST_READ
-  that exercises PVR, AICA, and Maple together, and app
-  wiring for the android-64bit build of iTaK Gaming.
+* DC-4: done (this slice). The BIOS HLE boot and syscall
+  subset, the libretro shell, the enginetest gate in process
+  and through the shared harness, and the android-64bit app
+  wiring preparation. The core is complete; what remains is
+  the honest gaps list below, which future slices can close
+  as real software demands them.
 
 ## Honesty notes
 
 * No Dreamcast BIOS or firmware bytes are included in this core
   or ever downloaded for it. The BIOS window reads back an HLE
   stub: an endless sled of SH-4 NOP instructions (the 16-bit
-  value 0x0009), so execution that lands there slides instead of
-  running dumped code. Real BIOS calls get high-level emulation
-  in DC-4.
+  value 0x0009) plus the handler stub page at 0x800, so
+  execution that lands outside a stub slides instead of
+  running dumped code. Real BIOS calls get the high-level
+  emulation described in the DC-4 section.
+* BIOS syscall coverage stops at the boot subset (see the
+  DC-4 section). Calls outside it are logged stubs returning
+  a documented error, never silent successes: the ROM font
+  and flashrom interfaces are unimplemented, the GD command
+  set has no session or mode commands (REQ_SES, REQ_MODE,
+  SET_MODE) and no sector-mode switching (the sector size
+  and data type are fixed at the image's own layout), CD
+  audio commands complete without playing anything, and the
+  boot file descramble step is not implemented, so
+  unscrambled images are the supported form. No retail game
+  has been booted on this core yet; real games will exercise
+  syscall paths and hardware corners the fixtures do not,
+  and the unimplemented-call diagnostics exist so those
+  first failures name what is missing.
 * Fog arrived in DC-3 (see the DC-3 section and its
   boundaries): all four TSP fog modes are implemented. The
   fog table entry contributes its low 8 bits as the fog
