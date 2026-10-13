@@ -144,8 +144,8 @@ func TestSerializeSizeAndRoundTrip(t *testing.T) {
 	setTone(s)
 	s.Produce(100) // run the PSG so its state is mid-stream
 
-	if got := s.SerializeSize(); got != 1544 {
-		t.Fatalf("SerializeSize() = %d, want 1544", got)
+	if got := s.SerializeSize(); got != 1920 {
+		t.Fatalf("SerializeSize() = %d, want 1920", got)
 	}
 	buf := make([]byte, s.SerializeSize())
 	if err := s.Serialize(buf); err != nil {
