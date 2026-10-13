@@ -310,9 +310,13 @@ func (c *CPU) execCOP2(op, rs, rt, rd uint32) (int, bool, *raisedException) {
 		return 1, false, nil
 	case rs == 0x08: // BC2F/BC2T: the GTE raises no branch condition
 		return 1, true, nil
-	case rs >= 0x10: // GTE command
-		c.CP2.Command(op)
-		return 1, false, nil
+	case rs >= 0x10: // GTE command: the GTE charges
+		// its documented execution cycles.
+		cyc := c.CP2.Command(op)
+		if cyc < 1 {
+			cyc = 1
+		}
+		return cyc, false, nil
 	}
 	return 1, false, c.raise(ExcRI, 0, 0)
 }
