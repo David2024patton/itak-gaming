@@ -12,17 +12,27 @@ import "time"
 type Role string
 
 const (
-	RoleHost  Role = "host"
-	RoleGuest Role = "guest"
+	RoleHost      Role = "host"
+	RoleGuest     Role = "guest"
+	RoleSpectator Role = "spectator"
 )
 
-// member is one joined player. Members exist independently of WebSocket
+// member is one joined member. Members exist independently of WebSocket
 // connections: a player joins over HTTP first, then connects to the
 // signaling socket with the token they were issued.
 type member struct {
 	id     string // internal random id
 	player string // display name chosen by the player
 	role   Role
+	seq    int // join order within the lobby, for stable rosters
+}
+
+// Member is the public view of one lobby member: a display name and a
+// role, nothing else. The signaling layer uses it to build the room
+// roster notice; it carries no ids and no tokens.
+type Member struct {
+	Name string `json:"name"`
+	Role Role   `json:"role"`
 }
 
 // Lobby is a single netplay room. All fields are guarded by the owning
@@ -38,8 +48,10 @@ type Lobby struct {
 	salt     []byte // nil when the lobby has no password
 	passHash []byte // nil when the lobby has no password
 
-	members map[string]*member // member id -> member
-	tokens  map[string]string  // sha256(token) hex -> member id
+	members  map[string]*member // member id -> player member (host, guests)
+	watchers map[string]*member // member id -> spectator member
+	tokens   map[string]string  // sha256(token) hex -> member id
+	nextSeq  int                // next member join-order value
 
 	peers        int       // live WebSocket connections, reported by the hub
 	everHadPeers bool      // at least one peer connected at some point
@@ -54,6 +66,7 @@ type PublicLobby struct {
 	HostPlayer string    `json:"hostPlayer"`
 	Players    int       `json:"players"`
 	MaxPlayers int       `json:"maxPlayers"`
+	Spectators int       `json:"spectators"`
 	Locked     bool      `json:"locked"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
@@ -67,6 +80,7 @@ func (l *Lobby) Public() PublicLobby {
 		HostPlayer: l.HostPlayer,
 		Players:    len(l.members),
 		MaxPlayers: l.MaxPlayers,
+		Spectators: len(l.watchers),
 		Locked:     l.passHash != nil,
 		CreatedAt:  l.CreatedAt,
 	}
