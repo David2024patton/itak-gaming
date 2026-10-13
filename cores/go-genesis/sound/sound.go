@@ -17,6 +17,11 @@
 //	WritePSG(val uint8)
 //	Produce(frames int) []int16       interleaved stereo, advances the PSG
 //	SerializeSize() int / Serialize / Deserialize
+//
+// AdvanceClocks(cycles uint32) was added after the original pin:
+// it steps only the YM2612 timers, in master clocks, so the system
+// can move them at scanline boundaries; Produce accounts for the
+// stepped time through a serialized ledger (see AdvanceClocks).
 package sound
 
 import (
@@ -83,6 +88,18 @@ func New() *Sound {
 			s.ym.ops[ch][op].levelFP = ymMaxFP
 		}
 	}
+	// Pan powers on routed to BOTH sides on real hardware, even
+	// though the register value reads as zero: the registers are
+	// write-only, and games prove the routing every boot. Sonic 1
+	// streams the SEGA jingle through the DAC without ever writing
+	// channel 6's pan register first, and it is audible on hardware.
+	// An explicit pan write (including 0x00, full mute) still takes
+	// effect exactly as written.
+	for _, bank := range []*[256]uint8{&s.ymRegsA, &s.ymRegsB} {
+		bank[0xB4] = 0xC0
+		bank[0xB5] = 0xC0
+		bank[0xB6] = 0xC0
+	}
 	return s
 }
 
@@ -99,8 +116,11 @@ func (s *Sound) WritePSG(val uint8) { s.psgWrites++; s.psg.Write(val) }
 //	timerAAcc(4) + timerBAcc(4) + egDiv(1) + prev27(1) + pad(2) +
 //	per-channel feedback history f32x2 x6(48) +
 //	per-operator state x24(12 each: phase(4) + levelFP(4) +
-//	stage(1) + flags(1: keyOn, ssgDown, ssgHold) + pad(2))
-const serializeSize = 1920
+//	stage(1) + flags(1: keyOn, ssgDown, ssgHold) + pad(2)) +
+//	advLedger i64(8): timer clocks the system stepped ahead of the
+//	render loop (see AdvanceClocks); without it a restore would
+//	step that span of timer time a second time or not at all.
+const serializeSize = 1928
 
 // psgStateOffset is the offset of the PSG state region in the layout.
 const psgStateOffset = 520
@@ -154,6 +174,25 @@ func (s *Sound) WriteYM(addr uint32, val uint8) {
 // writes complete instantly), bit1 timer B flag, bit0 timer A flag.
 func (s *Sound) ReadYM() uint8 {
 	return s.ymStatus & 0x03
+}
+
+// AdvanceClocks steps the YM2612 timers forward by the given
+// number of master clocks, outside the render path. On the
+// Genesis the YM2612 clock (master / 7) equals the 68000 clock, so
+// callers pass elapsed 68000 cycles. The system calls this at
+// scanline boundaries so a CPU polling the status port sees timer
+// flags flip mid-frame, the way DAC sample playback is paced,
+// instead of only after the frame's audio renders. The stepped
+// clocks are recorded in the engine's advance ledger and Produce
+// renders past them without stepping a second time, so a span of
+// emulated time moves the timers exactly once. Only the timers
+// move here; envelopes and phase still render in Produce.
+func (s *Sound) AdvanceClocks(cycles uint32) {
+	if cycles == 0 {
+		return
+	}
+	s.ymAdvanceTimers(cycles)
+	s.ym.advLedger += int64(cycles)
 }
 
 // Produce advances both chips by the time owed for frames output
@@ -316,6 +355,7 @@ func (s *Sound) Serialize(buf []byte) error {
 			off += 12
 		}
 	}
+	binary.LittleEndian.PutUint64(b[off:off+8], uint64(s.ym.advLedger))
 	return nil
 }
 
@@ -370,5 +410,6 @@ func (s *Sound) Deserialize(buf []byte) error {
 			off += 12
 		}
 	}
+	s.ym.advLedger = int64(binary.LittleEndian.Uint64(b[off : off+8]))
 	return nil
 }
