@@ -11,7 +11,7 @@ game path for this core is HLE of the PSP kernel and syscalls (slice
 PSP-3), the same approach the homebrew toolchain targets, not a
 low-level boot of Sony firmware.
 
-## Status: PSP-3 (HLE kernel, thread scheduler, ELF/PRX loader, pspautotests conformance)
+## Status: COMPLETE (PSP-4: sceAudio, libretro shell, enginetest)
 
 PSP-1 delivered the CPU, memory, media foundations and the machine
 skeleton (kept below). PSP-2 added the VFPU and the GE (kept below,
@@ -25,6 +25,10 @@ environment homebrew actually runs against:
   stubs dispatch into.
 - `system` kernel mode: `LoadExecutable(data)` boots an ELF or PRX
   into the kernel; states version 3 carry the kernel in kernel mode.
+- PSP-4 completes the core: the sceAudio HLE and mixed output
+  drain, the Media Engine decision (not emulated, documented in
+  the PSP-4 section), the libretro shell, the synthetic
+  bootable-ISO enginetest, and the app wiring prep.
 
 ### Loader audit outcome (PSP-3)
 
@@ -265,6 +269,264 @@ stay flagged: no corpus binary uses them, so the PSP-2 slots
 and semantics remain unverified. The VRND draw recurrence and
 the RCX shift-window dynamics stay modeled, not solved.
 
+## PSP-4 (sceAudio, Media Engine decision, libretro shell, enginetest)
+
+PSP-4 completes the core: the audio HLE, the shell the frontends
+load, a synthetic end-to-end enginetest, and the app wiring prep
+(local only, like the other coordinators' swaps; the parent
+verifies and pushes).
+
+### sceAudio
+
+The kernel gains the documented sceAudio set (27 new registry
+entries; the (module, NID) registry now holds 154). The model
+follows the published driver behavior (pspsdk pspaudio.h
+constants and the behavior the open test literature records):
+
+- 8 channels, 16-bit samples, stereo (format 0) or mono (0x10)
+  per channel, output at 44,100 Hz. A channel is reserved with
+  a per-call sample count of 64..65472 frames, a multiple of
+  64. sceAudioChReserve with a negative channel takes the first
+  free channel searching downward from channel 7, where free
+  means no reservation and no buffer still playing out.
+- One buffer per channel, no queue. Output calls hand the
+  channel a guest address; the mixer reads the samples straight
+  out of guest memory as they are consumed (a guest that
+  rewrites a playing buffer hears the rewrite, as on hardware;
+  the gates double-buffer for exactly this reason). A null
+  buffer pointer is accepted and records a full buffer of rest
+  length with nothing playing, which is where
+  sceAudioGetChannelRestLen (counts it) and
+  sceAudioGetChannelRestLength (does not) disagree; gate (d)
+  pins the disagreement.
+- A non-blocking output on a busy channel fails
+  SCE_ERROR_AUDIO_CHANNEL_BUSY (0x80260002). A blocking output
+  parks the caller instead (one parked thread per channel; a
+  second blocking caller is turned away BUSY). When the playing
+  buffer runs out, the parked buffer starts and the caller
+  wakes with the channel sample count, the same value an
+  immediate enqueue returns. Validation orders match the
+  documented driver: outputs check the volume before the
+  channel, sceAudioOutputPannedBlocking ORs its volume pair so
+  a negative fails there while the other calls read a negative
+  volume as "leave that side unchanged", reserve checks the
+  sample count before the format, SetChannelDataLen checks its
+  length before the reservation. Volumes apply as
+  (sample * vol) >> 15 into a wide accumulator with one int16
+  clamp; unity is 0x8000. sceAudioChRelease drops only the
+  reservation: an in-flight buffer plays to the end.
+- Consumption is a pure function of the kernel cycle clock:
+  frames due at cycle C is floor(C * 44100 / 222 MHz), exactly
+  735 stereo frames per 3,700,000-cycle frame. Mixing is lazy
+  (it advances at every scheduler wait-expiry pass and when the
+  host drains), so playback is deterministic and a save state
+  resumes the stream at the exact frame. A parked blocking
+  caller's wait deadline is the cycle its channel's buffer runs
+  out, so the scheduler fast-forward lands there and the buffer
+  completes: a guest whose only thread blocks on audio output
+  forever cannot deadlock the machine (gate (c) proves it).
+  One simplification, stated: consumption is phased to the
+  boot-time clock rather than re-phasing to the first enqueue
+  the way the hardware DMA start does; totals, rates, and
+  per-buffer boundaries are unaffected.
+- system.AudioBuffer() drains the mixed stream in kernel mode
+  (stereo int16 at 44,100 Hz); outside kernel mode it returns
+  nil, the PSP-2 behavior. The undrained ring is capped at
+  8192 frames (over ten seconds); samples past the cap drop.
+- sceAudioInput is the documented silence model: this core has
+  no microphone source, so InputInit succeeds, reads fill the
+  buffer with zeros and report every requested sample, a null
+  buffer returns -1, and GetInputLength returns 0. The routing
+  pair is stored state with the documented defaults (mode 1,
+  volume mode 1) and set-returns-previous semantics.
+  sceAudioSetFrequency accepts the documented 44100 and 48000;
+  the output stream itself stays 44,100 Hz.
+- Not implemented, by decision: the sceAudioOutput2 and
+  sceAudioSRCCh families. They share one hardware channel whose
+  documented behavior includes arbitrary input sample rates
+  with sample rate conversion and a two-descriptor DMA queue,
+  which is not simple documented semantics, and no corpus test
+  exercises them. Their NIDs stay unregistered, so calls land
+  on the PSP-3 unknown path (0x80020001 plus a
+  Kernel.UnknownCalls entry); gate (d) pins exactly that.
+
+Gates (system/psp4_gate_test.go, synthetic guests in the PSP-3
+gate builder style, host measures the drained stream):
+
+- (a) One channel plays a 100-frame-period cosine (441 Hz,
+  amplitude 12000) through 40 blocking calls of 1024 frames:
+  the drained span is exactly 40,960 frames, every sample equal
+  to the table value at unity volume, silence outside the span,
+  measured frequency 440.35 Hz from rising zero crossings
+  (within 2 percent of 441). A second run saves mid-playback
+  (20 calls done, a buffer in flight) and the restored
+  continuation is byte-identical to the uninterrupted run:
+  stream, console, and final state.
+- (b) Two channels (7 and 6, the documented downward search)
+  mix the same static buffer: 10,240 frames of exact doubled
+  table values starting in lockstep, then two buffers of
+  +30000 per channel clamped to 32767 for 2,048 frames, then
+  two of -30000 clamped to -32768 for 2,048 frames: 14,336
+  frames exact.
+- (c) A guest that only plays audio (its main thread loops on
+  OutputBlocking forever) still advances: 30 frames run, vcount
+  30, exactly 44,100 samples drained (30 x 735 stereo frames),
+  22 blocking calls completed, and every played frame matches
+  the replayed buffer pattern exactly. No deadlock.
+- (d) Edge semantics: one guest records 34 return values
+  covering the validation orders and error codes above (invalid
+  channel 0x80260003, not aligned 0x80260006, invalid format
+  0x80260007, not init 0x80260001, invalid volume 0x8026000B,
+  invalid frequency 0x8026000A, not reserved 0x80260008, busy
+  0x80260002), the RestLen/RestLength disagreement (1024 vs 0
+  after a null output), the input silence model, the routing
+  defaults, the two unimplemented reserves returning 0x80020001
+  and appearing in UnknownCalls, a release with a buffer in
+  flight, and a oneshot landing on channel 6 with rest 512
+  because channel 7's released buffer is still playing out.
+  The corpus harness is unchanged by PSP-4 (cpu_alu still 4/4).
+
+Audio state serializes in the kernel blob (its internal
+version is now 3): channels, parked waiters by thread UID,
+mixer position, the undrained ring, and the routing pair. A
+fresh machine in kernel mode just after boot serializes
+35,677,708 bytes (35,677,402 in PSP-3; the audio block adds
+306).
+
+### Media Engine decision
+
+The Media Engine is not emulated, and no second CPU will be
+built. Reasoning: the ME is a second Allegrex-class processor
+with its own boot sequence and shared-memory mailbox protocol;
+nothing in the fetched corpus gates it (no pspautotests binary
+exercises it); and retail software reaches it through firmware
+modules (the sceMe/sceVlme/sceMeAudio libraries and the module
+stack above them) that this HLE kernel does not load, so there
+is no guest code path in scope that could drive an emulated ME
+even if one existed. The stance: any sceMe, sceVlme, or
+sceMeAudio-style NID stays on the logged-unknown path
+(0x80020001 with a Kernel.UnknownCalls entry). No ME-adjacent
+query exists in the implemented sceKernel set today, so nothing
+answers with a synthetic value; if one is added it takes the
+documented not-available value. No published evidence showed a
+small documented subset with simple semantics that real boot
+code needs, so none is implemented.
+
+### libretro shell
+
+libretro/ is the family C ABI shell, core name "iTaK GoPSP".
+Load paths: .iso opens through the umd layer and boots
+PSP_GAME/SYSDR/BOOT.BIN, falling back to EBOOT.BIN beside it
+per the documented UMD layout (system.BootUMD); if neither
+exists the load fails cleanly. .elf and .prx load directly
+through system.LoadExecutable. Declared extensions: iso|elf|prx,
+need_fullpath set. Geometry 480x272 XRGB8888, aspect from the
+geometry (1.7647). Timing declares fps 60.0, which is the
+machine's own quotient (222 MHz over the 3,700,000 cycle frame
+budget is exactly 60), and audio 44,100 Hz stereo from the
+system drain. Input maps by position (Cross=B, Circle=A,
+Square=Y, Triangle=X, Start, Select, L, R, dpad) through
+SetButtons and the left analog stick through SetAnalog.
+RETRO_MEMORY_SYSTEM_RAM is the 32 MB main RAM.
+RETRO_MEMORY_SAVE_RAM returns nil/0: PSP saves flow through
+the IoFileMgr ms0: store the host installs with
+SetMemoryStickFiles, which is a host-owned map with no stable
+fixed backing slice to expose, and the iTaK frontend does not
+consume libretro SAVE_RAM for PSP. Serialize forwards to system
+states (v3 in kernel mode); retro_reset re-boots the loaded
+content. Shell gates (libretro/main_test.go) cover both load
+paths, the info and AV contract, the memory regions, a
+serialize round trip plus reset re-boot, and clean rejection
+of bad images (garbage ISO, truncated ISO, ISO with no boot
+executable, garbage ELF, empty PRX, wrong extension).
+
+### Enginetest
+
+The enginetest package builds the synthetic bootable ISO: a
+hand-assembled guest at PSP_GAME/SYSDR/BOOT.BIN (with a
+PARAM.SFO carrying the title "PSP4 Engine Test") that prints
+"PSP4 ENGINE OK" through the kernel console, submits a GE list
+(clear color 0xFF302010 plus one green sprite at (8,8)-(16,12)),
+starts the 441 Hz sceAudio sine in its first frames and keeps
+it playing with no input, polls sceCtrl and records the host
+buttons, writes milestones 1..5 in order to 0x08900000, and
+loops on vblank waits. The in-process gate (system/
+psp4_enginetest_test.go) asserts the milestones in order, the
+console string, exact pixels (clear, sprite, and the pixel
+just past the sprite), the recorded buttons equal to the host
+set Start|Down, at least 8 audio calls and 30 vblank waits in
+100 frames, vcount equal to the frames run, and the tone exact
+from stream frame 6 (147,000 samples over 100 frames). A
+mid-run save restores byte-identical continuation: state,
+framebuffer, and the 30-frame audio block after the save
+point. The same ISO through the built desktop core
+(builds/libgo_psp.so, builds/ is gitignored) under
+go_backend/cmd/enginetest reports, verbatim:
+
+    === iTaK Gaming engine test (linux/amd64) ===
+    core loaded
+    game loaded
+    AV: aspect=1.7647 fps=60.00 audio=44100 Hz pixelFormat=1
+    video: 480x272, frames=120, non-blank=true
+    audio: produced=88200 drained=96000 non-silent=94068
+    save state: 35939883 bytes at frame hash 103c4fc882f647c1
+    save manager: wrote one state each for players dad and kid
+    after moving on: hash 103c4fc882f647c1 (differs from save point: false)
+    after restoring save: hash 103c4fc882f647c1 (save point 103c4fc882f647c1)
+    RESULT: ALL TESTS PASSED
+
+(The core and rom path lines are omitted from the quote; they
+name the local builds/ paths. "produced=88200" is exactly 120
+frames x 735; the frame hash is stable across the save,
+continued running, and the restore because the guest frame is
+static once drawn.)
+
+### Wiring prep (local, not pushed)
+
+go_backend/internal/core/types.go: the Cores64BitOnly PSP
+entry now names "iTaK GoPSP" / libgo_psp.so with extensions
+.iso/.elf/.prx. flutter_ui/lib/main.dart: the PSP SystemInfo
+core string is libgo_psp.so with the same extensions (it
+already carried requires64: true). Only the PSP entries were
+touched; the backend still builds. tools/autobuild-server.sh
+is untouched (it has no 64-bit branch; that is the parent's
+pipeline task), and no pubspec change was made. The 64-bit
+Android build of libgo_psp.so through that pipeline is still
+ahead; the wiring names the artifact the pipeline will
+produce.
+
+### Honest gaps carried forward
+
+- The parked PSP-3 corpus divergence classes, unchanged: the
+  hardware VFPU transcendentals are low-bit approximations
+  while this core computes true values (1-3 ULP differences);
+  prefix_consume leaves 30 of 85 op result lines differing in
+  per-op prefix roles not modeled; prefix_unpack leaves 11 of
+  34 lines differing by the prefix unit's stale-latch replay;
+  the operand-layout paradox files (vregs Upgrade/Combine,
+  prefixes R-name prints, matrix vmidt) stay unresolvable
+  under any single field-based walk; overlap_vcrsp's in-place
+  hazard is documented by the test's own header and not
+  modeled; the vbranch and fpu branch hazards (delayed CC
+  visibility) are not modeled; vavg's expected lanes 1-3 are
+  the recording machine's uninitialized state; the VRND draw
+  recurrence is modeled (xorshift32), not solved, while its
+  seed expansion and RCX readback are exact; the corpus vector
+  guest still stalls after 3309 of 5330 lines in an SDK string
+  routine, so its tail (including checkConstants) is
+  unverified and VCST stays exercised, not adjudicated;
+  VREPL/VSPLT remain uncorroborated by any corpus binary.
+- Callbacks are registered but never dispatched (PSP-3).
+- The Media Engine is absent (decision above). The
+  sceAudioOutput2 and sceAudioSRCCh families are absent
+  (decision above).
+- No PGD decryption: encrypted retail content cannot load.
+- Primary opcode 0x3F still executes as a no-op; the encoding
+  stays flagged open (PSP-3).
+- And the standing note: no retail game has been booted on
+  this core. Every proof is the published corpus, synthetic
+  guests, and documentation gates.
+
 ## PSP-2 (VFPU, GE display list processor, system integration)
 
 PSP-2 adds the two coprocessor-class units (the VFPU text below
@@ -363,6 +625,11 @@ against the corpus, see the PSP-3 corrections above):
   VFPU + RAM + VRAM + scratchpad + input + cycle count + GE state).
   State size: 35,674,041 bytes on a fresh machine, of which the CPU
   state is 2,864 bytes (PSP-1: 35,669,577 total, 1,588 CPU).
+- `enginetest`: the PSP-4 synthetic fixture (guest ELF builder,
+  ISO9660 image with PSP_GAME/SYSDR/BOOT.BIN and PARAM.SFO,
+  milestone and probe constants), shared by the system gate, the
+  shell tests, and the desktop harness run.
+- `libretro`: the "iTaK GoPSP" shell (see the PSP-4 section).
 
 ## Gates (PSP-2)
 
@@ -432,9 +699,11 @@ set for PSP-2. Nothing from the suite is vendored into this repository.
   with pspautotests as the conformance gate (the tests/cpu set,
   including the vfpu group as the executable cross-check for the VFPU
   encodings and math; results in the PSP-3 section above).
-- PSP-4: audio (sceAudio plus a Media Engine decision), the libretro
-  shell, a homebrew enginetest through the shell, and app wiring for
-  the android-64bit build.
+- PSP-4 (done): audio (sceAudio plus the Media Engine decision),
+  the libretro shell, a synthetic bootable-ISO enginetest through
+  the built shell and the shared harness, and app wiring prep for
+  the android-64bit build (the pipeline's 64-bit branch itself is
+  still ahead; see the PSP-4 section).
 
 Commercial game support depends on HLE coverage growth slice by slice
 and is NOT promised by any of the above.
