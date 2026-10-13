@@ -412,6 +412,10 @@ func (p *PVR) shadePixel(fb *frame, pr *Prim, idx int, interp [2][3]vertInterp, 
 	for c := 0; c < 4; c++ {
 		src[c] = clamp01(src[c])
 	}
+	// Fog: after the texture instruction and the source
+	// color clamp, before blending, selected by this
+	// polygon ISP fog control field. See fog.go.
+	src = p.applyFog(src, ispFogCtrl(set.isp), q, off[3], set.isp&ispOffset != 0)
 
 	if set.isp&ispZWriteDis == 0 {
 		fb.depth[idx] = q
