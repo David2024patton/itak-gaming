@@ -15,6 +15,7 @@ import (
 // real stats store, the same collaborators main wires together.
 type world struct {
 	ts      *httptest.Server
+	handler *Handler
 	friends *Store
 	lobbies *lobby.MemoryStore
 	stats   *stats.Store
@@ -28,6 +29,7 @@ func newWorld(t *testing.T) *world {
 		stats:   stats.Open("", discardLog()),
 	}
 	h := NewHandler(w.friends, w.stats, w.lobbies, discardLog())
+	w.handler = h
 	mux := http.NewServeMux()
 	h.Register(mux)
 	w.ts = httptest.NewServer(mux)
