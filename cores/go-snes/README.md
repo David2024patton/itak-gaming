@@ -10,7 +10,74 @@ dependencies.
 
 ## Status
 
-**SNES-3 (this slice): the audio unit: SPC700, SMP, and
+**SNES-4 (the final slice): shipped. This core is
+COMPLETE.**
+
+- `libretro`: the cgo c-shared shell over the `system`
+  package (library name "iTaK GoSNES", extensions
+  sfc|smc, 256x224 XRGB8888, 60.0988 fps, 32000 Hz
+  stereo, serialize passthrough to the machine state,
+  SAVE_RAM and SYSTEM_RAM memory interfaces, joypad
+  bits mapped 1:1). The desktop shell was driven through
+  the iTaK engine bridge against Super Mario World as
+  the ship gate: non-black pixel counts of 57,288 /
+  53,601 / 53,534 / 53,259 at frames 120 / 400 / 600 /
+  1200 (logo, title, and the full attract demo stay
+  visible), audio non-silent from the title onward
+  (34,084 non-silent samples in frames 301-400 alone),
+  a 267,085-byte save state taken at a demo frame whose
+  restore is byte-identical and whose 120-frame
+  continuation matches the uninterrupted run in frame
+  hash and in every audio sample.
+- The road here caught one real bug worth recording:
+  the SNES-4a black screen. SMW booted, showed its
+  title, then faded to permanent black with the music
+  still playing. Root cause was a PPU register decode
+  bug, not NMI, joypad, DMA, or APU (all cleared by
+  traces): `ppu/render.go` read the CGWSEL ($2130)
+  fields from the wrong bit positions, so SMW's $12
+  was misread as clip-main-inside-window and its
+  full-width HDMA window color-mathed every pixel to
+  black. The fix follows the documented $2130 layout
+  (clip bits 7-6, sub transparent bits 5-4, addend
+  bit 1, direct color bit 0; force-blacked pixels still
+  get color math; halving divides before clamp and is
+  suppressed on blacked and fallback pixels).
+  Permanent gates live in `system/smw_gate_test.go`
+  (they skip when the ROM is absent): the attract demo
+  stays above 50,000 non-black pixels at frames 120 /
+  320 / 450 / 600 / 1200 with two-run determinism, B
+  exits the demo to file select, A and Start reach the
+  overworld, and a save at the overworld restores with
+  a byte-identical 30-frame continuation in frame hash
+  and audio. Post-fix demo counts run 57,288 / 56,065 /
+  53,601 / 53,534 / 53,259 against the reference core's
+  53,300-53,700 band.
+- Shipped as iTaK Gaming build 52 (version 1.0.52,
+  published 2026-10-13): the app's SNES slot now loads
+  `libgo_snes.so` (armeabi-v7a, Android 24, NDK r26b,
+  the same target as the other Go cores) and Snes9x is
+  retired from the SNES slot and no longer bundled.
+  This is the fourth system running 100 percent on our
+  own from-scratch cores, after Genesis (build 42),
+  Game Boy and Game Boy Color (build 50), and NES
+  (build 51). Host desktop frame cost for SMW measured
+  13.055 ms per frame in the SNES-4 stage runs, inside
+  the 16.68 ms NTSC budget; on-device play is David's
+  TV check, as with builds 50 and 51.
+- Known minor items (observed against the reference
+  core during SNES-4a, none blocking): the title iris
+  entrance phase timing differs slightly; some scenes
+  show small sampled color deltas versus the reference;
+  and Start pressed during the attract demo does not
+  exit the demo on this core. That last one is
+  consistent with SMW's own ROM code, whose demo-exit
+  button mask excludes Start (Start works normally in
+  the title, file select, and overworld flow); the
+  reference core answers Start during the demo anyway,
+  which remains unexplained.
+
+**SNES-3: the audio unit: SPC700, SMP, and
 S-DSP.**
 
 - `chips/spc700`: the complete SPC700 audio CPU: all 256
@@ -189,7 +256,8 @@ S-DSP.**
 - **SNES-4** (the last SNES slice): the libretro shell, a
   real-game engine test, and the app wiring swap (the app keeps
   shipping the incumbent core until this one passes the same
-  proof, per the project rule).
+  proof, per the project rule). (Done: shipped as app
+  build 52, Snes9x retired from the SNES slot.)
 
 ## SNES-2 rendering and timing model (the honesty notes)
 
@@ -394,7 +462,7 @@ cart/            header parsing and the console memory map
 ppu/             the PPU: registers, memory, and the renderer
 apu/             the SMP (IO, timers, IPL) and the S-DSP
 system/          the whole machine: timing, DMA/HDMA, IO
-libretro/        placeholder for the SNES-4 shell
+libretro/        the cgo libretro shell (the shipped core)
 testroms/        local-only conformance corpora (gitignored)
 ```
 
