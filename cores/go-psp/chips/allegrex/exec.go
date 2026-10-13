@@ -68,14 +68,28 @@ func (c *CPU) execute(instr uint32) int {
 		return c.execCOP0(instr, rs, rt, rd)
 	case 0x11: // COP1
 		return c.execCOP1(instr)
-	case 0x12, 0x32, 0x36, 0x3A, 0x3E:
-		// COP2, LWC2, LDC2, SWC2, SDC2: the VFPU is COP2 on the
-		// Allegrex. It is deferred to a later slice, so every COP2
-		// encoding faults with CpU, CE=2, and bumps the diagnostic
-		// counter so the system package can see VFPU code ran.
-		c.vfpuFaultCount++
-		c.raiseException(excCpU, 2)
-		return 1
+	case 0x12: // COP2: the VFPU
+		return c.execCOP2(instr)
+	case 0x18: // VFPU VV arith group: vadd, vsub, vsbn, vdiv
+		return c.execVVArith(instr)
+	case 0x19: // VFPU VV product group: vmul, vdot, vscl, vhdp, vcrs, vdet
+		return c.execVVProd(instr)
+	case 0x1B: // VFPU VV compare group: vcmp, vmin, vmax, vsge, vslt
+		return c.execVVCmpGrp(instr)
+	case 0x34: // VFPU unary, scaled conversions, vcmov
+		return c.execVFPU34(instr)
+	case 0x37: // VFPU prefix instructions: vpfxs, vpfxt, vpfxd
+		return c.execPrefixes(instr)
+	case 0x3C: // VFPU matrix group
+		return c.execMatrixGroup(instr)
+	case 0x32: // LV.S
+		return c.execLVS(instr)
+	case 0x36: // LV.Q family
+		return c.execLVQ(instr)
+	case 0x3A: // SV.S
+		return c.execSVS(instr)
+	case 0x3E: // SV.Q family
+		return c.execSVQ(instr)
 	case 0x1C: // SPECIAL2
 		return c.execSpecial2(instr, rs, rt, rd, fn)
 	case 0x1F: // SPECIAL3
