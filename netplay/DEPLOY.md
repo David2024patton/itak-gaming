@@ -14,7 +14,10 @@ EmulatorActivity).
 - Image: Alpine plus the compiled `lobbyserver` binary, started as
   `/lobbyserver -addr :8790` with `ITAK_STATS_FILE=/data/stats.json`.
 - Data: the stats JSON lives on a mounted volume (`/data`) so the
-  leaderboard survives container replacement.
+  leaderboard survives container replacement. Friends lists
+  persist the same way: `ITAK_FRIENDS_FILE` sets the path, and
+  when it is unset the server writes `friends.json` next to the
+  stats file, so the same `/data` volume holds both.
 - Routing labels (Dokploy/Traefik, container joins the proxy
   network):
 
