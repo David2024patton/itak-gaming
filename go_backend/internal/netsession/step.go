@@ -171,6 +171,23 @@ func (s *Session) reader() {
 			if fromPeer && e.Frame > s.snapApplied {
 				s.snapApplied = e.Frame
 			}
+		case "match_end":
+			// Back to the room (section 4.9): the match is
+			// over but the session and the socket live on.
+			// Only the peer can end our match; a spectator's
+			// match_end on the shared socket is noise.
+			if fromPeer {
+				s.noteMatchEndLocked(e.Reason)
+			}
+		case "seat_assign":
+			// The host referee names the next seat holders
+			// (section 4.9). Recorded only from the peer,
+			// which for the guest is the host itself; an
+			// assignment claimed by anyone else in the room
+			// (a spectator, say) is ignored.
+			if fromPeer {
+				s.noteSeatAssignLocked(e.Player, e.Seat)
+			}
 		case "session_end":
 			if fromPeer {
 				s.ended = true
@@ -363,6 +380,12 @@ func (s *Session) Step(local uint16) error {
 		_, have := s.remoteIn[f]
 		ended := s.ended
 		endErr := s.endErr
+		// A match_end resets the session back to the room
+		// (section 4.9); a step still waiting for this frame's
+		// input must notice, or it would sit here until the
+		// silence limit for a frame that will never be played.
+		backInRoom := s.phase == phaseRoom
+		endReason := s.matchEndReason
 		// Silence is measured from the last peer message, or
 		// from our own resume if that is later (see lastResume).
 		silentSince := s.lastPeerMsg
@@ -372,6 +395,12 @@ func (s *Session) Step(local uint16) error {
 		silent := time.Since(silentSince)
 		paused := s.localPaused || s.peerPaused
 		s.mu.Unlock()
+		if backInRoom {
+			if endReason != "" {
+				return fmt.Errorf("the match ended: %s", endReason)
+			}
+			return errors.New("the match ended")
+		}
 		if have {
 			break
 		}
