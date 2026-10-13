@@ -83,6 +83,16 @@ type Bus struct {
 
 	ROM []byte
 
+	// IORead and IOWrite, when set by the system, give IO
+	// registers behavior: they are consulted for accesses
+	// inside the 1 KB IO window before the plain store is.
+	// The offset is relative to 0x04000000. A handler that
+	// reports false leaves the access to the plain store
+	// (which is where behavior-less registers such as
+	// WAITCNT continue to live).
+	IORead  func(off uint32, size int) (uint32, bool)
+	IOWrite func(off uint32, size int, val uint32) bool
+
 	// last is the open bus value: the last value a read
 	// or fetch drove onto the bus.
 	last uint32
@@ -201,6 +211,12 @@ func (b *Bus) Read(addr uint32, size int) uint32 {
 	default:
 		return b.last
 	}
+	if addr>>24 == 0x04 && addr&0x00FFFFFF < IOSize && b.IORead != nil {
+		if v, ok := b.IORead(addr&(IOSize-1), size); ok {
+			b.last = v
+			return v
+		}
+	}
 	if isSRAM(addr) {
 		// Byte wide SRAM: the addressed byte is replicated
 		// across the bus lanes, so every width returns the
@@ -252,6 +268,11 @@ func (b *Bus) Write(addr uint32, size int, val uint32) {
 	case 1, 2, 4:
 	default:
 		return
+	}
+	if addr>>24 == 0x04 && addr&0x00FFFFFF < IOSize && b.IOWrite != nil {
+		if b.IOWrite(addr&(IOSize-1), size, val) {
+			return
+		}
 	}
 	if isSRAM(addr) {
 		b.SRAM[addr&(SRAMSize-1)] = byte(val)
