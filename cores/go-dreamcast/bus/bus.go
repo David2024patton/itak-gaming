@@ -5,7 +5,8 @@
 // (or, with the MMU off, masked the address to its 29-bit physical
 // form). Everything here is therefore keyed on the physical map:
 //
-//	0x00000000-0x001FFFFF  BIOS window (HLE NOP stub, read only)
+//	0x00000000-0x001FFFFF  BIOS window (HLE NOP stub plus the
+//	                       handler stub page at 0x800, read only)
 //	0x00200000-0x002FFFFF  flash ROM, 256 KB mirrored
 //	0x00500000-0x005FFFFF  PowerVR TA FIFO (device, DC-2)
 //	0x005F6900-0x005F693F  Holly system interrupt registers (device, DC-2)
@@ -163,10 +164,43 @@ func vram64Offset(a uint32) uint32 {
 	return (a & 0x3) | ((a >> 3) << 2) | ((a & 0x4) << 20)
 }
 
+// biosStubBase is the physical address of the HLE BIOS
+// handler stub page inside the BIOS window: eight stubs of
+// eight bytes each, written by us, at 0x800 to 0x83F. Each
+// stub is the word pair RTS (0x000B), NOP (0x0009) followed
+// by two NOP words. The system package points the BIOS
+// syscall vector slots in low RAM at these stubs and
+// intercepts execution when the CPU reaches one, servicing
+// the call in Go and returning through PR, so the RTS is a
+// safety net for execution that arrives by any other path:
+// it returns to the caller instead of sliding down the sled.
+// The offsets are ours to choose (the real BIOS keeps its
+// own entry code in ROM); 0x800 sits clear of the addresses
+// the DC-1 bus gates pin as plain NOP sled.
+const (
+	biosStubBase = 0x800
+	biosStubEnd  = 0x840 // exclusive
+)
+
 // readByte is the single-byte read primitive every wider read is
 // composed from.
 func (b *Bus) readByte(pa uint32) uint8 {
 	if pa >= biosBase && pa < biosEnd {
+		if pa >= biosStubBase && pa < biosStubEnd {
+			// Handler stub page: each 8 byte stub reads as
+			// the words 0x000B (RTS), 0x0009 (NOP), then
+			// two more NOP words.
+			switch pa & 3 {
+			case 0:
+				if pa&4 == 0 {
+					return 0x0B // RTS low byte
+				}
+				return 0x09 // NOP low byte
+			case 2:
+				return 0x09 // NOP low byte
+			}
+			return 0x00
+		}
 		// HLE BIOS stub: an endless NOP sled. The SH-4 NOP is
 		// the 16-bit value 0x0009, stored little-endian, so an
 		// even byte reads 0x09 and an odd byte reads 0x00.
