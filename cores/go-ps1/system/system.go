@@ -148,6 +148,7 @@ type Machine struct {
 
 	buttons   uint32
 	analog    [4]uint8 // rx, ry, lx, ly
+	analogOn  bool     // host-forced analog pad mode, reapplied on reset
 	frame     uint64
 	budgetRem int64
 
@@ -256,6 +257,7 @@ func (m *Machine) Reset() {
 	m.bios.reset()
 	m.PAD.SetButtons(m.buttons)
 	m.PAD.SetAnalog(m.analog[0], m.analog[1], m.analog[2], m.analog[3])
+	m.PAD.SetAnalogMode(m.analogOn)
 	m.wireIRQCallbacks()
 	m.istat = 0
 	m.imask = 0
@@ -558,6 +560,24 @@ func (m *Machine) SetAnalog(rx, ry, lx, ly uint8) {
 func (m *Machine) Analog() (rx, ry, lx, ly uint8) {
 	return m.analog[0], m.analog[1], m.analog[2], m.analog[3]
 }
+
+// SetAnalogMode forces the port 1 pad into (or out
+// of) analog mode from the host side, for frontends
+// that always present an analog pad. The choice is
+// stored and reapplied on every reset, like the
+// button and stick state.
+func (m *Machine) SetAnalogMode(b bool) {
+	m.analogOn = b
+	m.PAD.SetAnalogMode(b)
+}
+
+// AnalogMode reports the host-forced analog mode.
+func (m *Machine) AnalogMode() bool { return m.analogOn }
+
+// SystemRAM returns the live 2 MB main RAM, for the
+// libretro SYSTEM_RAM memory region. Writes through
+// it are writes to the machine.
+func (m *Machine) SystemRAM() []byte { return m.Bus.RAM() }
 
 // AudioBuffer drains the SPU's pending output:
 // interleaved stereo int16 samples at 44,100 Hz.
