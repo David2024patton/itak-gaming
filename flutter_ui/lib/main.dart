@@ -2079,6 +2079,14 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                               const EdgeInsets.symmetric(horizontal: 40),
                           child: GridView.builder(
                             controller: _gridScroll,
+                            // Clip.none so a focused card's glow and
+                            // scale fade out past the grid's edge
+                            // instead of slicing off hard at the top
+                            // and left (David, 2026-10-12). cacheExtent
+                            // 0 keeps off-screen rows unbuilt so
+                            // nothing paints outside at rest.
+                            clipBehavior: Clip.none,
+                            cacheExtent: 0,
                             physics:
                                 const NeverScrollableScrollPhysics(),
                             padding:
@@ -2458,7 +2466,9 @@ class _OnlineScreenState extends State<OnlineScreen> {
   }
 
   void _onKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return;
+    // Repeats count too, so holding UP or DOWN runs through the
+    // lobby list instead of crawling one row per press.
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return;
     if (ModalRoute.of(context)?.isCurrent == false) return;
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowUp) {
@@ -3404,8 +3414,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 // ---------------------------------------------------------------------------
 // Debug log viewer (Settings -> Logs). The native side streams the
 // app's whole logcat into a file; this screen reads the tail of it.
-// Remote keys: UP/DOWN scroll, OK refreshes, LEFT saves a copy to
-// /sdcard/iTaK, RIGHT clears (with a confirm), BACK leaves.
+// Remote model (David, 2026-10-12): a top row he can always reach
+// (Back, Refresh, Save a copy to /sdcard/iTaK, Clear with a confirm)
+// and dedicated scroll buttons beside the log; DOWN moves from the
+// top row to the scroll buttons, OK on a scroll button pages the
+// log, and holding OK keeps scrolling.
 // ---------------------------------------------------------------------------
 
 class LogScreen extends StatefulWidget {
@@ -3421,6 +3434,11 @@ class _LogScreenState extends State<LogScreen> {
   String _text = '';
   int _size = 0;
   bool _loading = true;
+  // Remote zones: 0 = top row (0 Back, 1 Refresh, 2 Save a copy,
+  // 3 Clear), 1 = the log's scroll buttons (0 page up, 1 page down).
+  int _zone = 0;
+  int _topIndex = 0;
+  int _logBtn = 1;
 
   @override
   void initState() {
@@ -3520,6 +3538,87 @@ class _LogScreenState extends State<LogScreen> {
     );
   }
 
+  void _scrollPage(int dir) {
+    if (!_scroll.hasClients) return;
+    final pos = _scroll.position;
+    _scroll.jumpTo((pos.pixels + dir * 320).clamp(0.0, pos.maxScrollExtent));
+  }
+
+  void _activateTop() {
+    switch (_topIndex) {
+      case 0:
+        Navigator.of(context).pop();
+        break;
+      case 1:
+        _refresh();
+        break;
+      case 2:
+        _export();
+        break;
+      case 3:
+        _clear();
+        break;
+    }
+  }
+
+  Widget _logPill(int index, String label) {
+    final focused = _zone == 0 && _topIndex == index;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _zone = 0;
+          _topIndex = index;
+        });
+        _activateTop();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: focused ? Colors.white : Colors.white24,
+            width: focused ? 2.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 16.5,
+            fontWeight: focused ? FontWeight.bold : FontWeight.normal,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _logScrollButton(int btn, IconData icon) {
+    final focused = _zone == 1 && _logBtn == btn;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _zone = 1;
+          _logBtn = btn;
+        });
+        _scrollPage(btn == 0 ? -1 : 1);
+      },
+      child: Container(
+        width: 54,
+        height: 54,
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: focused ? Colors.white : Colors.white24,
+            width: focused ? 2.5 : 1,
+          ),
+        ),
+        child: Icon(icon, size: 30, color: Colors.white),
+      ),
+    );
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -3528,30 +3627,64 @@ class _LogScreenState extends State<LogScreen> {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
-    if (!_scroll.hasClients) return KeyEventResult.ignored;
-    final pos = _scroll.position;
-    if (key == LogicalKeyboardKey.arrowDown) {
-      _scroll.jumpTo(
-          (pos.pixels + 320).clamp(0.0, pos.maxScrollExtent));
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowUp) {
-      _scroll.jumpTo(
-          (pos.pixels - 320).clamp(0.0, pos.maxScrollExtent));
+    if (key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.gameButtonB ||
+        key == LogicalKeyboardKey.browserBack) {
+      Navigator.of(context).pop();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _export();
+      setState(() {
+        if (_zone == 0) {
+          _topIndex = (_topIndex - 1).clamp(0, 3);
+        } else {
+          _zone = 0;
+        }
+      });
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _clear();
+      setState(() {
+        if (_zone == 0) {
+          _topIndex = (_topIndex + 1).clamp(0, 3);
+        }
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown) {
+      setState(() {
+        if (_zone == 0) {
+          _zone = 1;
+          _logBtn = 1;
+        } else if (_logBtn == 0) {
+          _logBtn = 1;
+        } else {
+          _scrollPage(1);
+        }
+      });
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      setState(() {
+        if (_zone == 1) {
+          if (_logBtn == 1) {
+            _logBtn = 0;
+          } else {
+            _zone = 0;
+          }
+        }
+      });
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.space) {
-      _refresh();
+        key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.gameButtonA) {
+      if (_zone == 0) {
+        _activateTop();
+      } else {
+        _scrollPage(_logBtn == 0 ? -1 : 1);
+      }
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -3561,8 +3694,28 @@ class _LogScreenState extends State<LogScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Logs'),
         backgroundColor: Colors.transparent,
+        leadingWidth: 76,
+        leading: Center(
+          child: GestureDetector(
+            onTap: () => Navigator.of(context).pop(),
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: (_zone == 0 && _topIndex == 0)
+                      ? Colors.white
+                      : Colors.white24,
+                  width: (_zone == 0 && _topIndex == 0) ? 3 : 1,
+                ),
+              ),
+              child: const Icon(Icons.arrow_back_ios_new, size: 20),
+            ),
+          ),
+        ),
+        title: const Text('Logs'),
       ),
       body: Container(
         decoration: const BoxDecoration(
@@ -3586,58 +3739,69 @@ class _LogScreenState extends State<LogScreen> {
                         const TextStyle(fontSize: 16, color: Colors.white70),
                   ),
                   const Spacer(),
-                  TextButton(
-                    onPressed: _refresh,
-                    child: const Text('Refresh',
-                        style: TextStyle(color: Color(0xFF00E676))),
-                  ),
-                  TextButton(
-                    onPressed: _export,
-                    child: const Text('Save a copy',
-                        style: TextStyle(color: Color(0xFF00E676))),
-                  ),
-                  TextButton(
-                    onPressed: _clear,
-                    child: const Text('Clear',
-                        style: TextStyle(color: Colors.white70)),
-                  ),
+                  _logPill(1, 'Refresh'),
+                  const SizedBox(width: 10),
+                  _logPill(2, 'Save a copy'),
+                  const SizedBox(width: 10),
+                  _logPill(3, 'Clear'),
                 ],
               ),
             ),
             Expanded(
-              child: Focus(
-                autofocus: true,
-                onKeyEvent: _onKey,
-                child: Container(
-                  margin: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.45),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white12),
-                  ),
-                  child: SingleChildScrollView(
-                    controller: _scroll,
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: Text(
-                        _text.isEmpty ? '(the log is empty)' : _text,
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 13,
-                          height: 1.35,
-                          color: Color(0xFFD8F3DC),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      child: Focus(
+                        autofocus: true,
+                        onKeyEvent: _onKey,
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.45),
+                            borderRadius: BorderRadius.circular(12),
+                            border:
+                                Border.all(color: Colors.white12),
+                          ),
+                          child: SingleChildScrollView(
+                            controller: _scroll,
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: Text(
+                                _text.isEmpty
+                                    ? '(the log is empty)'
+                                    : _text,
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 13,
+                                  height: 1.35,
+                                  color: Color(0xFFD8F3DC),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    Column(
+                      children: [
+                        _logScrollButton(0, Icons.keyboard_arrow_up),
+                        const SizedBox(height: 10),
+                        _logScrollButton(
+                            1, Icons.keyboard_arrow_down),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
             const Padding(
               padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
               child: Text(
-                'UP / DOWN scroll · OK refresh · LEFT save a copy · RIGHT clear · BACK done',
+                'LEFT / RIGHT pick an action · OK runs it · DOWN reaches the scroll buttons · hold OK to scroll · BACK done',
                 style: TextStyle(fontSize: 14, color: Colors.white54),
               ),
             ),
@@ -4091,8 +4255,13 @@ class _GameGridScreenState extends State<GameGridScreen> {
                                   final aspect =
                                       tileH > 40 ? tileW / tileH : 0.92;
                                   return GridView.builder(
+                                    // Same glow rule as the home grid:
+                                    // a focused tile's glow fades past
+                                    // the grid edge, never slices.
+                                    clipBehavior: Clip.none,
+                                    cacheExtent: 0,
                                     padding: const EdgeInsets.fromLTRB(
-                                        28, 0, 28, 0),
+                                        28, 10, 28, 10),
                                     gridDelegate:
                                         SliverGridDelegateWithFixedCrossAxisCount(
                                       crossAxisCount: 4,
@@ -4218,6 +4387,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   int _barIndex = 0; // 0 = Back, 1 = Local, 2 = Global
   int _selIndex = 0;
   int _rowCount = 0;
+  // Hold-to-scroll: holding UP or DOWN on the remote sends repeat
+  // events; the streak counts them so the rows move faster the
+  // longer the button is held (David, 2026-10-12).
+  int _streak = 0;
+  LogicalKeyboardKey? _streakKey;
+
+  int get _rowStep => _streak < 6 ? 1 : (_streak < 16 ? 3 : 5);
   final ScrollController _listScroll = ScrollController();
   final Map<int, GlobalKey> _rowKeys = {};
   List<_PlayerStat> _gPlayers = [];
@@ -4283,8 +4459,26 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event is KeyUpEvent) {
+      _streak = 0;
+      _streakKey = null;
+      return KeyEventResult.ignored;
+    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
     final key = event.logicalKey;
+    // Hold streak bookkeeping: a fresh press starts at zero, each
+    // repeat of the same key grows it, a different key resets it.
+    if (event is KeyDownEvent) {
+      _streak = 0;
+      _streakKey = key;
+    } else if (_streakKey == key) {
+      _streak++;
+    } else {
+      _streak = 0;
+      _streakKey = key;
+    }
     if (key == LogicalKeyboardKey.escape ||
         key == LogicalKeyboardKey.gameButtonB ||
         key == LogicalKeyboardKey.browserBack) {
@@ -4295,7 +4489,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       setState(() {
         if (_zone == 2) {
           if (_selIndex > 0) {
-            _selIndex--;
+            _selIndex = (_selIndex - _rowStep).clamp(0, _selIndex);
             _scrollToSel();
           } else {
             _zone = 1;
@@ -4317,7 +4511,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
             _scrollToSel();
           }
         } else if (_selIndex < _rowCount - 1) {
-          _selIndex++;
+          _selIndex = (_selIndex + _rowStep).clamp(0, _rowCount - 1);
           _scrollToSel();
         }
       });
@@ -4710,8 +4904,12 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
         decoration: BoxDecoration(
-          color: active ? const Color(0xFF00E676) : const Color(0xFF1E1E2E),
-          borderRadius: BorderRadius.circular(999),
+          // Rectangular segmented look in the app's card language, no
+          // green fill (David, 2026-10-12): the current board is the
+          // lighter card with a plain border, remote focus thickens
+          // the border to white.
+          color: active ? const Color(0xFF2E2E4A) : const Color(0xFF1E1E2E),
+          borderRadius: BorderRadius.circular(6),
           border: Border.all(
             color: focused
                 ? Colors.white
@@ -4724,7 +4922,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           style: TextStyle(
             fontSize: 16.5,
             fontWeight: FontWeight.bold,
-            color: active ? Colors.black : Colors.white,
+            color: active ? Colors.white : Colors.white60,
           ),
         ),
       ),
