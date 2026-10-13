@@ -147,10 +147,17 @@ func TestInterruptPushesClearBreakStatus(t *testing.T) {
 	bus := &flatBus{}
 	bus.mem[VectorIRQ] = 0x00
 	bus.mem[VectorIRQ+1] = 0x90
-	// CLI, then NOPs. After CLI the IRQ line is honored.
+	// CLI, then NOPs. Interrupts are polled just before an
+	// instruction's last bus access, so a line asserted after
+	// CLI has retired is first recognized at the NOP's poll
+	// point: the NOP executes, and the interrupt sequence
+	// follows it.
 	c := newCPUAt(bus, 0x8000, 0x58, 0xEA, 0xEA)
 	c.Step() // CLI: P goes to $20
 	c.SetIRQLine(true)
+	if got := stepCycles(c); got != 2 {
+		t.Fatalf("NOP before the interrupt cost %d, want 2", got)
+	}
 	if got := stepCycles(c); got != 7 {
 		t.Fatalf("interrupt sequence cost %d, want 7", got)
 	}
@@ -163,9 +170,9 @@ func TestInterruptPushesClearBreakStatus(t *testing.T) {
 	if c.PC() != 0x9000 {
 		t.Fatalf("PC = %04X, want 9000", c.PC())
 	}
-	// Return address must be the NOP's address, $8001.
-	if bus.mem[0x01FD] != 0x80 || bus.mem[0x01FC] != 0x01 {
-		t.Fatalf("return address pushed = %02X%02X, want 8001", bus.mem[0x01FD], bus.mem[0x01FC])
+	// Return address is past the executed NOP: $8002.
+	if bus.mem[0x01FD] != 0x80 || bus.mem[0x01FC] != 0x02 {
+		t.Fatalf("return address pushed = %02X%02X, want 8002", bus.mem[0x01FD], bus.mem[0x01FC])
 	}
 }
 
