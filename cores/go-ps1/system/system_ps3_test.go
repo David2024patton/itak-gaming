@@ -56,612 +56,10 @@ package system
 
 import (
 	"bytes"
-	"encoding/binary"
-	"math"
 	"testing"
+
+	"github.com/davidpatton/itak-gaming/cores/go-ps1/homebrew"
 )
-
-// ----------------------------------------------------------------
-// Register numbers used by the assembler.
-// ----------------------------------------------------------------
-
-const (
-	ps3Zero = 0
-	ps3V0   = 2
-	ps3A0   = 4
-	ps3A1   = 5
-	ps3A2   = 6
-	ps3A3   = 7
-	ps3T0   = 8
-	ps3T1   = 9
-	ps3T2   = 10
-	ps3T3   = 11
-	ps3T4   = 12
-	ps3T5   = 13
-	ps3T6   = 14
-	ps3T7   = 15
-	ps3S0   = 16
-	ps3S1   = 17
-	ps3S2   = 18
-	ps3S4   = 20
-	ps3RA   = 31
-)
-
-// ----------------------------------------------------------------
-// A small MIPS assembler with label fixups.
-// ----------------------------------------------------------------
-
-const (
-	ps3PatchBranch = iota
-	ps3PatchJAL
-	ps3PatchLoadHi
-	ps3PatchLoadLo
-)
-
-type ps3Patch struct {
-	idx   int
-	kind  int
-	label string
-}
-
-type ps3Asm struct {
-	words   []uint32
-	labels  map[string]int
-	patches []ps3Patch
-}
-
-func newPS3Asm() *ps3Asm {
-	return &ps3Asm{labels: map[string]int{}}
-}
-
-func (a *ps3Asm) emit(w uint32) int {
-	a.words = append(a.words, w)
-	return len(a.words) - 1
-}
-
-func (a *ps3Asm) label(name string) { a.labels[name] = len(a.words) }
-
-func (a *ps3Asm) labelAt(name string, idx int) { a.labels[name] = idx }
-
-func (a *ps3Asm) nop() { a.emit(0x00000000) }
-
-func (a *ps3Asm) lui(rt, imm uint32) {
-	a.emit(0x3C000000 | rt<<16 | (imm & 0xFFFF))
-}
-
-func (a *ps3Asm) ori(rt, rs, imm uint32) {
-	a.emit(0x34000000 | rs<<21 | rt<<16 | (imm & 0xFFFF))
-}
-
-// li loads a 32-bit constant in one or two words.
-func (a *ps3Asm) li(rt, v uint32) {
-	switch {
-	case v>>16 == 0:
-		a.ori(rt, ps3Zero, v)
-	case v&0xFFFF == 0:
-		a.lui(rt, v>>16)
-	default:
-		a.lui(rt, v>>16)
-		a.ori(rt, rt, v)
-	}
-}
-
-// liLabel loads the absolute address of a label.
-func (a *ps3Asm) liLabel(rt uint32, name string) {
-	idx := a.emit(0x3C000000 | rt<<16)
-	a.patches = append(a.patches, ps3Patch{idx: idx, kind: ps3PatchLoadHi, label: name})
-	idx = a.emit(0x34000000 | rt<<21 | rt<<16)
-	a.patches = append(a.patches, ps3Patch{idx: idx, kind: ps3PatchLoadLo, label: name})
-}
-
-func (a *ps3Asm) addiu(rt, rs uint32, imm int) {
-	a.emit(0x24000000 | rs<<21 | rt<<16 | uint32(uint16(imm)))
-}
-
-func (a *ps3Asm) addu(rd, rs, rt uint32) {
-	a.emit(0x00000021 | rs<<21 | rt<<16 | rd<<11)
-}
-
-func (a *ps3Asm) andi(rt, rs, imm uint32) {
-	a.emit(0x30000000 | rs<<21 | rt<<16 | (imm & 0xFFFF))
-}
-
-func (a *ps3Asm) lw(rt uint32, off int, rs uint32) {
-	a.emit(0x8C000000 | rs<<21 | rt<<16 | uint32(uint16(off)))
-}
-
-func (a *ps3Asm) sw(rt uint32, off int, rs uint32) {
-	a.emit(0xAC000000 | rs<<21 | rt<<16 | uint32(uint16(off)))
-}
-
-func (a *ps3Asm) lbu(rt uint32, off int, rs uint32) {
-	a.emit(0x90000000 | rs<<21 | rt<<16 | uint32(uint16(off)))
-}
-
-func (a *ps3Asm) sb(rt uint32, off int, rs uint32) {
-	a.emit(0xA0000000 | rs<<21 | rt<<16 | uint32(uint16(off)))
-}
-
-func (a *ps3Asm) sh(rt uint32, off int, rs uint32) {
-	a.emit(0xA4000000 | rs<<21 | rt<<16 | uint32(uint16(off)))
-}
-
-func (a *ps3Asm) beq(rs, rt uint32, label string) {
-	idx := a.emit(0x10000000 | rs<<21 | rt<<16)
-	a.patches = append(a.patches, ps3Patch{idx: idx, kind: ps3PatchBranch, label: label})
-}
-
-func (a *ps3Asm) bne(rs, rt uint32, label string) {
-	idx := a.emit(0x14000000 | rs<<21 | rt<<16)
-	a.patches = append(a.patches, ps3Patch{idx: idx, kind: ps3PatchBranch, label: label})
-}
-
-func (a *ps3Asm) jalAbs(addr uint32) {
-	a.emit(0x0C000000 | ((addr >> 2) & 0x3FFFFFF))
-}
-
-func (a *ps3Asm) jr(rs uint32) { a.emit(0x00000008 | rs<<21) }
-
-func (a *ps3Asm) syscall() { a.emit(0x0000000C) }
-
-// callBIOS emits a vector call: function number in
-// $t1, jal to the vector, NOP in the delay slot (the
-// HLE intercepts when the PC reaches the vector,
-// after the delay slot has executed).
-func (a *ps3Asm) callBIOS(vector uint32, fn int) {
-	a.addiu(ps3T1, ps3Zero, fn)
-	a.jalAbs(vector)
-	a.nop()
-}
-
-// storeWordAbs stores a constant to an absolute
-// address, using $t5 and $t6 as scratch.
-func (a *ps3Asm) storeWordAbs(addr, val uint32) {
-	a.li(ps3T5, addr)
-	a.li(ps3T6, val)
-	a.sw(ps3T6, 0, ps3T5)
-}
-
-// storeWordLabelAbs stores a label address to an
-// absolute address.
-func (a *ps3Asm) storeWordLabelAbs(addr uint32, label string) {
-	a.li(ps3T5, addr)
-	a.liLabel(ps3T6, label)
-	a.sw(ps3T6, 0, ps3T5)
-}
-
-// storeHalfAbs stores a constant halfword to an
-// absolute address.
-func (a *ps3Asm) storeHalfAbs(addr, val uint32) {
-	a.li(ps3T5, addr)
-	a.li(ps3T6, val)
-	a.sh(ps3T6, 0, ps3T5)
-}
-
-// marker records stage completion: the stage number
-// goes to the shared marker word at result+0x100.
-// $s0 must hold the result base 0x80020000.
-func (a *ps3Asm) marker(n int) {
-	a.li(ps3T1, uint32(n))
-	a.sw(ps3T1, 0x100, ps3S0)
-}
-
-// gpuCW sends one GP0 word through BIOS GPU_cw.
-func (a *ps3Asm) gpuCW(w uint32) {
-	a.li(ps3A0, w)
-	a.callBIOS(0xA0, 0x49)
-}
-
-func (a *ps3Asm) mtc2(rt, rd uint32) { a.emit(0x48800000 | rt<<16 | rd<<11) }
-func (a *ps3Asm) ctc2(rt, rd uint32) { a.emit(0x48C00000 | rt<<16 | rd<<11) }
-
-// mfc2Store reads a GTE data register into $t0 (with
-// the load delay NOP) and stores it at off($s0).
-func (a *ps3Asm) mfc2Store(rd uint32, off int) {
-	a.emit(0x48000000 | ps3T0<<16 | rd<<11) // mfc2 t0, rd
-	a.nop()
-	a.sw(ps3T0, off, ps3S0)
-}
-
-// cfc2Store reads a GTE control register the same
-// way as mfc2Store.
-func (a *ps3Asm) cfc2Store(rd uint32, off int) {
-	a.emit(0x48400000 | ps3T0<<16 | rd<<11) // cfc2 t0, rd
-	a.nop()
-	a.sw(ps3T0, off, ps3S0)
-}
-
-// build resolves all patches against base (the
-// address word 0 lands at) and returns the words.
-func (a *ps3Asm) build(base uint32) []uint32 {
-	out := append([]uint32(nil), a.words...)
-	for _, p := range a.patches {
-		li, ok := a.labels[p.label]
-		if !ok {
-			panic("ps3Asm: unknown label " + p.label)
-		}
-		switch p.kind {
-		case ps3PatchBranch:
-			off := li - (p.idx + 1)
-			if off < -32768 || off > 32767 {
-				panic("ps3Asm: branch out of range to " + p.label)
-			}
-			out[p.idx] |= uint32(uint16(off))
-		case ps3PatchJAL:
-			addr := base + uint32(4*li)
-			out[p.idx] |= (addr >> 2) & 0x3FFFFFF
-		case ps3PatchLoadHi:
-			addr := base + uint32(4*li)
-			out[p.idx] |= (addr >> 16) & 0xFFFF
-		case ps3PatchLoadLo:
-			addr := base + uint32(4*li)
-			out[p.idx] |= addr & 0xFFFF
-		}
-	}
-	return out
-}
-
-// spin emits an endless self loop with its NOP
-// delay slot.
-func (a *ps3Asm) spin(name string) {
-	a.label(name)
-	a.beq(ps3Zero, ps3Zero, name)
-	a.nop()
-}
-
-// ----------------------------------------------------------------
-// Fixtures: the 16x16 texture table and the ADPCM
-// tone (encoder copied in shape from the spu package
-// tests, which document the decoder math from the
-// psx-spx XA chapter).
-// ----------------------------------------------------------------
-
-// ps3TextureWords builds the 128 data words of the
-// 16x16 texture: two halfword pixels per word, low
-// first, with one solid color per quadrant.
-func ps3TextureWords() []uint32 {
-	color := func(x, y int) uint32 {
-		switch {
-		case x < 8 && y < 8:
-			return 0x001F // red
-		case x >= 8 && y < 8:
-			return 0x03E0 // green
-		case x < 8:
-			return 0x7C00 // blue
-		default:
-			return 0x7FFF // white
-		}
-	}
-	out := make([]uint32, 0, 128)
-	for wi := 0; wi < 128; wi++ {
-		var w uint32
-		for half := 0; half < 2; half++ {
-			p := wi*2 + half
-			w |= color(p%16, p/16) << (16 * half)
-		}
-		out = append(out, w)
-	}
-	return out
-}
-
-var ps3EncF0 = [5]int32{0, 60, 115, 98, 122}
-var ps3EncF1 = [5]int32{0, 0, -52, -55, -60}
-
-func ps3EncRecon(nib, shift, f0, f1, old, older int32) int32 {
-	s := (nib<<12)>>uint(shift) + (old*f0+older*f1+32)/64
-	if s > 0x7FFF {
-		s = 0x7FFF
-	}
-	if s < -0x8000 {
-		s = -0x8000
-	}
-	return s
-}
-
-func ps3EncodeBlock(pcm []int16, old, older int32) ([16]byte, int32, int32) {
-	var best [16]byte
-	bestErr := int64(-1)
-	var bestOld, bestOlder int32
-	for filter := 0; filter <= 4; filter++ {
-		for shift := 0; shift <= 12; shift++ {
-			var blk [16]byte
-			blk[0] = byte(filter<<4 | shift)
-			o, oo := old, older
-			err := int64(0)
-			var nibs [28]int32
-			for i := 0; i < 28; i++ {
-				target := int32(pcm[i])
-				bn, be := int32(0), int64(-1)
-				for nib := int32(-8); nib <= 7; nib++ {
-					r := ps3EncRecon(nib, int32(shift), ps3EncF0[filter], ps3EncF1[filter], o, oo)
-					d := int64(r - target)
-					if be < 0 || d*d < be {
-						be, bn = d*d, nib
-					}
-				}
-				r := ps3EncRecon(bn, int32(shift), ps3EncF0[filter], ps3EncF1[filter], o, oo)
-				oo, o = o, r
-				err += be
-				nibs[i] = bn
-			}
-			if bestErr < 0 || err < bestErr {
-				bestErr, bestOld, bestOlder = err, o, oo
-				copy(best[:], blk[:])
-				for i := 0; i < 28; i++ {
-					u := uint8(nibs[i] & 0xF)
-					if i&1 == 0 {
-						best[2+i/2] |= u
-					} else {
-						best[2+i/2] |= u << 4
-					}
-				}
-			}
-		}
-	}
-	return best, bestOld, bestOlder
-}
-
-// ps3EncodeLoop encodes pcm as a seamlessly looping
-// ADPCM stream: three encoding passes so the decoder
-// state at the end matches the start, then the loop
-// start flag on block 0 and loop end plus repeat on
-// the last block.
-func ps3EncodeLoop(pcm []int16) []byte {
-	var out []byte
-	var old, older int32
-	for pass := 0; pass < 3; pass++ {
-		out = nil
-		for i := 0; i+28 <= len(pcm); i += 28 {
-			blk, o, oo := ps3EncodeBlock(pcm[i:i+28], old, older)
-			old, older = o, oo
-			out = append(out, blk[:]...)
-		}
-	}
-	out[1] |= 4           // loop start on first block
-	out[len(out)-15] |= 3 // loop end + repeat on last block
-	return out
-}
-
-// ps3SinePCM makes a sine: 2800 samples with 28
-// periods is 441 Hz at the 44100 Hz sample rate.
-func ps3SinePCM(n, periods int, amp float64) []int16 {
-	out := make([]int16, n)
-	for i := range out {
-		out[i] = int16(amp * math.Sin(2*math.Pi*float64(periods)*float64(i)/float64(n)))
-	}
-	return out
-}
-
-// ----------------------------------------------------------------
-// PS-X EXE builder.
-// ----------------------------------------------------------------
-
-func ps3BuildEXE(text []uint32) []byte {
-	out := make([]byte, 0x800+4*len(text))
-	copy(out[0:8], "PS-X EXE")
-	put := func(off int, v uint32) { binary.LittleEndian.PutUint32(out[off:], v) }
-	put(0x10, 0x80010000) // pc0
-	put(0x14, 0)          // gp0
-	put(0x18, 0x80010000) // t_addr
-	put(0x1C, uint32(4*len(text)))
-	put(0x30, 0x800F0000) // s_addr, so SP = 0x80100000
-	put(0x34, 0x10000)    // s_size
-	for i, w := range text {
-		binary.LittleEndian.PutUint32(out[0x800+4*i:], w)
-	}
-	return out
-}
-
-// ----------------------------------------------------------------
-// The enginetest guest program. Result area base
-// 0x80020000 ($s0): PASS magic at +0x00, stage marker
-// at +0x100, CD checksum at +0x104, GTE results at
-// +0x108 onward. CD buffer at 0x80030000.
-// ----------------------------------------------------------------
-
-func ps3EngineWords(tone []byte) []uint32 {
-	a := newPS3Asm()
-	a.lui(ps3S0, 0x8002) // result base 0x80020000
-
-	// Stage A: critical section plus VBlank events.
-	a.li(ps3A0, 1)
-	a.syscall() // EnterCriticalSection
-	a.li(ps3A0, 0xF0000001)
-	a.li(ps3A1, 0x1000)
-	a.li(ps3A2, 0x2000)
-	a.li(ps3A3, 0)
-	a.callBIOS(0xB0, 0x08) // OpenEvent(VBlank, IRQ spec, ready mode, no func)
-	a.addu(ps3S1, ps3V0, ps3Zero)
-	a.addu(ps3A0, ps3S1, ps3Zero)
-	a.callBIOS(0xB0, 0x0C) // EnableEvent(handle)
-	a.li(ps3A0, 2)
-	a.syscall()                   // ExitCriticalSection
-	a.storeWordAbs(0x1F801074, 1) // I_MASK = VBlank
-	a.marker(1)
-	a.addiu(ps3S2, ps3Zero, 0) // delivery count
-	a.label("pollA")
-	a.addu(ps3A0, ps3S1, ps3Zero)
-	a.callBIOS(0xB0, 0x0B) // TestEvent(handle)
-	a.beq(ps3V0, ps3Zero, "pollA")
-	a.nop()
-	a.addiu(ps3S2, ps3S2, 1)
-	a.addiu(ps3T0, ps3Zero, 3)
-	a.bne(ps3S2, ps3T0, "pollA")
-	a.nop()
-	a.marker(2)
-
-	// Stage B: GPU display setup, texture upload,
-	// textured quad.
-	for _, w := range []uint32{0x00000000, 0x06C60260, 0x07041020, 0x08000001, 0x05000000} {
-		a.storeWordAbs(0x1F801814, w) // GP1 direct
-	}
-	// The display enable GP1 word (0x03000000) is
-	// deferred until after the quad is drawn, below:
-	// gpu.plot suppresses drawing into the display
-	// area while the display is enabled and the E1
-	// draw-to-display bit is clear, so enabling first
-	// would make the quad undrawable by design.
-	for _, w := range []uint32{0xE1000000, 0xE3000000, 0xE403BD3F, 0xE5000000, 0xE6000000} {
-		a.gpuCW(w)
-	}
-	a.gpuCW(0xA0000000) // CPU to VRAM transfer
-	a.gpuCW(0x01000000) // dest (0,256): (256<<16)|0
-	a.gpuCW(0x00100010) // size 16x16: (16<<16)|16
-	a.liLabel(ps3A0, "texTable")
-	a.li(ps3A1, 128)
-	a.callBIOS(0xA0, 0x4A) // GPU_cwp(table, 128)
-	for _, w := range []uint32{
-		0x2C808080, // textured quad, neutral color
-		0x00200020, // v0 (32,32)
-		0x00000000, // uv0 (0,0)
-		0x00200060, // v1 (96,32)
-		0x01100010, // uv1: texpage 0x0110 in high half, u=16, v=0
-		0x00600020, // v2 (32,96)
-		0x00001000, // uv2: u=0, v=16
-		0x00600060, // v3 (96,96)
-		0x00001010, // uv3: u=16, v=16
-	} {
-		a.gpuCW(w)
-	}
-	a.storeWordAbs(0x1F801814, 0x03000000) // GP1 display enable, after the draw
-	a.marker(3)
-
-	// Stage C: SPU. The tone goes to SPU RAM byte
-	// 0x1000 (TSA 0x200 in 8-byte units) through DMA
-	// channel 4, then voice 0 plays it looped.
-	a.storeHalfAbs(0x1F801DA6, 0x200)           // TSA
-	a.storeWordAbs(0x1F8010F0, 0x80000)         // DPCR: channel 4 enable (bit 19)
-	a.storeWordLabelAbs(0x1F8010C0, "toneData") // DMA4 MADR
-	a.storeWordAbs(0x1F8010C4, 400)             // DMA4 BCR: 1600 bytes in words
-	a.storeWordAbs(0x1F8010C8, 0x01000001)      // DMA4 CHCR: from RAM, sync 0, start
-	a.storeHalfAbs(0x1F801C00, 0x3FFF)          // voice 0 VOLL
-	a.storeHalfAbs(0x1F801C02, 0x3FFF)          // voice 0 VOLR
-	a.storeHalfAbs(0x1F801C04, 0x1000)          // voice 0 pitch (44100 Hz)
-	a.storeHalfAbs(0x1F801C06, 0x200)           // voice 0 SSA (byte 0x1000)
-	a.storeHalfAbs(0x1F801C08, 0x000F)          // voice 0 ADSR1: fast attack, sustain 15
-	a.storeHalfAbs(0x1F801C0A, 0x1FDF)          // voice 0 ADSR2: sustain never steps
-	a.storeHalfAbs(0x1F801D80, 0x7FFF)          // main volume L
-	a.storeHalfAbs(0x1F801D82, 0x7FFF)          // main volume R
-	a.storeHalfAbs(0x1F801DB0, 0)               // CD volume L
-	a.storeHalfAbs(0x1F801DB2, 0)               // CD volume R
-	a.storeHalfAbs(0x1F801DAA, 0xC000)          // SPUCNT: on, unmuted
-	a.storeHalfAbs(0x1F801D88, 1)               // KON voice 0
-	a.marker(4)
-
-	// Stage D: CD sector 0 into RAM, checksummed.
-	a.lui(ps3S4, 0x1F80) // CD register base
-	a.sb(ps3Zero, 0x1800, ps3S4)
-	a.li(ps3T0, 0x1F)
-	a.sb(ps3T0, 0x1803, ps3S4) // IRQ enable (index 0)
-	a.sb(ps3Zero, 0x1802, ps3S4)
-	a.li(ps3T0, 0x02)
-	a.sb(ps3T0, 0x1802, ps3S4)
-	a.sb(ps3Zero, 0x1802, ps3S4) // Setloc params 00:02:00 (LBA 0)
-	a.li(ps3T0, 0x02)
-	a.sb(ps3T0, 0x1801, ps3S4) // Setloc command
-	a.lbu(ps3T7, 0x1801, ps3S4)
-	a.li(ps3T0, 0x06)
-	a.sb(ps3T0, 0x1801, ps3S4) // ReadN command
-	a.li(ps3T2, 0)
-	a.li(ps3T3, 20000000) // poll cap
-	a.label("cdPoll")
-	a.lbu(ps3T0, 0x1800, ps3S4)
-	a.nop() // load delay before consuming $t0
-	a.andi(ps3T0, ps3T0, 0x40)
-	a.bne(ps3T0, ps3Zero, "cdReady")
-	a.nop()
-	a.addiu(ps3T2, ps3T2, 1)
-	a.bne(ps3T2, ps3T3, "cdPoll")
-	a.nop()
-	a.beq(ps3Zero, ps3Zero, "cdTimeout")
-	a.nop()
-	a.label("cdTimeout")
-	a.li(ps3T1, 0xEE)
-	a.sw(ps3T1, 0x100, ps3S0)
-	a.spin("cdSpin")
-	a.label("cdReady")
-	a.storeWordAbs(0x1F8010F0, 0x8000) // DPCR: channel 3 enable
-	a.storeWordAbs(0x1F8010B0, 0x80030000)
-	a.storeWordAbs(0x1F8010B4, 512)
-	a.storeWordAbs(0x1F8010B8, 0x01000000) // CHCR: to RAM, sync 0, start
-	a.li(ps3T0, 0x80030000)
-	a.addiu(ps3T1, ps3Zero, 0)
-	a.li(ps3T2, 512)
-	a.addiu(ps3T3, ps3Zero, 0)
-	a.label("cdSum")
-	a.lw(ps3T4, 0, ps3T0)
-	a.nop() // load delay before consuming $t4
-	a.addu(ps3T3, ps3T3, ps3T4)
-	a.addiu(ps3T0, ps3T0, 4)
-	a.addiu(ps3T1, ps3T1, 1)
-	a.bne(ps3T1, ps3T2, "cdSum")
-	a.nop()
-	a.sw(ps3T3, 0x104, ps3S0)
-	a.marker(5)
-
-	// Stage E: GTE RTPS under the identity rotation.
-	for _, cr := range []struct {
-		reg uint32
-		val uint32
-	}{
-		{0, 0x00001000},  // R11=1.0 (low), R12=0 (high)
-		{1, 0x00000000},  // R13=0, R21=0
-		{2, 0x00001000},  // R22=1.0 (low), R23=0
-		{3, 0x00000000},  // R31=0, R32=0
-		{4, 0x00001000},  // R33=1.0
-		{24, 0x00A00000}, // OFX = 160 in 16.16
-		{25, 0x00780000}, // OFY = 120 in 16.16
-		{26, 200},        // H
-		{27, 0},          // DQA
-		{28, 0},          // DQB
-	} {
-		a.li(ps3T0, cr.val)
-		a.ctc2(ps3T0, cr.reg)
-	}
-	a.li(ps3T0, 0)
-	a.mtc2(ps3T0, 0) // V0 X=0, Y=0
-	a.li(ps3T0, 300)
-	a.mtc2(ps3T0, 1) // V0 Z=300
-	// COP2 command word: rs field 0x10 selects a GTE
-	// command in r3000a execCOP2, low bits carry the
-	// command with sf (bit 19) set and opcode 0x01
-	// (RTPS).
-	a.emit(0x4A080001)
-	a.nop()
-	a.nop()
-	a.mfc2Store(15, 0x108) // SXYP
-	a.mfc2Store(19, 0x10C) // SZ3
-	a.cfc2Store(31, 0x110) // FLAG
-	a.li(ps3T0, 0xFFCE0064)
-	a.mtc2(ps3T0, 0) // V0 X=100, Y=-50
-	a.li(ps3T0, 300)
-	a.mtc2(ps3T0, 1) // V0 Z=300
-	a.emit(0x4A080001)
-	a.nop()
-	a.nop()
-	a.mfc2Store(15, 0x114) // SXYP, second point
-	a.marker(6)
-
-	// PASS magic, written last.
-	a.li(ps3T1, 0x600DF00D)
-	a.sw(ps3T1, 0, ps3S0)
-	a.spin("spin")
-
-	// Embedded data: the texture table, then the
-	// ADPCM tone (100 blocks, 1600 bytes, 400 words).
-	a.labelAt("texTable", len(a.words))
-	text := append([]uint32(nil), a.words...)
-	text = append(text, ps3TextureWords()...)
-	a.labelAt("toneData", len(text))
-	for i := 0; i+4 <= len(tone); i += 4 {
-		text = append(text, binary.LittleEndian.Uint32(tone[i:]))
-	}
-	// Patch resolution needs the final label table
-	// with the data labels in place, so stash the
-	// appended words back and build for real.
-	a.words = text
-	return a.build(0x80010000)
-}
 
 // ----------------------------------------------------------------
 // The enginetest gate.
@@ -671,11 +69,11 @@ func ps3SX(w uint32) int { return int(int16(w & 0xFFFF)) }
 func ps3SY(w uint32) int { return int(int16(w >> 16)) }
 
 func TestPS1Enginetest(t *testing.T) {
-	tone := ps3EncodeLoop(ps3SinePCM(2800, 28, 12000))
+	tone := homebrew.EncodeLoop(homebrew.SinePCM(2800, 28, 12000))
 	if len(tone) != 1600 {
 		t.Fatalf("tone size actual %d bytes, want 1600 (100 ADPCM blocks)", len(tone))
 	}
-	exe := ps3BuildEXE(ps3EngineWords(tone))
+	exe := homebrew.BuildEXE(homebrew.EngineWords(tone))
 
 	m := New()
 	if err := m.LoadDisc(&seqDisc{sectors: 16}); err != nil {
@@ -870,17 +268,17 @@ func TestPS1Enginetest(t *testing.T) {
 // ----------------------------------------------------------------
 
 func TestBIOSUnimplementedLogged(t *testing.T) {
-	a := newPS3Asm()
-	a.li(ps3A0, 0)
-	a.li(ps3A1, 0)
-	a.li(ps3A2, 0)
-	a.li(ps3A3, 0)
-	a.callBIOS(0xA0, 0x7F) // unimplemented A function
-	a.lui(ps3T0, 0x8002)
-	a.sw(ps3V0, 0x210, ps3T0)
-	a.spin("spin")
+	a := homebrew.NewAsm()
+	a.Li(homebrew.A0, 0)
+	a.Li(homebrew.A1, 0)
+	a.Li(homebrew.A2, 0)
+	a.Li(homebrew.A3, 0)
+	a.CallBIOS(0xA0, 0x7F) // unimplemented A function
+	a.Lui(homebrew.T0, 0x8002)
+	a.Sw(homebrew.V0, 0x210, homebrew.T0)
+	a.Spin("spin")
 	m := New()
-	loadProg(m, 0x80010000, a.build(0x80010000))
+	loadProg(m, 0x80010000, a.Build(0x80010000))
 	setPC(m, 0x80010000)
 	m.RunCycles(10000)
 	if got := m.Bus.Read32(0x80020210); got != 0xFFFFFFFF {
@@ -899,37 +297,37 @@ func TestBIOSUnimplementedLogged(t *testing.T) {
 }
 
 func TestBIOSCallbackEvent(t *testing.T) {
-	a := newPS3Asm()
-	a.li(ps3A0, 0xF0000001)
-	a.li(ps3A1, 0x1000)
-	a.li(ps3A2, 0x1000) // callback mode
-	a.liLabel(ps3A3, "callback")
-	a.callBIOS(0xB0, 0x08) // OpenEvent
-	a.addu(ps3S1, ps3V0, ps3Zero)
-	a.addu(ps3A0, ps3S1, ps3Zero)
-	a.callBIOS(0xB0, 0x0C)        // EnableEvent
-	a.storeWordAbs(0x1F801074, 1) // I_MASK = VBlank
-	a.label("spin")
-	a.lui(ps3T2, 0x8002)
-	a.lw(ps3T0, 0x204, ps3T2)
-	a.nop() // load delay
-	a.addiu(ps3T0, ps3T0, 1)
-	a.sw(ps3T0, 0x204, ps3T2)
-	a.beq(ps3Zero, ps3Zero, "spin")
-	a.nop()
-	for len(a.words) < 64 {
-		a.nop()
+	a := homebrew.NewAsm()
+	a.Li(homebrew.A0, 0xF0000001)
+	a.Li(homebrew.A1, 0x1000)
+	a.Li(homebrew.A2, 0x1000) // callback mode
+	a.LiLabel(homebrew.A3, "callback")
+	a.CallBIOS(0xB0, 0x08) // OpenEvent
+	a.Addu(homebrew.S1, homebrew.V0, homebrew.Zero)
+	a.Addu(homebrew.A0, homebrew.S1, homebrew.Zero)
+	a.CallBIOS(0xB0, 0x0C)        // EnableEvent
+	a.StoreWordAbs(0x1F801074, 1) // I_MASK = VBlank
+	a.Label("spin")
+	a.Lui(homebrew.T2, 0x8002)
+	a.Lw(homebrew.T0, 0x204, homebrew.T2)
+	a.Nop() // load delay
+	a.Addiu(homebrew.T0, homebrew.T0, 1)
+	a.Sw(homebrew.T0, 0x204, homebrew.T2)
+	a.Beq(homebrew.Zero, homebrew.Zero, "spin")
+	a.Nop()
+	for a.Len() < 64 {
+		a.Nop()
 	}
-	a.label("callback") // at 0x80010100
-	a.lui(ps3T0, 0x8002)
-	a.lw(ps3T1, 0x200, ps3T0)
-	a.nop() // load delay
-	a.addiu(ps3T1, ps3T1, 1)
-	a.sw(ps3T1, 0x200, ps3T0)
-	a.jr(ps3RA)
-	a.nop()
+	a.Label("callback") // at 0x80010100
+	a.Lui(homebrew.T0, 0x8002)
+	a.Lw(homebrew.T1, 0x200, homebrew.T0)
+	a.Nop() // load delay
+	a.Addiu(homebrew.T1, homebrew.T1, 1)
+	a.Sw(homebrew.T1, 0x200, homebrew.T0)
+	a.Jr(homebrew.RA)
+	a.Nop()
 	m := New()
-	loadProg(m, 0x80010000, a.build(0x80010000))
+	loadProg(m, 0x80010000, a.Build(0x80010000))
 	setPC(m, 0x80010000)
 	for i := 0; i < 3; i++ {
 		m.RunFrame()
@@ -948,24 +346,24 @@ func TestBIOSCallbackEvent(t *testing.T) {
 }
 
 func TestBIOSSetRCntRoundTrip(t *testing.T) {
-	a := newPS3Asm()
-	a.li(ps3A0, 0)
-	a.li(ps3A1, 1234)
-	a.li(ps3A2, 0x0058)
-	a.callBIOS(0xC0, 0x19) // SetRCnt(0, 1234, 0x0058)
-	a.li(ps3A0, 0)
-	a.callBIOS(0xC0, 0x1A) // GetRCnt(0)
-	a.lui(ps3T0, 0x8002)
-	a.sw(ps3V0, 0x220, ps3T0)
-	a.li(ps3A0, 0)
-	a.callBIOS(0xC0, 0x1B) // ResetRCnt(0)
-	a.li(ps3A0, 0)
-	a.callBIOS(0xC0, 0x1A) // GetRCnt(0)
-	a.lui(ps3T0, 0x8002)
-	a.sw(ps3V0, 0x224, ps3T0)
-	a.spin("spin")
+	a := homebrew.NewAsm()
+	a.Li(homebrew.A0, 0)
+	a.Li(homebrew.A1, 1234)
+	a.Li(homebrew.A2, 0x0058)
+	a.CallBIOS(0xC0, 0x19) // SetRCnt(0, 1234, 0x0058)
+	a.Li(homebrew.A0, 0)
+	a.CallBIOS(0xC0, 0x1A) // GetRCnt(0)
+	a.Lui(homebrew.T0, 0x8002)
+	a.Sw(homebrew.V0, 0x220, homebrew.T0)
+	a.Li(homebrew.A0, 0)
+	a.CallBIOS(0xC0, 0x1B) // ResetRCnt(0)
+	a.Li(homebrew.A0, 0)
+	a.CallBIOS(0xC0, 0x1A) // GetRCnt(0)
+	a.Lui(homebrew.T0, 0x8002)
+	a.Sw(homebrew.V0, 0x224, homebrew.T0)
+	a.Spin("spin")
 	m := New()
-	loadProg(m, 0x80010000, a.build(0x80010000))
+	loadProg(m, 0x80010000, a.Build(0x80010000))
 	setPC(m, 0x80010000)
 	m.RunCycles(10000)
 	if got := m.Timers.T[0].Target; got != 1234 {
@@ -986,16 +384,16 @@ func TestBIOSSetRCntRoundTrip(t *testing.T) {
 }
 
 func TestBIOSInitPAD2Fill(t *testing.T) {
-	a := newPS3Asm()
-	a.li(ps3A0, 0x80020300)
-	a.li(ps3A1, 0x22)
-	a.li(ps3A2, 0x80020340)
-	a.li(ps3A3, 0x22)
-	a.callBIOS(0xB0, 0x12) // InitPAD2
-	a.callBIOS(0xB0, 0x13) // StartPAD2
-	a.spin("spin")
+	a := homebrew.NewAsm()
+	a.Li(homebrew.A0, 0x80020300)
+	a.Li(homebrew.A1, 0x22)
+	a.Li(homebrew.A2, 0x80020340)
+	a.Li(homebrew.A3, 0x22)
+	a.CallBIOS(0xB0, 0x12) // InitPAD2
+	a.CallBIOS(0xB0, 0x13) // StartPAD2
+	a.Spin("spin")
 	m := New()
-	loadProg(m, 0x80010000, a.build(0x80010000))
+	loadProg(m, 0x80010000, a.Build(0x80010000))
 	setPC(m, 0x80010000)
 	m.SetButtons(ButtonStart | ButtonCross)
 	m.RunFrame()
