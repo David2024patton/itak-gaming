@@ -8,13 +8,13 @@ import (
 // Physically addressed register window base used by the tests.
 const (
 	sbISTNRM  = 0x005F6900
-	sbISTERR  = 0x005F6904
-	sbISTEXT  = 0x005F6908
+	sbISTEXT  = 0x005F6904
+	sbISTERR  = 0x005F6908
 	sbIML2NRM = 0x005F6910
 	sbIML4NRM = 0x005F6920
 	sbIML6NRM = 0x005F6930
-	sbIML6ERR = 0x005F6934
-	sbIML4EXT = 0x005F6928
+	sbIML6ERR = 0x005F6938
+	sbIML4EXT = 0x005F6924
 )
 
 // fakeSink records the request stream the controller presents.
@@ -110,8 +110,8 @@ func TestExternalBankAndSummaryBits(t *testing.T) {
 	c := New(sink)
 	c.Raise(BankExternal, 0x40)
 	v := c.Read32(sbISTNRM)
-	if v&(1<<31) == 0 {
-		t.Errorf("ISTNRM = %#x, want external summary bit 31 set", v)
+	if v&(1<<30) == 0 {
+		t.Errorf("ISTNRM = %#x, want external summary bit 30 set", v)
 	}
 	if got := c.Read32(sbISTEXT); got != 0x40 {
 		t.Errorf("ISTEXT = %#x, want 0x40", got)
@@ -123,13 +123,13 @@ func TestExternalBankAndSummaryBits(t *testing.T) {
 	}
 	// The device clears its own source.
 	c.ClearExternal(0x40)
-	if got := c.Read32(sbISTNRM); got&(1<<31) != 0 {
+	if got := c.Read32(sbISTNRM); got&(1<<30) != 0 {
 		t.Errorf("ISTNRM = %#x, summary bit still set", got)
 	}
-	// Error sources raise the bit 30 summary.
+	// Error sources raise the bit 31 summary.
 	c.Raise(BankError, 1<<ErrISPOutOfMemory)
-	if got := c.Read32(sbISTNRM); got&(1<<30) == 0 {
-		t.Errorf("ISTNRM = %#x, want error summary bit 30 set", got)
+	if got := c.Read32(sbISTNRM); got&(1<<31) == 0 {
+		t.Errorf("ISTNRM = %#x, want error summary bit 31 set", got)
 	}
 	// Masked external and error sources present at their levels.
 	c.Write32(sbIML4EXT, 0x80)
