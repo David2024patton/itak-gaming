@@ -305,11 +305,33 @@ func (s *Session) watchNoteLocked(e envelope) {
 		if s.watchHost != "" && e.From == s.watchHost {
 			s.noteSeatAssignLocked(e.Player, e.Seat)
 		}
+	case "got_next_queue":
+		// The host referee's line order (section 4.10).
+		// The watcher mirrors it on the known host's stamp
+		// alone; the helper enforces that. A watch session
+		// never folds got_next itself: only the host keeps
+		// the authoritative list.
+		s.noteGotNextQueueLocked(e)
+	case "tournament":
+		// The room's tournament name (section 8). The
+		// watcher believes it on the known host's stamp
+		// alone, like the line; the helper enforces that.
+		s.noteTournamentLocked(e)
+	case "spectator_left":
+		// A fellow watcher who left the room leaves the
+		// line too (gotnext.go), so the mirrored list the
+		// UI shows never holds a ghost between broadcasts.
+		s.noteMemberLeftLocked(e.Player)
 	case "peer_left":
+		// A player who left the room leaves the line too;
+		// the notice names only the role, and the seat
+		// holders are known.
 		switch e.Role {
 		case "host":
+			s.noteMemberLeftLocked(s.watchHost)
 			s.watchGoneHost = true
 		case "guest":
+			s.noteMemberLeftLocked(s.watchGuest)
 			s.watchGoneGuest = true
 		}
 		if s.watchGoneHost && s.watchGoneGuest && !s.ended {
