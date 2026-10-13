@@ -50,11 +50,9 @@ direct frame dumps with Sonic The Hedgehog:
 - Save states are byte-exact: serialize, restore, re-serialize produces
   an identical image, and play after a restore is frame-for-frame
   deterministic against the unrestored run.
-- Sound: the PSG path is live and unit-tested. The YM2612 FM chip is a
-  register-accurate shell (games write it constantly; it produces no
-  audio yet). Sonic 1's soundtrack is almost entirely FM, so the game
-  is effectively silent until milestone 2 builds the FM operator
-  engine. That is the next piece of work.
+- Sound: the PSG path is live and unit-tested. The YM2612 FM chip
+  started as a register-accurate shell; milestone 2 below replaced it
+  with the full FM operator engine.
 - Known cosmetic issues: the title screen's water ripple (per-line
   scroll effect) renders noisier than hardware.
 
@@ -62,9 +60,23 @@ Chip swap DONE (2026-10-13): the core now runs entirely on our own
 chips. Verified end to end again with Sonic The Hedgehog: SEGA logo,
 title screen and Green Hill Zone gameplay render correctly, the save
 state round trip is byte-exact (0 bytes differ, state size unchanged
-at 206,757 bytes), and play after a restore is deterministic. The
-engine test rig reports one remaining failure, audio silence in the
-opening window, which is the milestone 2 YM2612 gap above.
+at 206,757 bytes), and play after a restore is deterministic.
+
+Milestone 2 DONE (2026-10-13): the YM2612 FM operator engine is built
+in-house (6 channels, 4 operators per channel, envelopes with SSG-EG,
+feedback, LFO, channel 3 special mode, DAC channel, hardware timers)
+and unit-tested, including a 440.00 Hz frequency check on a keyed
+channel. In the Sonic save test the music window now produces 350,214
+non-zero samples (was 33,002, PSG only), and save states stay
+byte-exact at the grown size of 207,133 bytes. The engine test rig
+still flags audio silence, a window artifact: its 120-frame window
+closes during the boot sequence, before the first FM note plays at
+about frame 490 in this core's timing. One known gap remains: the
+YM2612 timers advance once per video frame instead of with emulation
+clocks, so sample playback paced by polling the timer flags (the SEGA
+jingle, SMPS DAC drums) plays frame-quantized. Advancing sound clocks
+from the system loop is the next wiring job.
 
 Not yet wired into the app: the TV still bundles Genesis Plus GX. This
-core replaces it once the FM engine lands and it passes a TV playtest.
+core replaces it once the timer clock wiring lands and it passes a TV
+playtest.
