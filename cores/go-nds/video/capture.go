@@ -1,9 +1,10 @@
 package video
 
 // Display capture (DISPCAPCNT at 0x04000064), with the
-// documented simplifications of this slice: source A is
-// engine A's composed line before master brightness (the
-// hardware's 3D+2D mix, here 2D only), source B is read as
+// documented simplifications: source A is engine A's
+// composed line before master brightness (the hardware's
+// 3D+2D mix; the 3D layer takes part since DS-3), source B
+// is read as
 // 15bpp pixels from a VRAM bank at the same coordinates the
 // write offset addresses (the hardware's separate source
 // addressing is not modeled), and capture completes at the
