@@ -1,6 +1,12 @@
 package system
 
-import "testing"
+import (
+	"bytes"
+	"crypto/sha256"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // nromImage builds a small NROM image (mapper 0, 16 KB PRG,
 // 8 KB CHR) with the given bytes at the start of PRG, optionally
@@ -37,7 +43,7 @@ func TestRAMMirrors(t *testing.T) {
 	}
 }
 
-func TestVblankStubCadenceAndReadClear(t *testing.T) {
+func TestVblankCadenceAndReadClear(t *testing.T) {
 	s, err := New(nromImage(false, jmpSelf...))
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +127,60 @@ func TestOAMDMAStallHook(t *testing.T) {
 	if steps != 515 {
 		t.Fatalf("DMA stalled %d steps before the NOP ran, want 515 (514 stall + 1)", steps)
 	}
+}
+
+// TestStateDeterminismAcrossSerialize is the whole-machine
+// determinism gate: a live ROM runs 45 frames, the machine is
+// serialized, runs 45 more, and the framebuffer hash and full
+// state must be identical to a run that restored the mid state
+// and continued from it.
+func TestStateDeterminismAcrossSerialize(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "testroms", "ppu_vbl_nmi", "ppu_vbl_nmi.nes"))
+	if err != nil {
+		t.Skipf("determinism ROM not fetched: %v", err)
+	}
+	s, err := New(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 45; i++ {
+		s.RunFrame()
+	}
+	mid := s.Serialize()
+	if len(mid) != s.StateSize() {
+		t.Fatalf("state size %d, StateSize says %d", len(mid), s.StateSize())
+	}
+	for i := 0; i < 45; i++ {
+		s.RunFrame()
+	}
+	wantHash := sha256.Sum256(uint32Bytes(s.Framebuffer()))
+	wantState := s.Serialize()
+
+	if err := s.Deserialize(mid); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 45; i++ {
+		s.RunFrame()
+	}
+	gotHash := sha256.Sum256(uint32Bytes(s.Framebuffer()))
+	if gotHash != wantHash {
+		t.Fatalf("framebuffer hash diverged across a serialize/restore boundary")
+	}
+	if gotState := s.Serialize(); !bytes.Equal(gotState, wantState) {
+		t.Fatalf("machine state diverged across a serialize/restore boundary")
+	}
+	t.Logf("state size: %d bytes; framebuffer sha256 %x", len(mid), wantHash[:8])
+}
+
+func uint32Bytes(in []uint32) []byte {
+	out := make([]byte, len(in)*4)
+	for i, v := range in {
+		out[i*4] = uint8(v)
+		out[i*4+1] = uint8(v >> 8)
+		out[i*4+2] = uint8(v >> 16)
+		out[i*4+3] = uint8(v >> 24)
+	}
+	return out
 }
 
 func TestBlarggResultProtocol(t *testing.T) {
