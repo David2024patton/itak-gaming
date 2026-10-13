@@ -3,6 +3,7 @@ package mobile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -66,6 +67,10 @@ var npSession *netsession.Session
 var npPending *netsession.Session
 var npErr string
 
+// npPlayerName is the local player's display name from the most
+// recent NetplayStart, used to label our own chat messages.
+var npPlayerName string
+
 func npActive() *netsession.Session {
 	if npSession != nil {
 		return npSession
@@ -92,6 +97,7 @@ func NetplayStart(serverBase, lobbyID, token, game string, isHost bool, playerNa
 	if err != nil {
 		return "cannot connect to the lobby server: " + err.Error()
 	}
+	npPlayerName = playerName
 	sess := netsession.NewSession(conn, bridgeCore{}, netsession.Config{
 		Game: game, ROMHash: romHashHex, CoreName: coreLabel,
 		IsHost: isHost, PlayerName: playerName,
@@ -188,6 +194,61 @@ func NetplayStep(buttons int) string {
 		return npErr
 	}
 	return ""
+}
+
+// NetplaySendChat sends a chat message to the other player
+// (waiting room or in game). Returns "" on success or the error
+// text. Chat is best effort and never affects the game itself.
+func NetplaySendChat(text string) string {
+	s := npActive()
+	if s == nil {
+		return "not in a session"
+	}
+	if err := s.SendChat(text); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// chatMsgJSON and chatPollJSON are the wire shape NetplayChatJSON
+// hands the UI: the messages newer than the caller's cursor plus
+// the newest seq, which the UI passes back next time.
+type chatMsgJSON struct {
+	Seq  int    `json:"seq"`
+	From string `json:"from"`
+	Text string `json:"text"`
+	Mine bool   `json:"mine"`
+}
+
+type chatPollJSON struct {
+	Seq  int           `json:"seq"`
+	Msgs []chatMsgJSON `json:"msgs"`
+}
+
+// NetplayChatJSON returns the chat messages with seq greater
+// than afterSeq as JSON:
+// {"seq":N,"msgs":[{"seq":..,"from":"..","text":"..","mine":bool}]}.
+// With no session it returns the cursor unchanged and no messages.
+func NetplayChatJSON(afterSeq int) string {
+	out := chatPollJSON{Seq: afterSeq, Msgs: []chatMsgJSON{}}
+	if s := npActive(); s != nil {
+		msgs, latest := s.ChatSince(afterSeq)
+		out.Seq = latest
+		for _, m := range msgs {
+			from := m.From
+			if m.Mine && npPlayerName != "" {
+				from = npPlayerName
+			}
+			out.Msgs = append(out.Msgs, chatMsgJSON{
+				Seq: m.Seq, From: from, Text: m.Text, Mine: m.Mine,
+			})
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return `{"seq":0,"msgs":[]}`
+	}
+	return string(b)
 }
 
 // NetplayActive reports whether a session is live.
