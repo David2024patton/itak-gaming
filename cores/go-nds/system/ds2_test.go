@@ -277,8 +277,8 @@ func sceneSetup(m *Machine) {
 	v9 := m.Bus.ARM9()
 	w16 := func(addr uint32, val uint32) { v9.Write(addr, 2, val) }
 	w32 := func(addr uint32, val uint32) { v9.Write(addr, 4, val) }
-	v9.Write(0x04000240, 1, 0x03) // VRAMCNT A: BG A
-	v9.Write(0x04000248, 1, 0x03) // VRAMCNT H: BG B
+	v9.Write(0x04000240, 1, 0x81) // VRAMCNT A: BG A
+	v9.Write(0x04000248, 1, 0x81) // VRAMCNT H: BG B
 	w32(0x04000000, 0x00010100)
 	w16(0x04000008, 0x0204)
 	w32(0x04001000, 0x00010100)
