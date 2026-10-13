@@ -255,7 +255,8 @@ system offers one delivery per scanline to the master
 SH-2 at level 6, the documented default level for
 these sources. Timer, DSP end, sound request, SMPC, pad,
 and DMA end sources remain status storage only until
-SAT-3.
+SAT-3 (which completes all of them; see the SAT-3 scu
+section).
 
 Gate: unit tests for raise and pending, mask blocking
 delivery while status still records, priority order
@@ -289,14 +290,267 @@ pixel probes check the NBG0 pattern colors, sprite
 over background priority, and background beside the
 sprite.
 
+## What exists in SAT-3
+
+### chips/m68ec000: the SCSP sound CPU
+
+A full integer Motorola 68000 written from the 68000
+user manual inside this module (the project rule is one
+standalone module per core, so it is not imported from
+go-genesis): the complete integer instruction set with
+all addressing modes, address error exceptions with
+the documented 14 byte group 0 frame, illegal and
+privilege exceptions, line A and line F vectors,
+autovector interrupts, and a flat cycle model (one base
+cycle per instruction plus the manual's EA cycle table
+where it is cheap). Divergences chosen and documented
+in code: DIVU and DIVS overflow sets V and leaves the
+destination unchanged; the BCD overflow flag follows
+the symmetric documented model with pinned vectors;
+RTE pops only SR and PC (the group 0 frame is
+documented as not reliably restartable). Serialize is
+exactly 88 bytes.
+
+Conformance outcome, stated plainly: no Tom Harte
+680x0 single-step corpus exists in this workspace or
+upstream (the Tom Harte tree has no 680x0 set, and the
+go-genesis 68000 was differential tested against a
+library oracle with no corpus on disk), so the corpus
+gate is DEFERRED. The gate here is hand-derived
+vectors: 21 tests covering every instruction group,
+the address error frame byte for byte, the MOVEM
+memory image, DBcc loop counts, TAS, MOVEP,
+multi-precision BCD carry chaining, an interrupt entry
+at the correct vector, and a serialize round trip with
+a deterministic summation program.
+
+### scu: DMA, DSP, timers, and two-CPU delivery
+
+DMA channels 0 to 2 with the documented register sets:
+direct mode and the indirect table walk (three long
+entries, bit 31 end flag), source and destination add
+codes, the start factors (immediate on the enable edge,
+VBlank-IN, VBlank-OUT, HBlank-IN, timer 0, timer 1,
+sound request, sprite end), address save and update
+semantics, and completion through the IST DMA end
+bits. Prohibition enforced: a transfer touching the
+SCU register page window is skipped and counted by
+IllegalDMA (this core's IST map has no DMA illegal
+bit; see the divergence note below). The SCU DSP:
+program RAM 256 by 32 bit, data RAM 4 banks of 64 by
+32 bit, the parallel operation fields (ALU, X
+multiplier, Y, D1 move), the hardware loop, DMA
+between DSP RAM and the bus, program control through
+the register page, and the DSP end interrupt. Gate:
+a hand-assembled program computes a dot product over
+data RAM with the exact accumulator result 156, and
+DSP DMA moves data both ways. Timers: timer 0 in the
+dot position model (compare 0 fires at line start),
+timer 1 counting lines, gated by the T1MD enable bit
+as the manual specifies.
+
+Delivery model: one pending source per scanline is
+offered to BOTH SH-2s at the per source levels of the
+SCU manual Table 2.1 (LevelOf), in the documented
+priority order. IST bits stay set until software clears
+them, so both CPUs see the same source; each takes it
+only when its own SR mask allows, and the slave is
+offered sources only while released. CD block
+interrupts arrive as the A-Bus external input at IST
+bit 16 (the manual has no CD bit in IST), with a fixed
+vector 0x50 and level 8: on hardware the interrupting
+device supplies the vector during the acknowledge
+cycle, and this core models its one external input
+with a fixed assignment. Known divergence, kept from
+SAT-2: IST bit 12 is sprite draw end here (the manual
+puts DMA illegal at 12 and sprite at 13; the vector
+0x4D matches the manual's sprite vector either way).
+
+### scsp: the sound chip and its DSP
+
+Register map from the SCSP manual (ST-77, the ST-068
+family): 32 slots of 12 words on a 32 byte stride,
+common registers at 0x400, the sound stack at 0x600,
+and the DSP register area at 0x700 and up. The chip
+shares the 512 KiB sound RAM and the 4 KiB register
+page as plain storage with the SH-2 side and polls the
+page at sample ticks, so key execution (KYONEX with
+KYONB), DMA triggers, and interrupt clears are observed
+from either CPU's writes. The 68EC000 runs at
+11.2896 MHz inside the 44,100 Hz sample clock, both
+advanced from the machine clock by exact rational
+accumulation; the phase accumulator is in the state.
+Slot engine: 16 bit and 8 bit PCM, all four loop modes,
+the EG rate system (AR, D1R, D2R, RR, DL, key rate
+scaling) with levels in the manual's attenuation
+domain, FM modulation from the previous sample's slot
+outputs per MDL and MDXSL/MDYSL, the LFO (all four
+waveforms, pitch and amplitude paths), and TL, send,
+and pan gains computed from the manual's decibel
+figures. Timers A, B, and C with their prescalers; the
+interrupt registers in the manual's roles (SCIEB and
+friends belong to the sound CPU side, MCIEB to the
+main CPU side, pending bits clear through SCIRE and
+MCIRE); main CPU requests raise the SCU sound request
+source through a callback. CD audio enters on the
+EXTS inputs and mixes through the EFREG path of slots
+16 and 17, the routing the boot ROM uses; the manual
+has no dedicated CD level and pan registers.
+
+Measured gates: a 256 sample loop at unity pitch has
+period exactly 256 samples (172.27 Hz, bit exact
+across the LEA wrap); OCT plus 1 gives period exactly
+128; EG attack at AR 20 reaches full in exactly 128
+samples and release passes its checkpoints exactly; a
+full-left DIPAN leaves the right channel at exactly
+zero; a Timer A handler on the 68EC000 counts exactly
+44,100 interrupts over 60 frames of machine cycles;
+mid-playback serialize and restore reproduce the next
+200 sample ticks bit identically. Serialized size is
+1,958 bytes with an empty CD queue (sound RAM and the
+register page are the system's, not the chip state's).
+
+DSP coverage boundary, stated plainly: ST-77 does not
+publish the FH-1 microprogram encoding, so the DSP
+executes a documented subset encoding of this
+project's design over the manual's data set (COEF,
+MADRS, TEMP ring, MEMS, MIXS, EFREG, EXTS, an
+accumulator ALU with load, add, sub, and, or, xor and
+shifts, multiply by COEF, and memory access through
+MADRS). Real game DSP microcode written for the FH-1
+encoding will NOT run on it. Not in the subset: the Y
+bus and table addressing, the second accumulator, and
+conditionals. The subset is gated by two hand-written
+microprograms checked against hand-computed outputs:
+a gain of 0.5 through MEMS to EFREG, and a feedback
+delay (a 0.5, b 0.25, depth 4) exact for the first 16
+outputs. Stored only or stub: MEM4MB, DAC18B, VER, the
+MIDI buffers (reads empty), and the INT0 to INT2 input
+bits.
+
+### cdblock: the CD block command layer
+
+The register page uses the hardware placement: HIRQ
+at page bytes [0x08:0x0A], its mask at [0x0C:0x0E],
+CR1 to CR4 at [0x18:0x1A] through [0x24:0x26], and the
+data port at [0x28:0x2A] (on hardware the data FIFO
+sits at its own CS2 offset; the port's placement
+inside the page is this core's model). A command
+executes only while HIRQ CMOK is clear; completions
+set the documented HIRQ bits and fire the OnIRQ
+callback (wired to the SCU A-Bus input) for newly set
+bits the mask allows. The command numbering is the
+production firmware numbering, verified against
+public firmware trace documentation; an earlier draft
+numbering in the build notes was superseded by it.
+
+Implemented commands: Get Status (0x00), Get HW Info
+(0x01), Get TOC (0x02, through the data FIFO), Get
+Session Info (0x03), Initialize (0x04), End Data
+Transfer (0x06), Play Disc (0x10), Seek Disc (0x11),
+Scan Disc (0x12, 16x, buffers nothing), Get Subcode Q
+(0x20, the 10 Q bytes through the data FIFO; no CRC is
+appended), Set and Get CD Device Connection (0x30 and
+0x31), the filter family (0x40 to 0x47 set and get
+range, subheader, mode, and connection, plus reset):
+24 filters and 24 buffer partitions sharing one
+200 block pool, with filter 0 passing everything to
+partition 0 by default. Get Buffer Size (0x50), Get
+Sector Number (0x51), Calculate Actual Data Size
+(0x52), Get Actual Data Size (0x53), Get Sector Info
+(0x54), Execute FAD Search (0x55), Get FAD Search
+Result (0x56), Set Sector Length (0x60), Get Sector
+Data (0x61), Delete Sector Data (0x62), Get Then
+Delete Sector Data (0x63). Play streams at exactly
+75 sectors per second by cycle accumulation (the
+streaming phase is in the state): audio sectors go to
+the SCSP sink and are never buffered, data sectors
+route through the filter chain into partitions, and
+buffered payloads are stored as descriptors and
+re-read from the attached image by FAD after a state
+restore. Not implemented: Put Sector Data (0x64)
+rejects with the documented 0xFF status (the firmware
+implements it with allocation semantics; deferred),
+Copy (0x65) and Move (0x66) reject as unknown, and
+Authenticate Device is out of scope. Gate: 13 tests
+and more than 3,600 assertions over handshakes, TOC
+bytes, the buffer command family, filter routing
+including Mode 2 subheader file number matching,
+CD-DA delivery byte for byte, subcode Q fields, and
+the serialize round trip.
+
+### smpc: the system manager
+
+The full register file (IREG0 to IREG6, OREG0 to
+OREG31, COMREG, SR, SF, PDR1 and PDR2) with the
+documented command protocol in the package's poll
+driven model: a command written to COMREG executes at
+the next Poll, SF is set by the executing Poll and
+clears at the following one. Commands: MSHON, SSHON,
+SSHOFF, SNDON, SNDOFF, CDON, CDOFF, SYSRES, CKCHG352
+and CKCHG320 (stored and reported; the frame budget
+does not switch), INTBACK (the status report with the
+RTC fields, then per port peripheral chunks in the
+documented Saturn pad layout, across the continuation
+protocol), SETTIME, SETSMEM, NMIREQ, RESENAB, and
+RESDISA. The RTC advances from machine cycles with
+the weekday computed from the date, not trusted from
+the set packet. The package was audited line by line
+against the SMPC manual (ST-169) during this slice;
+four defects were found and fixed (INTBACK port modes
+live in IREG0, not IREG1; SNDRES and CDRES are
+asserted-high reset signals, so the power on status
+now reads 35H and 40H like a hardware capture; one SR
+comment). At power on the slave, the sound chip, and
+the CD block are all held, matching that status.
+
+### system: SAT-3 wiring and version 3 states
+
+RunFrame steps the devices per scanline after the CPU
+slice: the SCSP by the line's cycle budget, then SMPC,
+CD block, and SCU polls. The SMPC hooks own the
+machine resets: SSHON releases the slave, SSHOFF holds
+and resets it, SNDON and SNDOFF release and hold the
+SCSP, CDON and CDOFF power the CD block, and NMIREQ
+raises the master NMI. AudioBuffer drains the SCSP
+mix. States are version 3: the version 2 layout as a
+strict prefix, then the sound RAM and SCSP page, the
+SMPC and CD pages, the SCU and SMPC states, and the
+length prefixed SCSP and CD block states: 4,241,176
+bytes for an idle machine (the total varies with the
+SCSP CD queue and the CD buffer contents, so StateSize
+is now a method reporting the current size).
+
+Slice gate, TestSAT3FullStackDeterminism: the master
+boots the machine through the SMPC (SSHON from a CPU
+program, SNDON and CDON through the page), the slave
+runs its handshake, an SCU DMA copy lands byte exact,
+the SCU DSP raises its end interrupt, the CD block
+plays the synthetic audio track through the SCSP and
+raises the SCU A-Bus input, status reads back PLAY, a
+mid-play save restores to a byte identical
+continuation of state, framebuffer, and audio
+samples, and the CD still reads PLAY afterwards.
+
+SAT-2 gate adjustments in this slice, both forced by
+SAT-3 scope: TestVBlankInterruptMaskedByIMS now masks
+the timer 0 source as well (bit 3, mask 0x100F) and
+asserts IST bits 0x100F, because the timers are wired
+into the frame now; the same gate caught that timer 1
+must be gated by its T1MD enable bit (it fired every
+line at power on before the fix). The state size
+assertions use the StateSize method, and the bad state
+test truncates a real snapshot, because version 3
+states are variable size.
+
 ## Slice roadmap
 
 - SAT-2: done. VDP2 backgrounds plus the VDP1 sprite
   and polygon engine, composition, and SCU interrupt
   wiring.
-- SAT-3: SCU including its DSP, SCSP audio with its
-  68EC000, real CD block command processing, and SMPC
-  behavior.
+- SAT-3: done. SCU DMA, DSP, and timers with two-CPU
+  delivery, SCSP audio with its 68EC000, the CD block
+  command layer, SMPC behavior, and version 3 states.
 - SAT-4: BIOS HLE boot, libretro shell, real-game
   engine test, and app wiring for the android-64bit
   build.
@@ -311,10 +565,10 @@ sprite.
 - The CD block register block is mirrored across its
   window in this slice; real hardware places it at a
   fixed offset inside CS2.
-- SMPC and SCSP register pages are still storage only;
-  behavior lands in SAT-3. The SCU page has real
-  interrupt status and mask only; its DSP and DMA
-  engines land in SAT-3.
+- SMPC, SCSP, CD block, and the full SCU behavior
+  landed in SAT-3 (see the SAT-3 sections for their
+  coverage boundaries, in particular the SCSP DSP
+  subset boundary).
 - The SH-2 instruction set is implemented strictly per
   the SH-2 manual, not the wider SH-4 set.
 
@@ -328,7 +582,9 @@ sprite.
   trigger poll, not spread across the frame; EDSR draw
   end is reported at the poll, not at a cycle offset.
 - The SCU delivers at most one interrupt source per
-  scanline, to the master only, always at level 6.
+  scanline, to the master only, always at level 6
+  (SAT-2 model; SAT-3 delivers to both CPUs at the
+  per source manual levels).
 - Pre-clipping: when a part exceeds the system clip
   with Pclp clear, the effective clip shrinks by one
   dot on the right and bottom only (vdp1 commands.go).
