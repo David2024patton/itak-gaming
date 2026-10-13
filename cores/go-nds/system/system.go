@@ -1,14 +1,17 @@
-// Package system is the Nintendo DS machine skeleton: the two
-// CPUs on the dual bus, cartridge staging, the frame budget, and
-// save states.
+// Package system is the Nintendo DS machine: the two CPUs on
+// the dual bus, the DS-2 2D video engines and peripherals, full
+// direct boot, scanline-stepped execution, and save states.
 //
 // Boot approach (deliberately no BIOS): no DS BIOS or firmware
 // image exists in this module and none is required. LoadROM
-// stages the cartridge's ARM9 and ARM7 binaries at their header
-// load addresses (the direct-boot layout), and Start jumps each
-// CPU to its header entry point. Slice 1 leaves the CPUs halted
-// after staging so tests drive them explicitly; DS-2 lands the
-// full direct-boot register state, timers, DMA and interrupts.
+// performs the documented direct-boot initialization: it
+// stages both binaries at their header load addresses, writes
+// the boot block games read in main RAM, installs the entry
+// register state (stacks per the direct-boot table, CPSR =
+// system mode, r12/r13/r14 at the entry contract), and leaves
+// the CPUs halted until Start. The firmware the ARM7 can read
+// over SPI is a generated minimal image (periph package), not
+// a dump.
 package system
 
 import (
@@ -17,11 +20,14 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-nds/chips/arm7"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/chips/arm9"
 	"github.com/davidpatton/itak-gaming/cores/go-nds/chips/armcore"
+	"github.com/davidpatton/itak-gaming/cores/go-nds/periph"
+	"github.com/davidpatton/itak-gaming/cores/go-nds/video"
 )
 
 // Frame budgets in CPU cycles. The ARM9 runs at 33.5 MHz and
 // the ARM7 at half that; one 60 Hz frame is 560,190 ARM9 cycles
-// and 280,095 ARM7 cycles.
+// and 280,095 ARM7 cycles. The line split (video package)
+// reproduces these totals exactly over 263 lines.
 const (
 	CyclesPerFrame9 = 560190
 	CyclesPerFrame7 = 280095
@@ -35,9 +41,11 @@ const (
 
 // Machine is one DS console.
 type Machine struct {
-	Bus  *bus.Bus
-	CPU9 *armcore.CPU
-	CPU7 *armcore.CPU
+	Bus    *bus.Bus
+	CPU9   *armcore.CPU
+	CPU7   *armcore.CPU
+	Periph *periph.Set
+	Video  *video.Video
 
 	header *cart.Header
 	rom    []byte
@@ -50,9 +58,6 @@ type Machine struct {
 	touchX    uint16
 	touchY    uint16
 	touchDown bool
-
-	top    []uint32
-	bottom []uint32
 }
 
 // New returns a machine with both CPUs halted and no cartridge.
@@ -64,15 +69,19 @@ func New() *Machine {
 	b.AttachCPU9(m.CPU9)
 	m.CPU9.Halted = true
 	m.CPU7.Halted = true
-	m.top = make([]uint32, ScreenWidth*ScreenHeight)
-	m.bottom = make([]uint32, ScreenWidth*ScreenHeight)
+	m.Video = video.New(b)
+	m.Periph = periph.New(b,
+		func() []byte { return m.rom },
+		func() uint32 { return m.buttons },
+		func() (uint16, uint16, bool) { return m.touchX, m.touchY, m.touchDown })
+	b.SetIOHook(m)
 	return m
 }
 
-// LoadROM parses the cartridge header and stages the ARM9 and
-// ARM7 binaries at their load addresses through the owning CPU's
-// bus view. The CPUs stay halted; call Start (or Start9/Start7)
-// to run them.
+// LoadROM parses the cartridge header and performs the full
+// direct-boot initialization (see boot.go), leaving both CPUs
+// halted with their entry state installed. Call Start (or
+// Start9/Start7) to run them.
 func (m *Machine) LoadROM(rom []byte) error {
 	h, err := cart.Parse(rom)
 	if err != nil {
@@ -80,13 +89,9 @@ func (m *Machine) LoadROM(rom []byte) error {
 	}
 	m.header = h
 	m.rom = rom
-	m.Bus.SetROM(rom)
-	if h.ARM9Size > 0 {
-		m.Bus.LoadBytes(true, h.ARM9Load, h.ARM9Binary(rom))
-	}
-	if h.ARM7Size > 0 {
-		m.Bus.LoadBytes(false, h.ARM7Load, h.ARM7Binary(rom))
-	}
+	m.started9 = false
+	m.started7 = false
+	m.directBoot()
 	return nil
 }
 
@@ -118,66 +123,162 @@ func (m *Machine) Start() {
 	m.Start7()
 }
 
-// RunFrame advances the machine by one frame budget: the ARM9
-// runs up to CyclesPerFrame9 cycles and the ARM7 up to
-// CyclesPerFrame7, each only when started. Halted CPUs idle.
+// RunFrame advances the machine by one frame, stepped at
+// scanline granularity: 263 lines, each running the visible
+// cycle chunk, the hblank point (HBlank flags, DMA triggers),
+// and the hblank cycle chunk. Video renders per line from the
+// register state at line start. VBlank begins at line 192,
+// which also latches the affine reference points and fires the
+// VBlank DMA triggers and interrupt sources.
 func (m *Machine) RunFrame() {
-	if m.started9 {
-		n := 0
-		for n < CyclesPerFrame9 {
-			n += m.CPU9.Step()
+	m.Periph.TriggerDMA(periph.TrigGX)
+	m.Video.BeginFrame()
+	for line := 0; line < video.LinesTotal; line++ {
+		m.Video.SetLine(line)
+		if line == m.Video.LYC() && m.Video.IRQEnabled(2) {
+			m.Periph.Raise(true, periph.IRQVCount)
+			m.Periph.Raise(false, periph.IRQVCount)
+		}
+		if line == video.Height {
+			if m.Video.IRQEnabled(0) {
+				m.Periph.Raise(true, periph.IRQVBlank)
+				m.Periph.Raise(false, periph.IRQVBlank)
+			}
+			m.Periph.TriggerDMA(periph.TrigVBlank)
+			m.Video.LatchAffine()
+		}
+		if line < video.Height {
+			m.Periph.TriggerDMA(periph.TrigDisplayLine)
+			m.Video.RenderLine(line)
+			m.Video.CaptureLine(line)
+		}
+		m.runChunk(video.CyclesLineA9, video.CyclesLineA7)
+		m.Video.SetHBlank(true)
+		if line < video.Height && m.Video.IRQEnabled(1) {
+			m.Periph.Raise(true, periph.IRQHBlank)
+			m.Periph.Raise(false, periph.IRQHBlank)
+		}
+		if line < video.Height {
+			m.Periph.TriggerDMA(periph.TrigHBlank)
+		}
+		m.runChunk(video.CyclesLineB9, video.CyclesLineB7)
+		m.Video.SetHBlank(false)
+		if line < video.Height {
+			m.Video.AdvanceAffine()
 		}
 	}
-	if m.started7 {
+	m.Periph.FrameTick()
+}
+
+// runChunk steps each started CPU for up to its chunk budget,
+// then advances its timers by the cycles actually executed
+// and evaluates the keypad interrupt. Each CPU's IRQ line is
+// resampled from the interrupt controller after every step,
+// so a handler that acknowledges its interrupt source
+// deasserts the line at the next instruction boundary instead
+// of re-entering until the chunk ends.
+func (m *Machine) runChunk(n9, n7 int) {
+	if m.started9 {
+		m.CPU9.IRQLine = m.Periph.PendingIRQ(true)
 		n := 0
-		for n < CyclesPerFrame7 {
-			n += m.CPU7.Step()
+		for n < n9 {
+			n += m.CPU9.Step()
+			m.CPU9.IRQLine = m.Periph.PendingIRQ(true)
 		}
+		m.Periph.AdvanceTimers(true, n)
+		m.evalKeyIRQ(true, 0x132)
+	}
+	if m.started7 {
+		m.CPU7.IRQLine = m.Periph.PendingIRQ(false)
+		n := 0
+		for n < n7 {
+			n += m.CPU7.Step()
+			m.CPU7.IRQLine = m.Periph.PendingIRQ(false)
+		}
+		m.Periph.AdvanceTimers(false, n)
+		m.evalKeyIRQ(false, 0x132)
 	}
 }
 
-// Framebuffer returns the top and bottom screen buffers, each
-// 256x192 XRGB8888. Slice 1 has no video engines, so both are
-// blank; DS-2 fills them from the 2D engines.
+// evalKeyIRQ evaluates a side's KEYCNT condition against the
+// button state and raises the keypad interrupt on a match.
+func (m *Machine) evalKeyIRQ(nine bool, off int) {
+	io := m.Bus.IO7
+	if nine {
+		io = m.Bus.IO9
+	}
+	kc := uint32(io[off]) | uint32(io[off+1])<<8
+	if kc&(1<<14) == 0 {
+		return
+	}
+	sel := kc & 0x3FF
+	pressed := m.buttons & 0x3FF
+	match := false
+	if kc&(1<<15) != 0 {
+		match = sel != 0 && pressed&sel == sel
+	} else {
+		match = pressed&sel != 0
+	}
+	if match {
+		m.Periph.Raise(nine, periph.IRQKeys)
+	}
+}
+
+// Framebuffer returns the top and bottom screen buffers in
+// POWCNT1 assignment order: with the swap bit clear engine A
+// is the top screen; set, engine A is the bottom screen.
 func (m *Machine) Framebuffer() (top, bottom []uint32) {
-	return m.top, m.bottom
+	if m.Video.Swapped() {
+		return m.Video.B, m.Video.A
+	}
+	return m.Video.A, m.Video.B
 }
 
 // SetButtons stores the DS button state: bits 0-9 are A, B,
 // Select, Start, Right, Left, Up, Down, R, L in the KEYINPUT
-// order, bits 10-11 are X and Y. Slice 1 stores the state only;
-// DS-2 wires it to the IO page.
+// order, bits 10-11 are X and Y.
 func (m *Machine) SetButtons(mask uint32) { m.buttons = mask }
 
 // Buttons returns the stored button state.
 func (m *Machine) Buttons() uint32 { return m.buttons }
 
-// SetTouch stores the touchscreen placeholder state (pixel
-// coordinates and pen-down). The touchscreen device itself
-// arrives in DS-4.
+// SetTouch stores the touchscreen state (pixel coordinates and
+// pen-down), feeding both the SPI touchscreen device and the
+// ARM7 pen-down interrupt.
 func (m *Machine) SetTouch(x, y uint16, down bool) {
 	m.touchX, m.touchY, m.touchDown = x, y, down
+	m.Periph.SetPenDown(down)
 }
 
-// Touch returns the stored touchscreen placeholder state.
+// Touch returns the stored touchscreen state.
 func (m *Machine) Touch() (x, y uint16, down bool) {
 	return m.touchX, m.touchY, m.touchDown
 }
 
-// stateVersion is the save-state format version.
-const stateVersion = 1
+// SaveRAM returns the cartridge save memory (the AUX SPI
+// EEPROM backing, 512 bytes in this slice).
+func (m *Machine) SaveRAM() []byte { return m.Periph.SaveRAM() }
 
-// trailerSize is the fixed machine-state block after the CPU and
-// bus states.
+// GXFIFOCount returns the number of 32-bit words consumed
+// into the geometry FIFO sink (DS-3 drains it for real).
+func (m *Machine) GXFIFOCount() uint32 { return m.Periph.GXCount }
+
+// stateVersion is the save-state format version. Version 1
+// states (DS-1) are rejected: the layout grew by the
+// peripheral and video blocks.
+const stateVersion = 2
+
+// trailerSize is the fixed machine-state block after the
+// device states.
 const trailerSize = 32
 
 // StateSize is the exact serialized size of a machine state.
-const StateSize = 1 + bus.StateSize + 2*armcore.StateSize + trailerSize
+const StateSize = 1 + bus.StateSize + 2*armcore.StateSize +
+	periph.StateSize + video.StateSize + trailerSize
 
-// Serialize writes the full machine state (version byte, bus,
-// both CPUs, machine trailer). The cartridge image itself is not
-// part of the state; Deserialize expects a machine that already
-// loaded the same ROM.
+// Serialize writes the full machine state. The cartridge
+// image itself is not part of the state; Deserialize expects
+// a machine that already loaded the same ROM.
 func (m *Machine) Serialize() []byte {
 	out := make([]byte, StateSize)
 	out[0] = stateVersion
@@ -185,6 +286,8 @@ func (m *Machine) Serialize() []byte {
 	n += m.Bus.Serialize(out[n:])
 	n += m.CPU9.Serialize(out[n:])
 	n += m.CPU7.Serialize(out[n:])
+	n += m.Periph.Serialize(out[n:])
+	n += m.Video.Serialize(out[n:])
 	t := out[n:]
 	if m.started9 {
 		t[0] |= 1
@@ -228,6 +331,8 @@ func (m *Machine) Deserialize(src []byte) bool {
 		return false
 	}
 	n += armcore.StateSize
+	n += m.Periph.Deserialize(src[n:])
+	n += m.Video.Deserialize(src[n:])
 	t := src[n:]
 	m.started9 = t[0]&1 != 0
 	m.started7 = t[0]&2 != 0
