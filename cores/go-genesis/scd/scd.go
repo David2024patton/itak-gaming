@@ -19,6 +19,16 @@ import (
 // MainWrite8. The sub CPU sees offsets 0x00 to 0x5F through its bus
 // window at 0xFF8000, where 0x30 to 0x5F are the CD block.
 //
+// SCD-2 register coexistence note: the real CDD host interface
+// (fader word at 0x34, control byte at 0x37, status nibbles at
+// 0x38 to 0x41, command nibbles at 0x42 to 0x4B) overlaps the
+// SCD-1 CDC latch model. The two are split by direction: writes
+// to 0x38 to 0x41 still land in the CDC latches (the boot flow
+// depends on them) while reads there return the CDD status
+// nibbles; writes to 0x37 are the CDD control byte while reads
+// stay the CDC status register; offset 0x48 write is CDD command
+// nibble TC6 while its read stays the CDC data port.
+//
 // Simplifications documented for this slice: Word RAM contention
 // reads as 0xFF instead of stalling the requesting CPU, and the CDC
 // busy time is measured in status register reads instead of elapsed
@@ -30,7 +40,13 @@ type Unit struct {
 	prgRAM  [0x80000]byte
 	wordRAM [0x40000]byte
 	pcmWave [0x10000]byte
-	pcmRegs [16]byte
+
+	// pcm is the RF5C164 engine (pcm.go); it borrows pcmWave as
+	// its wave RAM. cdd is the CDD host interface and CD-DA
+	// playback engine (cdd.go). Both are created by NewUnit and
+	// lazily by the engine accessors for zero-value units.
+	pcm *PCM
+	cdd *CDD
 
 	// Gate array state.
 	control    uint8 // offset 0x00: bit0 RES, bit1 BRQ (bits 0-1 only)
@@ -41,13 +57,26 @@ type Unit struct {
 	subHalf    int   // 1M mode: which 128 KB half the sub CPU owns (0 or 1)
 	retMain    bool  // offset 0x02 RET flag as read by the main CPU
 	retSub     bool  // offset 0x02 RET flag as read by the sub CPU
-	reg03      uint8 // offset 0x03: bit0 H-INT enable, bits 3-4 CDC destination
+	reg03      uint8 // offset 0x03: bit0 H-INT enable, bit1 CDD IRQ mask, bit2 CDC IRQ mask, bits 3-4 CDC destination
 	reg04      uint8 // offset 0x04: H-INT interval in scanlines
 	reg05      uint8 // offset 0x05: H-INT vector byte, 0 = autovector
 	mainFlag   uint8 // offset 0x0E: main CPU communication flag
 	subFlag    uint8 // offset 0x0F: sub CPU communication flag
 	commCmd    [8]uint16
 	commStatus [8]uint16
+
+	// PRG-RAM banking and protection (offset 0x02 high bits): the
+	// bank selects which 128 KB of PRG-RAM the main CPU window at
+	// 0x420000 shows; the write protect field, set only by main
+	// CPU writes, protects the first prgWP*64 KB of physical
+	// PRG-RAM against main CPU window writes.
+	prgBank uint8
+	prgWP   uint8
+
+	// cdcIRQ latches a completed CDC transfer until the system
+	// delivers it as a level 5 interrupt to the sub CPU (gated by
+	// the interrupt mask bit in register 0x03).
+	cdcIRQ bool
 
 	// CD block state (sub CPU offsets 0x30 to 0x5F).
 	cddCmd    uint8
@@ -77,8 +106,28 @@ func NewUnit(d *Disc) *Unit {
 		wordOwner:  1,
 		resetArmed: true,
 	}
+	u.pcm = NewPCM(u.pcmWave[:])
+	u.cdd = NewCDD(d)
 	u.refreshCDDResponse()
 	return u
+}
+
+// pcmEngine returns the PCM engine, creating it for a zero-value
+// unit on first use.
+func (u *Unit) pcmEngine() *PCM {
+	if u.pcm == nil {
+		u.pcm = NewPCM(u.pcmWave[:])
+	}
+	return u.pcm
+}
+
+// cddEngine returns the CDD engine, creating it for a zero-value
+// unit on first use.
+func (u *Unit) cddEngine() *CDD {
+	if u.cdd == nil {
+		u.cdd = NewCDD(u.disc)
+	}
+	return u.cdd
 }
 
 // refreshCDDResponse recomputes the CDD response bytes from the
@@ -198,9 +247,9 @@ func (u *Unit) Read8(addr uint32) uint8 {
 	case addr >= 0x200000 && addr < 0x240000:
 		return u.subWordRead8(addr)
 	case addr >= 0xFF0000 && addr < 0xFF0010:
-		return u.pcmRegs[addr-0xFF0000]
+		return u.pcmEngine().ReadReg(uint8(addr - 0xFF0000))
 	case addr >= 0xFF1000 && addr < 0xFF2000:
-		off := int(u.pcmRegs[0x0C]&0x0F)<<12 | int(addr&0xFFF)
+		off := u.pcmEngine().WaveBank()<<12 | int(addr&0xFFF)
 		return u.pcmWave[off]
 	case addr >= 0xFF8000 && addr < 0xFF8200:
 		return u.subRegRead(uint8(addr & 0xFF))
@@ -229,9 +278,9 @@ func (u *Unit) Write8(addr uint32, v uint8) {
 	case addr >= 0x200000 && addr < 0x240000:
 		u.subWordWrite8(addr, v)
 	case addr >= 0xFF0000 && addr < 0xFF0010:
-		u.pcmRegs[addr-0xFF0000] = v
+		u.pcmEngine().WriteReg(uint8(addr-0xFF0000), v)
 	case addr >= 0xFF1000 && addr < 0xFF2000:
-		off := int(u.pcmRegs[0x0C]&0x0F)<<12 | int(addr&0xFFF)
+		off := u.pcmEngine().WaveBank()<<12 | int(addr&0xFFF)
 		u.pcmWave[off] = v
 	case addr >= 0xFF8000 && addr < 0xFF8200:
 		u.subRegWrite(uint8(addr&0xFF), v)
@@ -320,6 +369,55 @@ func (u *Unit) MainWordWrite8(addr uint32, v uint8) {
 	u.wordRAM[uint32(1-u.subHalf)*0x20000+off] = v
 }
 
+// MainPRGRead8 is the main CPU view of the banked PRG-RAM window at
+// 0x420000 to 0x43FFFF: the 128 KB bank selected by the memory mode
+// register bits 7:6.
+func (u *Unit) MainPRGRead8(addr uint32) uint8 {
+	if addr < 0x420000 || addr >= 0x440000 {
+		return 0xFF
+	}
+	return u.prgRAM[int(u.prgBank)*0x20000+int(addr-0x420000)]
+}
+
+// MainPRGWrite8 is the main CPU write view of the banked PRG-RAM
+// window. Writes landing in the write-protected region (the first
+// prgWP*64 KB of physical PRG-RAM) are dropped; the sub CPU is
+// never blocked by the protection field.
+func (u *Unit) MainPRGWrite8(addr uint32, v uint8) {
+	if addr < 0x420000 || addr >= 0x440000 {
+		return
+	}
+	phys := int(u.prgBank)*0x20000 + int(addr-0x420000)
+	if phys < int(u.prgWP)*0x10000 {
+		return
+	}
+	u.prgRAM[phys] = v
+}
+
+// PRGBank returns the currently selected PRG-RAM bank (0 to 3).
+func (u *Unit) PRGBank() int { return int(u.prgBank) }
+
+// PRGProtectBytes returns how many low bytes of PRG-RAM are
+// currently write-protected against main CPU window writes.
+func (u *Unit) PRGProtectBytes() int { return int(u.prgWP) * 0x10000 }
+
+// CDDState returns the CDD drive state (see cdd.go).
+func (u *Unit) CDDState() CDDState { return u.cddEngine().State() }
+
+// CDDPlaying reports whether CD-DA playback or a data read is in
+// progress.
+func (u *Unit) CDDPlaying() bool {
+	st := u.cddEngine().State()
+	return st == CDDPlaying || st == CDDReading
+}
+
+// CDDPositionLBA returns the CDD playback position in sectors.
+func (u *Unit) CDDPositionLBA() int { return u.cddEngine().PositionLBA() }
+
+// CDDDisplayStatus returns the CDD display status code (the RS0
+// value a Get status command would report).
+func (u *Unit) CDDDisplayStatus() uint8 { return u.cddEngine().DisplayStatus() }
+
 // writeMemMode handles a write to gate array offset 0x02 from
 // either CPU. Bit0 (MODE) is stored. Bit1 (DMNA) is an action and
 // is never stored: the writing side clears its own RET flag, then,
@@ -331,6 +429,13 @@ func (u *Unit) MainWordWrite8(addr uint32, v uint8) {
 // a combined MODE plus DMNA write enters the new mode and performs
 // that mode transfer in one step.
 func (u *Unit) writeMemMode(v uint8, fromMain bool) {
+	// The PRG-RAM bank (bits 7:6) is a plain latch shared by both
+	// writers. The write protect field (bits 4:2) is main CPU side
+	// only: only a main write changes it.
+	u.prgBank = (v >> 6) & 0x03
+	if fromMain {
+		u.prgWP = (v >> 2) & 0x07
+	}
 	u.memMode = v & 0x01
 	if v&0x02 == 0 {
 		return
@@ -390,13 +495,17 @@ func (u *Unit) gateRead(off uint8, main bool) uint8 {
 	switch {
 	case off == 0x00:
 		if main {
-			return 0
+			// Main side readback: bit0 mirrors RES, bit1 is the
+			// bus request acknowledge (set while BRQ holds the
+			// sub CPU off the bus; the grant is combinational
+			// in this model, so it mirrors BRQ exactly).
+			return u.control & 0x03
 		}
 		return u.control
 	case off == 0x01:
 		return (u.led & 0xFE) | 0x01 // bit0 reads 1: a CD is present
 	case off == 0x02:
-		v := u.memMode
+		v := u.memMode | uint8(u.prgBank)<<6
 		if main {
 			if u.retMain {
 				v |= 0x04
@@ -526,20 +635,27 @@ func (u *Unit) cdRead(off uint8) uint8 {
 		return 0x00
 	case off == 0x31:
 		return u.cddParam
-	case off >= 0x32 && off <= 0x35:
+	case off >= 0x32 && off <= 0x33:
 		return u.cddResp[off-0x32]
+	case off == 0x34:
+		// CDD fader word, high byte (EFDT at bit7 of the byte).
+		return u.cddEngine().ReadFaderByte(0)
+	case off == 0x35:
+		return u.cddEngine().ReadFaderByte(1)
 	case off == 0x36:
 		return 0 // CDC control is write only
 	case off == 0x37:
 		return u.cdcStatus()
-	case off >= 0x38 && off <= 0x3B:
-		return u.cdcLBA[off-0x38]
-	case off >= 0x3C && off <= 0x3D:
-		return u.cdcCount[off-0x3C]
-	case off >= 0x3E && off <= 0x41:
-		return u.cdcDest[off-0x3E]
+	case off >= 0x38 && off <= 0x41:
+		// CDD status nibbles RS0 to RS9 (the CDC latches at the
+		// same offsets are write-only state; see cdWrite).
+		return u.cddEngine().StatusNibble(int(off - 0x38))
 	case off == 0x48:
 		return u.cdcDataPortRead()
+	case off >= 0x42 && off <= 0x4B:
+		// CDD command nibble readback (TC6 at 0x48 is shadowed by
+		// the CDC data port read above).
+		return u.cddEngine().CommandNibble(int(off - 0x42))
 	}
 	return 0
 }
@@ -552,6 +668,10 @@ func (u *Unit) cdWrite(off uint8, v uint8) {
 		u.refreshCDDResponse()
 	case off == 0x31:
 		u.cddParam = v
+	case off == 0x34:
+		u.cddEngine().WriteFaderByte(0, v)
+	case off == 0x35:
+		u.cddEngine().WriteFaderByte(1, v)
 	case off == 0x36:
 		if v&0x02 != 0 {
 			u.cdcDone = false // clear complete flag
@@ -559,14 +679,20 @@ func (u *Unit) cdWrite(off uint8, v uint8) {
 		if v&0x01 != 0 {
 			u.cdcStart()
 		}
+	case off == 0x37:
+		// CDD control byte: bit2 is HOCK, the status handshake.
+		u.cddEngine().WriteControl(v)
 	case off >= 0x38 && off <= 0x3B:
 		u.cdcLBA[off-0x38] = v
 	case off >= 0x3C && off <= 0x3D:
 		u.cdcCount[off-0x3C] = v
 	case off >= 0x3E && off <= 0x41:
 		u.cdcDest[off-0x3E] = v
+	case off >= 0x42 && off <= 0x4B:
+		// CDD command nibbles TC0 to TC9; writing TC9 executes.
+		u.cddEngine().WriteCommandNibble(int(off-0x42), v)
 	}
-	// Response bytes, status, and the data port ignore writes.
+	// Status nibbles and the data port ignore writes.
 }
 
 // cdcStatus reads the CDC status register. It is also the only
@@ -582,6 +708,10 @@ func (u *Unit) cdcStatus() uint8 {
 			u.busyReads = 0
 			u.cdcBusy = false
 			u.cdcDone = true
+			// The transfer end interrupt follows the same
+			// read-counted clock as the busy flag in this
+			// model: completion latches the level 5 request.
+			u.cdcIRQ = true
 		}
 	}
 	var s uint8
@@ -637,6 +767,7 @@ func (u *Unit) cdcStart() {
 		u.cdcDone = true
 		u.cdcBusy = false
 		u.busyReads = 0
+		u.cdcIRQ = true
 		return
 	}
 	lba := int64(binary.BigEndian.Uint32(u.cdcLBA[:]))
@@ -682,6 +813,103 @@ loop:
 }
 
 // ---------------------------------------------------------------------------
+// CDD time, interrupts, and audio (SCD-2)
+// ---------------------------------------------------------------------------
+
+// AdvanceCycles advances the CD block by the given number of sub
+// CPU cycles (12.5 MHz): the CDD 75 Hz status tick, CD-DA position
+// progression and data read sector delivery all run off this
+// clock. Sectors delivered by a CDD data read land directly in the
+// CDC sector buffer with the data ready and complete flags set and
+// the CDC interrupt latched; the two-read busy window applies to
+// latch-started CDC transfers, not to this stream.
+func (u *Unit) AdvanceCycles(cycles int) {
+	if cycles <= 0 {
+		return
+	}
+	ev := u.cddEngine().AdvanceCycles(cycles)
+	for i := 0; i < ev.DataCount; i++ {
+		u.cddDataSector(ev.DataLBA + i)
+	}
+}
+
+// cddDataSector moves one data sector read by the CDD into the CDC
+// sector buffer.
+func (u *Unit) cddDataSector(lba int) {
+	if u.disc == nil {
+		u.cdcError = true
+		return
+	}
+	data, err := u.disc.ReadData(lba)
+	if err != nil {
+		u.cdcError = true
+		return
+	}
+	for j := range u.sectorBuf {
+		u.sectorBuf[j] = 0
+	}
+	copy(u.sectorBuf[:], data)
+	u.dataPtr = 0
+	u.cdcReady = true
+	u.cdcDone = true
+	u.cdcIRQ = true
+}
+
+// TakeCDDInterrupt reports a pending CDD interrupt: a command
+// response packet was delivered at a 75 Hz tick. Delivery is
+// gated by the CDD interrupt mask (register 0x03 bit1); while the
+// mask is clear the request stays latched. The system delivers it
+// to the sub CPU at level 4.
+func (u *Unit) TakeCDDInterrupt() bool {
+	if u.reg03&0x02 == 0 {
+		return false
+	}
+	return u.cddEngine().TakeInterrupt()
+}
+
+// TakeCDCInterrupt reports a pending CDC transfer end interrupt,
+// gated by the CDC interrupt mask (register 0x03 bit2). The system
+// delivers it to the sub CPU at level 5.
+func (u *Unit) TakeCDCInterrupt() bool {
+	if u.reg03&0x04 == 0 {
+		return false
+	}
+	v := u.cdcIRQ
+	u.cdcIRQ = false
+	return v
+}
+
+// RenderAudio renders n stereo frames of Sega CD audio at the
+// machine sample rate (44,100 Hz): CD-DA through the fader plus
+// the RF5C164 PCM mix (resampled from its native rate by sample
+// and hold inside the PCM engine), summed into interleaved int16
+// samples with saturation. This is the unit's only audio output;
+// the Genesis mix happens in the system layer.
+func (u *Unit) RenderAudio(n int) []int16 {
+	out := make([]int16, 2*n)
+	if n <= 0 {
+		return out
+	}
+	acc := make([]int32, 2*n)
+	u.cddEngine().RenderCDDA(acc)
+	pcm := u.pcmEngine()
+	for i := 0; i < n; i++ {
+		l, r := pcm.RenderFrame()
+		acc[2*i] += int32(l)
+		acc[2*i+1] += int32(r)
+	}
+	for i, v := range acc {
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		out[i] = int16(v)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // Save states
 // ---------------------------------------------------------------------------
 
@@ -721,7 +949,16 @@ func (u *Unit) SerializeSize() int {
 //	72..75   CDC destination latch
 //	76..77   CDC busy read countdown
 //	78..79   CDC data port pointer
-//	80..255  reserved, zero
+//	80..     SCD-2 extension: the CDD engine state block
+//	         (CDDStateSize bytes), then the PCM engine state
+//	         block (PCMStateSize bytes), then three bytes: PRG-RAM
+//	         bank, PRG-RAM write protect field, CDC interrupt
+//	         latch. Any remaining tail bytes are zero. The PCM
+//	         register page mirror at 12..27 is derived from the
+//	         PCM engine state on save and ignored on load (the
+//	         engine block is authoritative); SCD-1 states, whose
+//	         extension bytes are all zero, load with the SCD-2
+//	         engines at power-on state.
 
 // Serialize writes the unit state into buf, which must be at least
 // SerializeSize bytes.
@@ -775,7 +1012,10 @@ func (u *Unit) Serialize(buf []byte) error {
 	blk[8] = u.reg05
 	blk[9] = u.mainFlag
 	blk[10] = u.subFlag
-	copy(blk[12:28], u.pcmRegs[:])
+	pcm := u.pcmEngine()
+	for i := 0; i < 16; i++ {
+		blk[12+i] = pcm.ReadReg(uint8(i))
+	}
 	for i, w := range u.commCmd {
 		binary.BigEndian.PutUint16(blk[28+i*2:30+i*2], w)
 	}
@@ -790,6 +1030,16 @@ func (u *Unit) Serialize(buf []byte) error {
 	copy(blk[72:76], u.cdcDest[:])
 	binary.BigEndian.PutUint16(blk[76:78], uint16(u.busyReads))
 	binary.BigEndian.PutUint16(blk[78:80], uint16(u.dataPtr))
+	ext := 80
+	u.cddEngine().SerializeState(blk[ext : ext+CDDStateSize])
+	ext += CDDStateSize
+	pcm.SerializeState(blk[ext : ext+PCMStateSize])
+	ext += PCMStateSize
+	blk[ext] = u.prgBank
+	blk[ext+1] = u.prgWP
+	if u.cdcIRQ {
+		blk[ext+2] = 1
+	}
 	return nil
 }
 
@@ -830,7 +1080,9 @@ func (u *Unit) Deserialize(buf []byte) error {
 	u.reg05 = blk[8]
 	u.mainFlag = blk[9]
 	u.subFlag = blk[10]
-	copy(u.pcmRegs[:], blk[12:28])
+	// Bytes 12..27 (the SCD-1 PCM register page) are not read
+	// back: the PCM engine block in the SCD-2 extension below is
+	// authoritative and the page readback derives from it.
 	for i := range u.commCmd {
 		u.commCmd[i] = binary.BigEndian.Uint16(blk[28+i*2 : 30+i*2])
 	}
@@ -845,5 +1097,13 @@ func (u *Unit) Deserialize(buf []byte) error {
 	copy(u.cdcDest[:], blk[72:76])
 	u.busyReads = int(binary.BigEndian.Uint16(blk[76:78]))
 	u.dataPtr = int(binary.BigEndian.Uint16(blk[78:80]))
+	ext := 80
+	u.cddEngine().DeserializeState(blk[ext : ext+CDDStateSize])
+	ext += CDDStateSize
+	u.pcmEngine().DeserializeState(blk[ext : ext+PCMStateSize])
+	ext += PCMStateSize
+	u.prgBank = blk[ext] & 0x03
+	u.prgWP = blk[ext+1] & 0x07
+	u.cdcIRQ = blk[ext+2]&0x01 != 0
 	return nil
 }
