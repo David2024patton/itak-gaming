@@ -319,6 +319,26 @@ func (b *Bus) VDP2Registers() []byte { return b.vdp2Regs[:] }
 // SCURegisters returns the 256 byte SCU register page backing.
 func (b *Bus) SCURegisters() []byte { return b.scuRegs[:] }
 
+// SMPCRegisters returns the 128 byte SMPC register page backing.
+// The smpc package wraps this slice; only odd bus offsets are
+// stored, matching the window decode.
+func (b *Bus) SMPCRegisters() []byte { return b.smpc[:] }
+
+// CDRegisters returns the 64 byte CD block register page backing.
+// The cdblock package wraps this slice; the page is mirrored
+// across the CS2 window by the address decode.
+func (b *Bus) CDRegisters() []byte { return b.cdRegs[:] }
+
+// SoundRAM returns the 512 KiB SCSP sound RAM backing store. The
+// scsp package and its 68EC000 share this slice with the SH-2
+// window at 0x05A00000.
+func (b *Bus) SoundRAM() []byte { return b.soundRAM }
+
+// SCSPRegisters returns the 4 KiB SCSP register page backing.
+// The scsp package wraps this slice; the SH-2 window at
+// 0x05B00000 mirrors it.
+func (b *Bus) SCSPRegisters() []byte { return b.scspRegs }
+
 // CaptureEvent reports whether the given CPU has a pending FRT
 // capture flag raised by a 16 bit write to the other CPU MINIT or
 // SINIT window. Reading a pending flag clears it, so a true result
