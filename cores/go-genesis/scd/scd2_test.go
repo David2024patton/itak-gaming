@@ -356,8 +356,9 @@ func TestSerializeSCD2Extension(t *testing.T) {
 	if !bytes.Equal(buf, buf2) {
 		t.Fatal("SCD-2 extension did not round trip byte for byte")
 	}
-	// The unit serialized size is unchanged from SCD-1.
-	if got, want := u.SerializeSize(), 0x80000+0x40000+0x10000+2048+256; got != want {
+	// The unit serialized size grew in SCD-4 by the appended
+	// BRAM and BIOS state sections.
+	if got, want := u.SerializeSize(), 0x80000+0x40000+0x10000+2048+256+BRAMSize+BIOSStateSize; got != want {
 		t.Fatalf("SerializeSize = %d, want %d", got, want)
 	}
 }
