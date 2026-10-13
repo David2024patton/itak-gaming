@@ -95,6 +95,15 @@ type envelope struct {
 	// waiting room
 	Player string `json:"player,omitempty"`
 	EndsAt int64  `json:"endsAt,omitempty"`
+	// Got Next line (gotnext.go): Action is "join" or "leave"
+	// on a got_next envelope; Queue is the host referee's
+	// authoritative line order on a got_next_queue envelope.
+	Action string   `json:"action,omitempty"`
+	Queue  []string `json:"queue,omitempty"`
+	// Tournament name (tournament.go): on a "tournament"
+	// envelope, the host's name for the event this room's
+	// results are reported under (PROTOCOL.md section 8).
+	Name string `json:"name,omitempty"`
 	// pause
 	Paused bool `json:"paused,omitempty"`
 	// chat
@@ -228,6 +237,21 @@ type Session struct {
 	// (roster.go), guarded by mu like the rest. Empty until
 	// the first roster notice lands.
 	roster []RosterMember
+
+	// Got Next line (gotnext.go): the tracked queue order
+	// (the host's own list, or the host's last broadcast as
+	// mirrored by everyone else) and, on the host, whether
+	// it changed since the last broadcast went out. Guarded
+	// by mu like the rest. Deliberately NOT reset by a match
+	// end: the line is what the next match is for.
+	gotNextQueue []string
+	gotNextDirty bool
+
+	// tournamentName is the room's tournament name as the
+	// host named it (tournament.go), guarded by mu like the
+	// rest. Room state, not match state: like the Got Next
+	// line, a match end deliberately leaves it standing.
+	tournamentName string
 
 	// started reports whether Start has launched the reader;
 	// StartNextMatch refuses to run without it.
