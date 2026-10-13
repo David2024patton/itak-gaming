@@ -233,7 +233,7 @@ const List<SystemInfo> kSystems = [
     name: 'Super Nintendo',
     tagline: 'SNES · 1991',
     color: Color(0xFF7B1FA2),
-    core: 'libsnes9x.so',
+    core: 'libgo_snes.so',
     dir: 'SNES',
     exts: ['.sfc', '.smc'],
     thumbRepo: 'Nintendo_-_Super_Nintendo_Entertainment_System',
