@@ -14,8 +14,90 @@ out. No third-party Go dependencies.
 
 ## Status
 
-**GCN-1 (this slice): the integer CPU, the memory map,
-disc image foundations, and the system skeleton.**
+**GCN-2 (this slice): the floating point unit, paired
+singles, and the GX GPU as a software renderer, wired
+into the system.**
+
+- `chips/gekko` FPU: the complete PowerPC floating point
+  set of the 750. Scalar arithmetic (fadd/fadds,
+  fsub(s), fmul(s), fdiv(s), fsqrt(s)) and the fused
+  multiply-add family (fmadd(s), fmsub(s), fnmadd(s),
+  fnmsub(s)) are computed on exact rationals
+  (`math/big`, standard library) and rounded once under
+  the FPSCR rounding mode, so fused results never
+  double-round. fsel, frsp, the moves
+  (fmr/fneg/fabs/fnabs), compares (fcmpu/fcmpo writing
+  the CR field and the FPSCR FPCC), conversions
+  (fctiw/fctiwz with the documented saturation: above
+  range gives 0x7fffffff, below range, either infinity
+  beyond range, and NaN give the 0x80000000 low word;
+  the result is stored sign-extended across the full
+  FPR), the full FPSCR (sticky exception and invalid
+  detail bits as far as operations set them, FR/FI/FPRF
+  per operation, FEX recomputed from the enables, the
+  four rounding modes honored, exception enables stored;
+  exceptions set bits and do not trap, as on the 750),
+  mffs, mtfsf with the FM field mask, mtfsfi,
+  mtfsb0/mtfsb1, mcrfs, and the lfd/lfs/stfd/stfs load
+  and store families including indexed and update
+  forms. Every FP and paired-single instruction raises
+  the floating point unavailable exception when
+  MSR[FP] is clear. Denormals follow IEEE rules; with
+  FPSCR[NI] set, denormal inputs and results flush to
+  signed zero. There is no fcfid: it is not a 750
+  instruction and its encoding stays illegal.
+- `chips/gekko` paired singles: the Gekko extension.
+  FPRs read as packed single pairs (PS0 in the high
+  word, PS1 in the low word). The full primary opcode 4
+  set (ps_add/sub/mul/div, ps_madd/msub/nmadd/nmsub,
+  ps_sum0/sum1, ps_muls0/muls1, ps_madds0/madds1,
+  ps_merge00/01/10/11, ps_neg/abs/nabs/mr, ps_cmpu0/
+  cmpo0/cmpu1/cmpo1, ps_sel, ps_res, ps_rsqrte), the
+  quantized loads and stores (psq_l 56, psq_lu 57,
+  psq_st 60, psq_stu 61, plus the indexed forms)
+  driven by GQR0-GQR7 (SPR 896-903, also reachable at
+  912-919), dequantizing and quantizing per the GQR
+  type (float, u8, u16, s8, s16) and signed scale
+  fields, stores rounding toward zero and clamping per
+  the manual, and dcbz_l zeroing a 32-byte block.
+- `gpu`: the Flipper GX as a software renderer fed by
+  a FIFO byte stream. CP, BP, and XF command decoding
+  (BP loads, CP loads with the documented register map:
+  matrix indices 0x30/0x40, VCD 0x50/0x60, VAT groups
+  at 0x70/0x80/0x90 indexed by the low bits, array
+  bases 0xA0, strides 0xB0; XF direct and indexed
+  loads, the indexed groups reading CP arrays 12-15),
+  VCD/VAT vertex decoding for every attribute width
+  and format, direct and indexed, all seven primitive
+  types, modelview and projection transform,
+  Sutherland-Hodgman clipping against the canonical
+  clip volume for triangles and quads, an edge-equation
+  rasterizer with the top-left fill rule and per-pixel
+  perspective-correct color and UV interpolation,
+  stage 0 texture sampling straight from MEM1 (I4, I8,
+  IA4, IA8, RGB565, RGB5A3, RGBA32, CI4, CI8 with the
+  TLUT in TMEM, and CMP blocks), nearest and linear
+  filtering at mip level 0, the BP pixel pipeline
+  (alpha compare, depth modes with update control,
+  blending with the documented factors, subtract and
+  logic modes, color and alpha update masks), the
+  640x528 EFB in the PE pixel formats (RGB565, RGB8,
+  RGBA8, and RGBA6 with exact 6-bit channel storage)
+  with a 24-bit depth buffer, the BP-triggered EFB
+  clear, and display list calls. The system routes
+  the CP MMIO window and the GX FIFO write port
+  (0x0C008000, also at the 0x8C and 0xCC aliases) to
+  the GPU, and `Framebuffer` presents the EFB through
+  the BP copy source rectangle, nearest fit, no
+  deflicker.
+- `system` save states are version 2: the CPU state
+  (now including FPSCR and the GQRs), the complete
+  GPU state, MEM1, the locked cache, and both
+  hardware pages, at 37,711,354 bytes. Version 1
+  states are rejected.
+
+**GCN-1: the integer CPU, the memory map, disc image
+foundations, and the system skeleton.**
 
 - `chips/gekko`: the PowerPC 750 (Gekko) integer CPU:
   the complete integer instruction set of the 32-bit
@@ -66,22 +148,27 @@ disc image foundations, and the system skeleton.**
 - `system`: the machine skeleton in the family shape:
   24 MB MEM1 decoded at its physical base and at the
   cached (0x80000000) and uncached (0xC0000000) aliases,
-  the 0x0C and 0x0D hardware register pages as stored
-  stubs, the locked cache window as RAM backing, a
+  the 0x0C and 0x0D hardware register pages (the GX
+  parts of the 0x0C page became live in GCN-2, above),
+  the locked cache window as RAM backing, a
   `LoadDisc` that stages a DOL and leaves the CPU halted
   at its entry point, `Start`, `RunFrame` consuming the
-  486 MHz frame budget of 8,100,000 cycles, a blank
-  640x480 XRGB8888 `Framebuffer`, `SetButtons` storing
+  486 MHz frame budget of 8,100,000 cycles, a 640x480
+  XRGB8888 `Framebuffer`, `SetButtons` storing
   the standard GameCube pad state (buttons plus analog
-  bytes), and whole-machine save states (version byte,
-  CPU, MEM1, locked cache, both hardware pages) at
-  25,563,749 bytes, dominated by MEM1 itself. The gate
+  bytes), and whole-machine save states. The gate
   test loads a synthetic DOL whose hand-assembled program
   checksums memory, arms the decrementer, and takes the
   decrementer exception into a staged handler; a save
   taken mid-run restores into a fresh machine and the
   continuation is byte-identical to the uninterrupted
-  run, state bytes included.
+  run, state bytes included. The GCN-2 gate adds a
+  second synthetic DOL that runs paired-single math
+  and copies a GX FIFO stream out of MEM1 byte by byte;
+  its save is taken mid-copy, with a partial draw
+  command sitting in the GPU's FIFO buffer, and the
+  restored continuation matches the uninterrupted run
+  byte for byte, EFB pixels included.
 
 ## Conformance
 
@@ -89,8 +176,9 @@ There is no Tom Harte PowerPC corpus: the ProcessorTests
 repository was checked (it carries 6502, 65816, 680x0,
 8088, and spc700 sets) and has no PowerPC set. The CPU is
 gated on hand-derived vectors from the PowerPC programming
-environments manual and the 750 user manual: 16 test
-functions in `chips/gekko` covering rotate and mask edge
+environments manual, the 750 user manual, and the Gekko
+supplement: 36 test functions in `chips/gekko`. The 16
+integer functions cover rotate and mask edge
 cases including wrapping bands, the carry and overflow
 truth table for the add and subtract forms (including
 chained adde/addze), multiply and divide, string
@@ -104,16 +192,34 @@ eleven-case branch BO decoding table, exception entry for
 sc, tw, illegal, FP unavailable, and privileged
 instructions, alignment faults for lmw and stwcx. against
 working unaligned scalar accesses, little-endian access
-behavior, and a full serialize round trip. `disc` adds 5
-tests and `system` adds 4, including the synthetic-disc
-DOL, FST, and save-state determinism gates above.
+behavior, and a full serialize round trip. The 20 GCN-2
+functions add the rounding mode truth table on a value
+straddling representable singles, fctiw/fctiwz at both
+infinities, NaN, and out-of-range magnitudes, an fmadd
+case that separates fused from double-rounded results,
+fcmpu with NaN, mtfsb1 then mffs readback, frsp of a
+double needing rounding, FP-unavailable with MSR[FP]
+clear, scalar load/store round trips, quantize and
+dequantize round trips for every GQR type at scales 0
+and 5 including negative s16, ps_muls0 lane selection,
+ps_sum0 cross-lane results, merge patterns, and a
+paired-single matrix-vector multiply checked against a
+float64 reference. `gpu` adds 13 tests (solid quad pixel
+probes, both VAT register groups, an indexed draw
+through the CP arrays, depth ordering in both draw
+orders, RGB565 and CI8/TLUT texture sampling, additive
+blending, CMP decompression, the EFB clear, and a FIFO
+stream delivered one byte at a time rendering
+identically). `disc` adds 5 tests and `system` adds 5,
+including the synthetic-disc DOL, FST, and save-state
+determinism gates above.
 `go vet ./...` is clean and `go test ./...` is green.
 
 ## Roadmap
 
-- GCN-2: the floating point unit and paired singles
-  (the GameCube's signature extension), plus the GX GPU
-  as a software rasterizer.
+- GCN-2 (done): the floating point unit and paired
+  singles (the GameCube's signature extension), plus
+  the GX GPU as a software rasterizer.
 - GCN-3: the DSP audio unit, the DI disc drive, EXI and
   SI devices, and IPL HLE boot (this project never ships
   the Nintendo IPL; games boot through the DOL staging
@@ -127,11 +233,64 @@ DOL, FST, and save-state determinism gates above.
 
 ## Honesty notes
 
-- **No FPU yet, on purpose.** FPRs exist as storage, but
-  every floating point and paired-single instruction
-  raises the floating point unavailable exception in this
-  slice, even with MSR[FP] set. Half an FPU would pass
-  demos and corrupt games; it lands complete in GCN-2.
+- **The four estimate instructions are correctly
+  rounded, not bit-exact.** fres, frsqrte, ps_res, and
+  ps_rsqrte return the correctly rounded value of the
+  exact reciprocal or reciprocal square root. The
+  hardware returns a table approximation with a
+  documented error bound, so results differ from real
+  hardware in the last bits. Every other FP and paired
+  operation in this core is exact.
+- **Paired-single enable bits are not modeled.** The
+  manual gates psq instructions on HID2[PSE] and
+  HID2[LSQE]; this core does not model HID2, so the
+  instructions run whenever MSR[FP] is set. The SDK
+  runtime enables both bits before any game code runs.
+  GQR type codes 1-3 (reserved on hardware) are treated
+  as float pass-through. Single-precision scalar
+  instructions convert their FPR operand to the single
+  value through the same exact rounding path as frsp;
+  that conversion records no FPSCR status of its own.
+- **GX scope limits, stated plainly.** The texture
+  cache is bypassed: stage 0 samples image data
+  directly from MEM1, TLUT data comes from TMEM, and
+  only mip level 0 is sampled. Lighting is the simple
+  documented case only: one directional light (light
+  0), a vertex normal, and the channel ambient and
+  material registers; every other configuration takes
+  the flat vertex color path. The TEV is a single
+  stage: texel modulated by vertex color, or vertex
+  color alone. Lines and points use trivial
+  accept/reject clipping (triangles and quads get full
+  Sutherland-Hodgman), lines are one pixel wide, and
+  points render at size 1. The dither flag and the
+  constant alpha register are stored and ignored.
+  Stored as state with no rendering effect: BP
+  scissor offset, field mask, draw done and token
+  registers, the EFB copy Y-scale and high-water area,
+  texture SETMODE1 and SETIMAGE1/SETIMAGE2 per group,
+  all TEV stage registers except the alpha compare,
+  the PE z format and z-comp-loc bits, indirect and
+  remaining BPMEM areas, and XF vertex specs and tex
+  matrix info beyond the stage 0 post-matrix path.
+- **GX register layout choices.** The PE pixel format
+  field uses this core's numbering for the four
+  implemented formats (0 RGB565, 1 RGB8, 2 RGBA8,
+  3 RGBA6_Z24), which does not match the SDK GX_PF
+  numbering; a program's format value selects the
+  format of the same position in that list. XF
+  transform memory is a flat 1024-word file with
+  masked addressing and 12-word matrix slots (the
+  documented regions land at position matrices 0x000,
+  post matrices 0x500, lights 0x600); matrix index 0,
+  which the gates exercise, is exact under any
+  reading, and normals transform by the modelview
+  upper 3x3 rather than a separate normal matrix. GX
+  scissor registers are treated as direct EFB pixel
+  coordinates. The GPU save state serializes its
+  partial-command FIFO buffer at a fixed 8 MiB cap
+  (the largest possible single draw command), so most
+  of the GPU block in a typical state is zeros.
 - **No IPL bytes, ever.** The IPL window at 0xFFF00000
   reads as zeros. The reset vector points there, which is
   why the system stages DOLs directly and starts the CPU
@@ -159,9 +318,11 @@ DOL, FST, and save-state determinism gates above.
   field mask from it; MSR[LE] is honored on data and
   instruction accesses (little-endian mode works, it is
   simply not what GameCube software uses).
-- The hardware register pages (including the GPU's CP/PE
-  pages and the DSP, DI, SI, EXI, and AI blocks) are
-  stored stubs in this slice: values written are values
-  read back, and nothing acts on them until their slices
-  land. The locked cache window is plain RAM backing;
-  the lock control registers are not modeled.
+- The remaining hardware register pages (the PE area
+  of the 0x0C page and the DSP, DI, SI, EXI, and AI
+  blocks) are stored stubs: values written are values
+  read back, and nothing acts on them until their
+  slices land. The CP window and the GX FIFO port on
+  the 0x0C page are live since GCN-2. The locked cache
+  window is plain RAM backing; the lock control
+  registers are not modeled.
