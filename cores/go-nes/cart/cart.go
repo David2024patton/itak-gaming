@@ -82,6 +82,9 @@ type Cart struct {
 	// fed by the system through SetCycle. MMC1 consults it for
 	// the consecutive-write ignore quirk.
 	cycle int64
+
+	// a12Clocks counts ClockA12 calls (diagnostic).
+	a12Clocks int64
 }
 
 // mapper is the bank controller interface. Read and write at the
@@ -352,7 +355,15 @@ func (c *Cart) IRQPending() bool { return c.mapper.irqPending() }
 // ClockA12 clocks the MMC3 IRQ counter the way a rising edge of
 // PPU address line A12 does. NES-1 tests drive it directly; NES-2
 // calls it from the PPU.
-func (c *Cart) ClockA12() { c.mapper.clockA12() }
+func (c *Cart) ClockA12() {
+	c.a12Clocks++
+	c.mapper.clockA12()
+}
+
+// A12Clocks returns how many filtered A12 rising edges the
+// cartridge has been clocked with since power-on. Diagnostic;
+// the MMC3 conformance ROMs count these per frame.
+func (c *Cart) A12Clocks() int64 { return c.a12Clocks }
 
 // PRGRAM exposes the cartridge RAM contents for battery
 // persistence (load) and save-file extraction.
