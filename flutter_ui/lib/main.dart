@@ -508,6 +508,14 @@ const int _zoneTabs = 0;
 const int _zonePlayers = 1;
 const int _zoneSystems = 2;
 
+/// One queued friend alert: the friend's account name (which keys
+/// their avatar) and the line the banner shows.
+class _FriendAlertToast {
+  final String name;
+  final String message;
+  const _FriendAlertToast(this.name, this.message);
+}
+
 class SystemSelectScreen extends StatefulWidget {
   const SystemSelectScreen({super.key});
 
@@ -525,6 +533,18 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   String _currentPlayer = '';
   String? _banner;
   Timer? _bannerTimer;
+  // Friend alerts live in the shell because the home screen state
+  // lives for the whole Flutter session: this box pings its
+  // presence every 30 s, and the friends list is polled every
+  // 20 s so a friend coming online (or starting a game) raises a
+  // banner and a chime anywhere in the Flutter UI.
+  Timer? _presenceTimer;
+  Timer? _friendsTimer;
+  String _alertsForPlayer = '';
+  Map<String, (String, String)>? _friendWas; // name -> (status, game)
+  final List<_FriendAlertToast> _alertQueue = [];
+  OverlayEntry? _alertEntry;
+  Timer? _alertTimer;
   final Map<String, File?> _systemImages = {};
   final Map<String, int> _gameCounts = {};
   final FocusNode _focusNode = FocusNode();
@@ -553,6 +573,148 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     } finally {
       _updateBusy = false;
     }
+  }
+
+  // ----- Friend alerts: presence ping + friends polling -----
+
+  // Who alerts run for: the shell's current player once players
+  // have loaded, else the stored pref.
+  Future<String> _alertsPlayer() async {
+    if (_currentPlayer.isNotEmpty) return _currentPlayer;
+    final p = await Prefs.get('current_player');
+    return (p == null || p.isEmpty) ? '' : p;
+  }
+
+  // Tell the friends server this box is online. Best effort: a
+  // missed ping only means friends see this box go offline a
+  // little sooner.
+  Future<void> _pingPresence() async {
+    final me = await _alertsPlayer();
+    if (me.isEmpty) return;
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 6);
+      try {
+        final req =
+            await client.postUrl(Uri.parse('$kServerBase/friends/presence'));
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode({'player': me}));
+        final resp = await req.close().timeout(const Duration(seconds: 6));
+        await resp.drain();
+      } finally {
+        client.close();
+      }
+    } catch (_) {}
+  }
+
+  // Poll the friends list and diff it against the last snapshot.
+  // The first successful poll only learns the snapshot (nobody
+  // gets a banner for friends who were already around). Rules:
+  // offline -> online raises "is online"; anything -> in_lobby
+  // raises "is playing GAME", except staying in the same game's
+  // lobby, which stays quiet. A failed poll is silent and keeps
+  // the old snapshot.
+  Future<void> _pollFriends() async {
+    final me = await _alertsPlayer();
+    if (me.isEmpty) return;
+    if (me != _alertsForPlayer) {
+      // The player at the box changed: learn the new friend list
+      // as a fresh baseline instead of diffing across accounts.
+      _alertsForPlayer = me;
+      _friendWas = null;
+    }
+    List<dynamic> friends;
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 6);
+      try {
+        final req = await client.getUrl(Uri.parse(
+            '$kServerBase/friends?player=${Uri.encodeQueryComponent(me)}'));
+        final resp = await req.close().timeout(const Duration(seconds: 6));
+        final text = await resp.transform(utf8.decoder).join();
+        if (resp.statusCode >= 400) return;
+        final data = jsonDecode(text);
+        friends = (data['friends'] as List?) ?? [];
+      } finally {
+        client.close();
+      }
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    final baseline = _friendWas == null;
+    final now = <String, (String, String)>{};
+    final fresh = <_FriendAlertToast>[];
+    for (final f in friends) {
+      final m = f as Map<String, dynamic>;
+      final name = (m['name'] ?? '').toString();
+      if (name.isEmpty) continue;
+      final status = (m['status'] ?? 'offline').toString();
+      final game = (m['game'] ?? '').toString();
+      now[name] = (status, game);
+      if (baseline) continue; // learn only, never notify
+      final was = _friendWas?[name];
+      final display = (m['display'] ?? '').toString();
+      final label = display.isNotEmpty ? display : name;
+      if (status == 'in_lobby') {
+        if (was == null || was.$1 != 'in_lobby' || was.$2 != game) {
+          fresh.add(_FriendAlertToast(
+            name,
+            game.isNotEmpty
+                ? '$label is playing $game'
+                : '$label is in a lobby',
+          ));
+        }
+      } else if (status == 'online') {
+        if (was != null && was.$1 == 'offline') {
+          fresh.add(_FriendAlertToast(name, '$label is online'));
+        }
+      }
+    }
+    _friendWas = now;
+    if (fresh.isEmpty) return;
+    // Alerts off (Settings -> Friend alerts): the snapshot still
+    // updated above, so turning alerts back on never replays a
+    // backlog of stale arrivals.
+    if ((await Prefs.get('friend_alerts')) == '0') return;
+    _alertQueue.addAll(fresh);
+    _showNextAlert();
+  }
+
+  // Show queued banners one at a time, about 4 s each, never
+  // stacked. The banner ignores pointers, so the remote keeps
+  // driving whatever screen is underneath.
+  void _showNextAlert() {
+    if (!mounted || _alertEntry != null || _alertQueue.isEmpty) return;
+    final toast = _alertQueue.removeAt(0);
+    final entry = OverlayEntry(
+      builder: (_) => _FriendAlertBanner(
+        avatarName: toast.name,
+        message: toast.message,
+      ),
+    );
+    _alertEntry = entry;
+    Overlay.of(context).insert(entry);
+    _playAlertSound();
+    _alertTimer = Timer(const Duration(seconds: 4), _dismissAlert);
+  }
+
+  void _dismissAlert() {
+    _alertTimer?.cancel();
+    _alertTimer = null;
+    _alertEntry?.remove();
+    _alertEntry = null;
+    if (_alertQueue.isNotEmpty) {
+      // A beat of quiet between banners so two friends arriving
+      // together read as two alerts, not one long one.
+      Timer(const Duration(milliseconds: 250), _showNextAlert);
+    }
+  }
+
+  Future<void> _playAlertSound() async {
+    try {
+      await _channel.invokeMethod('playNotifySound');
+    } catch (_) {}
   }
 
   @override
@@ -591,6 +753,16 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     // days; an update published meanwhile should still appear).
     WidgetsBinding.instance.addObserver(this);
     Future.delayed(const Duration(seconds: 4), _checkForUpdate);
+    // Friend alerts: announce this box as online right away and
+    // every 30 s after, and watch the friends list every 20 s.
+    // initState runs once for the shell, so the timers cannot
+    // duplicate on rebuilds; dispose cancels them.
+    _pingPresence();
+    _pollFriends();
+    _presenceTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) => _pingPresence());
+    _friendsTimer =
+        Timer.periodic(const Duration(seconds: 20), (_) => _pollFriends());
     // Native side calls this when a gamepad connects: ask who picked
     // it up by jumping to the players row with a banner.
     _channel.setMethodCallHandler((call) async {
@@ -1509,6 +1681,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _bannerTimer?.cancel();
+    _presenceTimer?.cancel();
+    _friendsTimer?.cancel();
+    _alertTimer?.cancel();
+    _alertEntry?.remove();
+    _alertEntry = null;
     _channel.setMethodCallHandler(null);
     _gridScroll.dispose();
     _focusNode.dispose();
@@ -3032,8 +3209,9 @@ class AppUpdateInfo {
   final String versionName;
   final String sha256;
   final String notes;
+  final int size; // APK bytes from version.json; 0 when unpublished
   const AppUpdateInfo(
-      this.versionCode, this.versionName, this.sha256, this.notes);
+      this.versionCode, this.versionName, this.sha256, this.notes, this.size);
 }
 
 class UpdateCheck {
@@ -3045,6 +3223,21 @@ class UpdateCheck {
 
 class AppUpdate {
   static const _channel = MethodChannel('net.itak/emu');
+  static const _progressChannel =
+      EventChannel('net.itak/emu/update_progress');
+
+  /// Byte progress from the native downloader while install()
+  /// runs: maps with int 'downloaded' and 'total' (total 0 means
+  /// the size is unknown and the bar should stay indeterminate).
+  static Stream<Map<String, int>> progress() {
+    return _progressChannel.receiveBroadcastStream().map((e) {
+      final m = (e as Map).map((k, v) => MapEntry(k.toString(), v));
+      return {
+        'downloaded': (m['downloaded'] as num?)?.toInt() ?? 0,
+        'total': (m['total'] as num?)?.toInt() ?? 0,
+      };
+    });
+  }
 
   static Future<Map<String, dynamic>?> installed() async {
     try {
@@ -3077,6 +3270,7 @@ class AppUpdate {
           j['versionName']?.toString() ?? '',
           j['sha256']?.toString() ?? '',
           j['notes']?.toString() ?? '',
+          (j['size'] as num?)?.toInt() ?? 0,
         );
       }
       return UpdateCheck(code, name, avail);
@@ -3088,11 +3282,15 @@ class AppUpdate {
   }
 
   /// "" = installer opened; "needs-permission"; else an error line.
+  /// Always downloads the server's current latest.apk, so a box
+  /// many builds behind jumps straight to the newest build in this
+  /// one step; there is no version-by-version chain.
   static Future<String> install(AppUpdateInfo u) async {
     try {
       final r = await _channel.invokeMethod<String>('installUpdate', {
         'url': '$kServerBase/app/latest.apk',
         'sha256': u.sha256,
+        'size': u.size,
       });
       return r ?? '';
     } catch (e) {
@@ -3147,43 +3345,144 @@ Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
     ),
   );
   if (go != true || !context.mounted) return;
+  var result = await _downloadWithProgress(context, avail);
+  while (true) {
+    if (result.isEmpty) return; // the system installer is on screen
+    if (!context.mounted) return;
+    if (result == 'needs-permission') {
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.black.withOpacity(0.8),
+        builder: (ctx) => AlertDialog(
+          backgroundColor: bg,
+          title: const Text('One more step'),
+          content: const Text(
+              'The TV opened a Settings page. Turn ON "Allow" for iTaK Gaming, press BACK, then choose Update again.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    // A failed download is never a dead end: try again or later.
+    final retry = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: bg,
+        title: const Text('Update failed'),
+        content: Text(result),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child:
+                const Text('Later', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Try again',
+                style: TextStyle(
+                    color: Color(0xFF00E676), fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    if (retry != true || !context.mounted) return;
+    result = await _downloadWithProgress(context, avail);
+  }
+}
+
+/// Shows the live download progress dialog while the native side
+/// fetches the APK, then returns install()'s result string.
+Future<String> _downloadWithProgress(
+    BuildContext context, AppUpdateInfo avail) async {
   showDialog<void>(
     context: context,
     barrierDismissible: false,
     barrierColor: Colors.black.withOpacity(0.8),
-    builder: (_) => const AlertDialog(
-      backgroundColor: bg,
-      content: Row(
-        children: [
-          CircularProgressIndicator(color: Color(0xFF00E676)),
-          SizedBox(width: 18),
-          Text('Downloading update...'),
-        ],
-      ),
-    ),
+    builder: (_) => _UpdateProgressDialog(expectedSize: avail.size),
   );
   final result = await AppUpdate.install(avail);
-  if (!context.mounted) return;
-  Navigator.of(context).pop(); // progress dialog
-  if (result.isEmpty) return; // the system installer is on screen
-  final needsPerm = result == 'needs-permission';
-  await showDialog<void>(
-    context: context,
-    barrierColor: Colors.black.withOpacity(0.8),
-    builder: (ctx) => AlertDialog(
-      backgroundColor: bg,
-      title: Text(needsPerm ? 'One more step' : 'Update failed'),
-      content: Text(needsPerm
-          ? 'The TV opened a Settings page. Turn ON "Allow" for iTaK Gaming, press BACK, then choose Update again.'
-          : result),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
-        ),
-      ],
-    ),
-  );
+  if (context.mounted) {
+    Navigator.of(context).pop(); // progress dialog
+  }
+  return result;
+}
+
+/// The update download dialog: a real progress bar with percent
+/// and MB counts, driven by the native downloader's byte stream.
+/// Falls back to an indeterminate bar (with MB downloaded) when
+/// the size is unknown.
+class _UpdateProgressDialog extends StatefulWidget {
+  final int expectedSize;
+  const _UpdateProgressDialog({required this.expectedSize});
+
+  @override
+  State<_UpdateProgressDialog> createState() => _UpdateProgressDialogState();
+}
+
+class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
+  StreamSubscription<Map<String, int>>? _sub;
+  int _downloaded = 0;
+  int _total = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _total = widget.expectedSize;
+    _sub = AppUpdate.progress().listen((p) {
+      if (!mounted) return;
+      setState(() {
+        _downloaded = p['downloaded'] ?? 0;
+        if ((p['total'] ?? 0) > 0) _total = p['total']!;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  static String _mb(int bytes) =>
+      (bytes / (1024 * 1024)).toStringAsFixed(1);
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTotal = _total > 0;
+    final frac =
+        hasTotal ? (_downloaded / _total).clamp(0.0, 1.0).toDouble() : null;
+    final pct = frac == null ? '' : ' · ${(frac * 100).floor()}%';
+    return AlertDialog(
+      backgroundColor: const Color(0xFF262640),
+      title: const Text('Downloading update...'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LinearProgressIndicator(
+            value: frac,
+            minHeight: 10,
+            color: const Color(0xFF00E676),
+            backgroundColor: Colors.white12,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            hasTotal
+                ? '${_mb(_downloaded)} MB of ${_mb(_total)} MB$pct'
+                : '${_mb(_downloaded)} MB downloaded',
+            style: const TextStyle(fontSize: 16, color: Colors.white70),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class SettingsScreen extends StatefulWidget {
@@ -3200,14 +3499,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _swapAB = false;
   bool _autoArt = true;
   bool _autoSave = true;
+  bool _friendAlerts = true;
   String _versionName = '';
   bool _checkingUpdate = false;
   int _logSize = 0;
   final FocusNode _focusNode = FocusNode();
   final ScrollController _settingsScroll = ScrollController();
 
-  static const int _rowCount =
-      8; // Picture, Display, Swap, Auto art, Auto-save, App updates, Logs, Back
+  static const int _rowCount = 10;
+  // Picture, Display, Swap, Auto art, Auto-save, Friend alerts,
+  // Sound test, App updates, Logs, Back
 
   @override
   void initState() {
@@ -3224,6 +3525,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final sw = await Prefs.getInt('swap_ab');
     final a = await Prefs.get('art_autofetch');
     final asv = await Prefs.get('autosave');
+    final fa = await Prefs.get('friend_alerts');
     final ai = await AppUpdate.installed();
     try {
       final info = await _logChannel
@@ -3237,6 +3539,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _swapAB = (sw ?? 0) != 0;
       _autoArt = a != '0';
       _autoSave = asv != '0';
+      _friendAlerts = fa != '0';
       _versionName = ai?['versionName']?.toString() ?? '';
     });
   }
@@ -3247,6 +3550,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context,
       MaterialPageRoute(builder: (_) => const LogScreen()),
     );
+  }
+
+  Future<void> _openSoundTest() async {
+    appLog('opened the Sound test screen');
+    try {
+      await _logChannel.invokeMethod('soundTest');
+    } catch (_) {}
   }
 
   Future<void> _openUpdates() async {
@@ -3285,7 +3595,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  // Eight rows no longer fit on one TV screen: keep the focused
+  // Nine rows no longer fit on one TV screen: keep the focused
   // row in view as the remote walks the list.
   void _ensureRowVisible() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3318,6 +3628,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (_row == 4) {
       setState(() => _autoSave = !_autoSave);
       Prefs.set('autosave', _autoSave ? '1' : '0');
+    } else if (_row == 5) {
+      setState(() => _friendAlerts = !_friendAlerts);
+      Prefs.set('friend_alerts', _friendAlerts ? '1' : '0');
     }
   }
 
@@ -3339,12 +3652,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 7) {
+      if (_row == 9) {
         Navigator.pop(context);
-      } else if (_row == 6) {
+      } else if (_row == 8) {
         _openLogs();
-      } else if (_row == 5) {
+      } else if (_row == 7) {
         _openUpdates();
+      } else if (_row == 6) {
+        _openSoundTest();
       } else {
         _adjust(1);
       }
@@ -3463,9 +3778,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: _autoSave ? 'On' : 'Off',
                     hint: 'Saves your game every minute and when you exit, so you never lose progress',
                   ),
+                  _settingRow(
+                    index: 5,
+                    label: 'Friend alerts',
+                    value: _friendAlerts ? 'On' : 'Off',
+                    hint: 'A banner and a chime when a friend comes online or starts playing',
+                  ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 5);
+                      setState(() => _row = 6);
+                      _openSoundTest();
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      margin: const EdgeInsets.symmetric(vertical: 7),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 22, vertical: 16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1B1B28),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: _row == 6 ? Colors.white : Colors.white12,
+                          width: _row == 6 ? 3 : 1,
+                        ),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.graphic_eq),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Sound test',
+                                    style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold)),
+                                Text(
+                                    'Play a test sound and watch the bars: speaker and microphone checks',
+                                    style: TextStyle(
+                                        fontSize: 15, color: Colors.white54)),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            'Open',
+                            style: TextStyle(
+                                fontSize: 19, color: Color(0xFF00E676)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() => _row = 7);
                       _openUpdates();
                     },
                     child: AnimatedContainer(
@@ -3477,8 +3844,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 5 ? Colors.white : Colors.white12,
-                          width: _row == 5 ? 3 : 1,
+                          color: _row == 7 ? Colors.white : Colors.white12,
+                          width: _row == 7 ? 3 : 1,
                         ),
                       ),
                       child: Row(
@@ -3512,7 +3879,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 6);
+                      setState(() => _row = 8);
                       _openLogs();
                     },
                     child: AnimatedContainer(
@@ -3524,8 +3891,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 6 ? Colors.white : Colors.white12,
-                          width: _row == 6 ? 3 : 1,
+                          color: _row == 8 ? Colors.white : Colors.white12,
+                          width: _row == 8 ? 3 : 1,
                         ),
                       ),
                       child: Row(
@@ -3570,8 +3937,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 7 ? Colors.white : Colors.white12,
-                          width: _row == 7 ? 3 : 1,
+                              _row == 9 ? Colors.white : Colors.white12,
+                          width: _row == 9 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
@@ -5851,6 +6218,109 @@ class PlayerAvatar extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Friend alert banner: slides down from the top of the screen,
+/// holds, and slides away on its own (the shell removes the
+/// overlay entry at 4 s; the fade out starts a little before so
+/// nothing pops). IgnorePointer wraps the whole thing: the banner
+/// can never take the remote's focus or eat a key press.
+class _FriendAlertBanner extends StatefulWidget {
+  final String avatarName;
+  final String message;
+  const _FriendAlertBanner({required this.avatarName, required this.message});
+
+  @override
+  State<_FriendAlertBanner> createState() => _FriendAlertBannerState();
+}
+
+class _FriendAlertBannerState extends State<_FriendAlertBanner>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  Timer? _outTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 320),
+    );
+    _ctrl.forward();
+    _outTimer = Timer(const Duration(milliseconds: 3650), () {
+      if (mounted) _ctrl.reverse();
+    });
+  }
+
+  @override
+  void dispose() {
+    _outTimer?.cancel();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final curve = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    return Positioned(
+      top: 18,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: FadeTransition(
+          opacity: curve,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, -1.4),
+              end: Offset.zero,
+            ).animate(curve),
+            child: Center(
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 18, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF23233A),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: const Color(0xFF00E676).withOpacity(0.55),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.45),
+                        blurRadius: 18,
+                        offset: const Offset(0, 6),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      PlayerAvatar(name: widget.avatarName, size: 42),
+                      const SizedBox(width: 14),
+                      Flexible(
+                        child: Text(
+                          widget.message,
+                          style: const TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
