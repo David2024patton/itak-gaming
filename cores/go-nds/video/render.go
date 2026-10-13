@@ -16,8 +16,8 @@ package video
 //	mode 6: engine A: BG2 large bitmap only; engine B: as 5
 //
 // On engine A, a BG0 with DISPCNT bit 3 set is the 3D layer:
-// it renders transparent in this slice (the 3D engine is
-// DS-3) and BG0Is3D exposes the condition.
+// the gx package fills it through the Line3D provider
+// (DS-3); BG0Is3D exposes the condition.
 
 const (
 	kindNone = iota
@@ -87,6 +87,9 @@ type lineCtx struct {
 	bgOn    [4]bool
 	obj     [Width]objPx
 	objWin  [Width]bool
+	line3D  [Width]uint32 // packed 3D provider output for this line
+	alpha3D [Width]uint8  // per-pixel alpha of the 3D BG0 layer
+	has3D   bool          // BG0 is the 3D layer on this line
 }
 
 func (v *Video) bgSpace(e int) *space {
@@ -220,7 +223,23 @@ func (lc *lineCtx) renderLayers() {
 			continue
 		}
 		if bg == 0 && lc.e == 0 && lc.dispcnt&8 != 0 {
-			continue // 3D layer: transparent this slice
+			// The 3D layer: fill BG0 from the rendering
+			// engine's line provider when one is installed;
+			// without one it stays transparent.
+			if v.Line3D != nil {
+				lc.has3D = true
+				v.Line3D(lc.y, &lc.line3D)
+				for x := 0; x < Width; x++ {
+					packed := lc.line3D[x]
+					a := uint8(packed >> 18)
+					if a == 0 {
+						continue
+					}
+					lc.bg[0][x] = px{c: packed & 0x3FFFF, ok: true}
+					lc.alpha3D[x] = a
+				}
+			}
+			continue
 		}
 		switch bgKind(mode, lc.e, bg) {
 		case kindText:
