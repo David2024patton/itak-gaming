@@ -48,7 +48,7 @@ func solidTile4(r *rig, bankOff int, nib byte) {
 // to BG A, BG0 4bpp, tile 1 solid palette-1 at screen (0,0),
 // tile 2 solid palette-2 at (1,0).
 func textSceneA(r *rig) {
-	r.b.IO9[0x240] = 0x03 // VRAMCNT A: BG A at 0
+	r.b.IO9[0x240] = 0x81 // VRAMCNT A: BG A at 0
 	r.w32(0x000, 0x00010100)
 	r.w16(0x008, 0x0204) // BG0CNT: char base 0x4000, screen base 0x1000
 	r.pal(0, 0x0000)
@@ -79,7 +79,7 @@ func TestTextBGEngineBIndependent(t *testing.T) {
 	r := newRig()
 	textSceneA(r)
 	// Engine B: bank H to BG B, its own palette and tiles.
-	r.b.IO9[0x248] = 0x03 // VRAMCNT H: BG B at 0
+	r.b.IO9[0x248] = 0x81 // VRAMCNT H: BG B at 0
 	r.w32(0x1000, 0x00010100)
 	r.w16(0x1008, 0x0204)
 	r.pal(0x400, 0x7C00) // B backdrop: blue
@@ -102,7 +102,7 @@ func TestTextBGEngineBIndependent(t *testing.T) {
 
 func TestAffineBGProbe(t *testing.T) {
 	r := newRig()
-	r.b.IO9[0x240] = 0x03
+	r.b.IO9[0x240] = 0x81
 	r.w32(0x000, 0x00010402) // mode 2, BG2 on, graphics
 	r.w16(0x00C, 0x0104)     // BG2CNT: char base 0x4000, screen base 0x800, 16x16 map
 	// 8bpp tile 1: all index 1; map entry (0,0) = 1.
@@ -125,7 +125,7 @@ func TestAffineBGProbe(t *testing.T) {
 
 func TestExtendedBitmapBG(t *testing.T) {
 	r := newRig()
-	r.b.IO9[0x240] = 0x03
+	r.b.IO9[0x240] = 0x81
 	r.w32(0x000, 0x00010805) // mode 5, BG3 on, graphics
 	r.w16(0x00E, 0x0184)     // BG3CNT: bitmap, direct color, data base 0x4000, 128x128
 	// BG3 affine params at 0x30.
@@ -153,7 +153,7 @@ func TestExtendedBitmapBG(t *testing.T) {
 
 func TestBitmapOBJ(t *testing.T) {
 	r := newRig()
-	r.b.IO9[0x241] = 0x05 // VRAMCNT B: OBJ A at 0
+	r.b.IO9[0x241] = 0x82 // VRAMCNT B: OBJ A at 0
 	r.w32(0x000, 0x00011000)
 	r.pal(0x200, 0x0000)
 	// OAM entry 0: 8x8 bitmap OBJ at (0,0), tile 0.
@@ -195,7 +195,7 @@ func TestMasterBrightness(t *testing.T) {
 
 func TestAlphaBlend(t *testing.T) {
 	r := newRig()
-	r.b.IO9[0x240] = 0x03
+	r.b.IO9[0x240] = 0x81
 	r.w32(0x000, 0x00010300) // mode 0, BG0+BG1, graphics
 	// BG0: tile of palette 1 (red), screen base 0x1000.
 	r.w16(0x008, 0x0204)
@@ -256,7 +256,7 @@ func TestCaptureBlendIntoBank(t *testing.T) {
 
 func TestExtPaletteAssignment(t *testing.T) {
 	r := newRig()
-	r.b.IO9[0x240] = 0x03
+	r.b.IO9[0x240] = 0x81
 	r.w32(0x000, 0x40010100) // BG0, graphics, BG ext palettes on
 	r.w16(0x008, 0x0284)     // BG0CNT: 8bpp, char base 0x4000, screen base 0x1000
 	r.pal(0, 0x7FFF)         // backdrop white
@@ -276,13 +276,13 @@ func TestExtPaletteAssignment(t *testing.T) {
 	// Assign bank E as BG extended palette A with entry 1 red.
 	r.b.VRAM[0x80000+2] = 0x1F
 	r.b.VRAM[0x80000+3] = 0x00
-	r.b.IO9[0x244] = 0x07 // VRAMCNT E: MST 3
+	r.b.IO9[0x244] = 0x84 // VRAMCNT E: MST 4 (BG ext palette A)
 	r.v.RenderLine(0)
 	if got := r.v.A[0]; got != 0xFFFF0000 {
 		t.Fatalf("ext pal assigned: %08x want red", got)
 	}
 	// Move bank E to OBJ A: the extended palette goes away.
-	r.b.IO9[0x244] = 0x05
+	r.b.IO9[0x244] = 0x82
 	r.v.RenderLine(0)
 	if got := r.v.A[0]; got != 0xFF000000 {
 		t.Fatalf("ext pal removed: %08x want black", got)
