@@ -11,10 +11,265 @@ game path for this core is HLE of the PSP kernel and syscalls (slice
 PSP-3), the same approach the homebrew toolchain targets, not a
 low-level boot of Sony firmware.
 
-## Status: PSP-2 (VFPU complete, GE display list processor, system integration)
+## Status: PSP-3 (HLE kernel, thread scheduler, ELF/PRX loader, pspautotests conformance)
 
 PSP-1 delivered the CPU, memory, media foundations and the machine
-skeleton (kept below). PSP-2 adds the two coprocessor-class units:
+skeleton (kept below). PSP-2 added the VFPU and the GE (kept below,
+with corrections in the PSP-3 section). PSP-3 adds the software
+environment homebrew actually runs against:
+
+- `load`: the ELF32/PRX module loader (audited, see below).
+- `kernel`: the HLE kernel: UID objects, memory partitions, a
+  cooperative thread scheduler over one shared Allegrex CPU, sync
+  objects, delays and vblank, and the syscall registry the loader's
+  stubs dispatch into.
+- `system` kernel mode: `LoadExecutable(data)` boots an ELF or PRX
+  into the kernel; states version 3 carry the kernel in kernel mode.
+
+### Loader audit outcome (PSP-3)
+
+The pre-existing loader was audited against the uofw PRX
+documentation and the corpus binaries. Two real bugs were found and
+fixed: the stub table pointer names the first stub directly (stub j
+is the 8 bytes at funcTable + 8j, a JR $ra word plus the syscall
+word the kernel patches at StubAddr+4; the old code misread the
+table), and the probe extent for ET_EXEC was computed wrong (now the
+max segment end minus the min vaddr). Relocation r_info carries
+three fields (type bits 0..7, OFS_BASE bits 8..15, ADDR_BASE bits
+16..23) and all three are honored; the supported types are
+R_MIPS_32, R_MIPS_26, R_MIPS_HI16/LO16 (with the documented AHL
+addend combination), and R_MIPS_GPREL16 (validated and skipped: GP
+relative entries are invariant under a uniform base shift). Any
+other type is a load error naming the type. The loader was then
+exonerated against a real corpus PRX by an independent Python ELF
+parse: all 11 relocation sections of cpu_alu.prx use only the
+modeled forms, and loaded memory matches the file word for word.
+Unknown NIDs load fine; calling one returns SCE_KERNEL_ERROR_ERROR
+(0x80020001, the model value) and is recorded in
+`Kernel.UnknownCalls()` with module and NID. Loader tests are
+synthetic ET_EXEC and PRX generators (including the HI16/LO16
+sign-carry case) in `load/load_test.go`.
+
+### Kernel model (PSP-3)
+
+- UIDs: a sequential counter with a kind tag in the low byte
+  (thread 0x01, sema 0x02, mutex 0x03, eventflag 0x04, memblock
+  0x05, callback 0x06, lwmutex 0x07; the first object is 0x101).
+- Partitions: user partition 2 at 0x08800000, 24 MB, first-fit with
+  256-byte rounding; module images load at partition base + 0x4000
+  (the load reserve the corpus binaries' layout requires).
+- Threads: one Allegrex CPU time-shared across threads; the full
+  CPU state (including the VFPU) is swapped per dispatch. New
+  threads start with Status = CU1 | 0x11 and FCSR 0x00000E00.
+  Cooperative scheduler: switches on blocking HLE calls and yields,
+  reschedules on a higher-priority wakeup, documented
+  10,000-instruction timeslice. When every runnable thread blocks,
+  time fast-forwards to the next delay deadline or the frame end.
+  `RunFrame` consumes its cycle budget across all threads, then
+  delivers vblank (waiters wake in priority order, frame counter
+  per frame).
+- Sync objects: semaphores (microsecond timeouts converted at
+  222 MHz), mutexes (recursive per attribute), event flags (AND/OR
+  wait modes and clear modes), and the LwMutex family, whose lock
+  state lives in a 32-byte guest workarea in the documented layout.
+- Delays are microseconds (sceKernelDelayThread) and SysClock counts
+  (sceKernelDelaySysClockThread; the SysClock unit is the
+  microsecond count read from the cycle counter). The RTC tick is
+  62135596800000000 plus the SysClock microseconds, so the clock
+  boots at the Unix epoch.
+- Boot: the main thread is "root", priority 0x20, 256 KB stack;
+  a0 = 5 (the length of "umd0:"), a1 = the boot path string in the
+  partition, $gp from the module info, $ra = 0 (the exit
+  trampoline). Model values: devkit version 0x06060010 (firmware
+  6.60), total memory 32 MB, sceGeEdramGetAddr returns 0x04000000,
+  CPU clock 222 MHz.
+- Console and IO: sceKernelPrintf (format subset %d %i %u %x %X %c
+  %s %p %% with width and zero padding) and fd 1/2 writes go to the
+  kernel console buffer. The virtual FS routes umd0:/disc0:
+  read-only to the mounted ISO, ms0: and host0: to an in-memory
+  store (`system.SetMemoryStickFiles`; host0: is the psplink device
+  the corpus framework writes its output file to). The Stdio fd
+  getters return 0/1/2 under their legacy (pre-SHA-1) NIDs.
+
+### HLE coverage (PSP-3)
+
+Registered (module, NID) handlers: ThreadManForUser thread set
+(Create, Start, Exit, ExitDelete, Delete, GetThreadId,
+ReferThreadStatus subset, RotateThreadReadyQueue), delays,
+semaphores, mutexes, event flags, callbacks (registered, never
+dispatched), LwMutex under both Kernel_Library and
+ThreadManForUser; SysMemForUser partition allocation set and
+memory queries; the time/RTC/power queries; LoadExecForUser exit
+(sceKernelExitGame, and sceKernelSelfStopUnloadModule registered as
+exit in the documented single-module approximation); StdioForUser
+printf and the fd getters; IoFileMgrForUser (Open, Read, Write,
+Close, Lseek, Getstat over the virtual FS; sceIoDevctl returns
+invalid argument); sceCtrl (buffer reads/peeks fill SceCtrlData
+from the host input state; sampling mode stored); sceDisplay
+(SetMode stored, SetFrameBuf routed to the system display,
+WaitVblankStart, GetVcount, IsVblank); sceGE (ListEnQueue executes
+through the system GE synchronously, ListSync, DrawSync, Break,
+EdramGetAddr); scePower (222 MHz, PowerTick no-op); sceRtc tick
+queries; sceUtilityGetSystemParamInt (writes 0, returns 0); cache
+writeback/invalidate calls are no-op successes. Anything else takes
+the unknown-NID path (logged, error returned).
+
+### States (PSP-3)
+
+Version 3 = the version 2 body plus the kernel blob (objects,
+partitions, thread contexts, console, sysclock), written only in
+kernel mode. A fresh machine serializes to 35,674,041 bytes in
+non-kernel mode (version 2) and 35,677,402 bytes just after a
+kernel boot (version 3). Version 2 states still load in non-kernel
+mode; a version 2 state loaded into a kernel-mode machine is
+rejected, version 1 is rejected everywhere. Kernel state
+serialization is deterministic: the round trip is byte-identical,
+pinned by test.
+
+### Synthetic gates (PSP-3, all pass)
+
+Generator-built ET_EXEC and PRX binaries (hand-assembled MIPS)
+cover: (a) hello: printf plus IoWrite emit exactly
+"vfpu=1073741824,1077936128,0,0\nhello io\n"; (b) threads: two
+priorities sharing a semaphore-guarded counter, console exactly
+"start\ncount=2000 sum=95 len=10\n" with the trace order asserted;
+(c) a 1,000 microsecond delay and a vblank waiter waking in the
+asserted order across frames; (d) a synthetic ISO whose DATA.BIN
+checksum the guest prints and matches; (e) a relocatable PRX
+(HI16/LO16/R_MIPS_32) loading at 0x08804000, printing through a
+resolved stub; (f) determinism: save mid-run, restore, byte
+identical console and state; (g) an unknown NID returning the
+logged error with the end marker printed; (h) mutex/eventflag/
+partition semantics printing exactly
+"mx 0 0 800201c5\nev 800201a8 800201af 0\npat 0 res 3\n".
+
+### pspautotests corpus (PSP-3)
+
+The open pspautotests suite is present locally (gitignored, never
+committed) and wired through a presence-gated harness. Results
+(byte compare after line-ending normalization):
+
+- cpu_alu: 4/4 PASS (the gating group).
+- fpu: 6/7. fpu_branch_hazard fails on one line: a bc1f in the
+  delay slot of a compare reads the new FCC here; hardware reads
+  the stale one. Documented pipeline hazard gap.
+- icache: 0/1 on the tail byte only: the content lines match; the
+  expected file ends without a trailing newline, a capture
+  artifact of the original recording (the same artifact appears
+  in lsu). Separately, the machine is cache coherent by
+  construction, so cache-maintenance measurements cannot match.
+- lsu: 1/3 (llsc passes). lsu's content matches to the same
+  trailing-newline artifact; cacheop measures the cache model
+  above.
+- vfpu: 11/26 pass outright (callout, colors, convert,
+  convert_scaled, minmax, minmax_tie, minmax_zero, overlap,
+  prefix_branch, prefix_ctrl, vbranch). The other 15 fail only in
+  documented classes:
+  - The hardware approximation class: the VFPU function units
+    (vrcp/vrsq/vsqrt/vlog2/vexp2 family, vsin/vcos/vasin, vrot)
+    are low-bit approximations on hardware; this core evaluates
+    the true functions. Results differ by 1-3 ULP with signs,
+    zeros, NaNs and structure exact. Covers exact (from line 17),
+    prefix_sat, specials (vrot rows only), vrot, vector's vasin
+    rows, and gum's checkGlRotate sine residual sign (the
+    residual magnitude matches exactly; the rest of gum passes,
+    including all sceGum matrix ops).
+  - prefix_consume: all prefix readbacks and all follow-up
+    (then=) values are exact; 30 of 85 op result lines differ in
+    per-op prefix roles that are not modeled (which operands
+    some ops read raw, scalar prefix routing, product zero
+    signs, vcst/vidt writing more than lane 0).
+  - prefix_unpack: 11 of 34 lines differ by the prefix unit's
+    stale-latch replay, whose update rule the test's own header
+    records as not understood (zero is substituted, as the
+    author suggests).
+  - The operand layout paradox class: vregs Upgrade/Combine,
+    the prefixes R-name prints, and matrix's vmidt section
+    (which loads four quads from one address) are cases where
+    the corpus's own witnesses disagree under any single
+    field-based operand walk; the rule satisfying the majority
+    of witnesses is kept and these sections differ.
+  - overlap_vcrsp: the test's own header documents that the op
+    does not read-before-write on hardware (an in-place hazard)
+    and uses a size form assemblers refuse; not modeled.
+  - vbranch_hazard: an mtvc CC write is visible to a branch 6
+    instructions later on hardware, stale at +0/+1/+2; this core
+    commits immediately. The plain vbranch test passes fully,
+    including vcmp in the delay slot.
+  - vavg: lanes 1-3 of the expected file are the recording
+    machine's uninitialized register state; the controlled
+    witness (specials) shows the ops write lane 0 only.
+  - vrnd: seed expansion and the RCX readback path are exact;
+    the draw recurrence is modeled, not solved.
+  - vector: the guest prints 3309 of 5330 lines (the produced
+    region differs only in the vasin approximation rows), then
+    its PC loops in an SDK string routine. The tail sections
+    (including checkConstants) are unverified; see the VFPU
+    flag status.
+
+### PSP-3 corrections to the PSP-2 VFPU
+
+The corpus refuted the PSP-2 build's VFPU operand layout, which
+was self-consistent but invented. PSP-3 replaces it, from corpus
+witnesses: the arithmetic operand layout (matrix from bits [4:2],
+singles and vectors as documented in the source header), the
+load/store field layout with LVL.Q/LVR.Q window semantics derived
+from the corpus unaligned rows (primary opcode 0x35 is LVL.Q/
+LVR.Q; the LDC1 reading PSP-2 assumed does not exist on
+Allegrex), MFV/MTV versus MFVC/MTVC split by word bit 7 with the
+control index in the low byte, BC2's imm3 CC-bit select, the
+planar prefix layout and constant table {0, 1, 2, 1/2, 3, 1/3,
+1/4, 1/6}, prefix power-on 0xE4, the prefix consumption reset
+(every compute op resets all three prefix registers; an out of
+range swizzle lane poisons the op's result to zero), the VFPU
+NaN pattern (sign over 0x7F800001, with per-op sign rules the
+exact test pins), the hardware half-float truncation/flush
+algorithms, the sort/butterfly block with its equal-value tie
+collapse, the pack/unpack family with its size-bit and
+destination placement rules, VCST's own 19-entry constant
+table, vscmp, vsbn/vwbn, vsbz/vlgb, vrot, the reduction ops
+(vfad/vavg write lane 0 only), and the matrix operand decode:
+vtfm/vhtfm dot the matrix columns with the vector and write a
+strided row; vmmul decodes each slot's anchor from its own bits
+(no slot transposes; see matrixOriginVmmul) and stores the
+product transposed; vmscl reads its matrix with bit 5 cleared.
+Scalar VV operands read at the scalar position the dot family
+uses (offset = low field bits + high field bits), which the
+minmax_tie, vbranch, overlap and prefix_ctrl witnesses jointly
+pin. Also corrected in the CPU: the branch-likely family,
+Allegrex MAX/MIN, multiply-accumulate and CLZ/CLO placement
+(SPECIAL, not SPECIAL2; the SPECIAL2 forms are kept as a
+documented superset), the DIVU by-zero rule, WSBW completing the
+BSHFL map, the LWL/SWL shift forms, the LL/SC reservation
+lifetime (a syscall or thread switch breaks it, a successful SC
+does not), the FPU compare predicate formula, the BC1 tf/nd bit
+layout, thread Status modeling, CVT.W.S saturation and NaN
+rules, the FS-bit denormal model, scalar NaN propagation, exact
+add/sub via a residual-checked rational path, FPU
+cause/flags maintenance, and the fcr31 writable mask
+0x0181FFFF. Primary opcode 0x3F executes as a no-op: the word
+0xFFFF0000 appears inside the SDK printf float path linked into
+the corpus binaries, and neither published opcode map assigns
+0x3F; the encoding stays flagged as an open question in the
+source.
+
+VFPU cross-check flag status: the RCX range 136-143 is
+corroborated and closed (seeding, form, and mfvc readback all
+match the corpus). VCST is implemented from the hardware
+constant list and exercised by the corpus's vector tests, but
+its dedicated checkConstants section sits in vector's
+unproduced tail, so it stays exercised, not adjudicated. The
+fill-group encodings are confirmed from the corpus matrix
+binary's own words (f 3 vmidt, 6 vmzero, 7 vmone). VREPL/VSPLT
+stay flagged: no corpus binary uses them, so the PSP-2 slots
+and semantics remain unverified. The VRND draw recurrence and
+the RCX shift-window dynamics stay modeled, not solved.
+
+## PSP-2 (VFPU, GE display list processor, system integration)
+
+PSP-2 adds the two coprocessor-class units (the VFPU text below
+is the PSP-2 build's; PSP-3 corrected its operand encodings
+against the corpus, see the PSP-3 corrections above):
 
 - `chips/allegrex` (VFPU): the full VFPU lives in the CPU package. The
   register file is 128 singles organized as 8 matrices of 4x4 with the
@@ -172,13 +427,14 @@ set for PSP-2. Nothing from the suite is vendored into this repository.
 
 - PSP-2 (done): the VFPU in full, and the GE display list processor
   (framebuffer presentation, textured primitives) so homebrew can draw.
-- PSP-3: HLE kernel: threads and scheduling, syscall dispatch, ELF/PBP
-  module loader for homebrew, controller and display HLE, with
-  pspautotests as the conformance gate (including the tests/cpu/vfpu
-  set as the executable cross-check for the VFPU encodings and math).
-- PSP-4: audio (the PSP sound hardware plus AAC/ATRAC stubs as needed),
-  the libretro shell, a homebrew enginetest, and app wiring for the
-  android-64bit build.
+- PSP-3 (done): HLE kernel: threads and scheduling, syscall dispatch,
+  the ELF/PRX module loader for homebrew, controller and display HLE,
+  with pspautotests as the conformance gate (the tests/cpu set,
+  including the vfpu group as the executable cross-check for the VFPU
+  encodings and math; results in the PSP-3 section above).
+- PSP-4: audio (sceAudio plus a Media Engine decision), the libretro
+  shell, a homebrew enginetest through the shell, and app wiring for
+  the android-64bit build.
 
 Commercial game support depends on HLE coverage growth slice by slice
 and is NOT promised by any of the above.
@@ -199,23 +455,25 @@ and is NOT promised by any of the above.
   The exact hardware generator is not fully published; the interface
   (seed register, state readout through MFVC) is implemented as
   documented and the algorithm is best-known, not verified.
-- Matrix operations (VMMUL, VMSCL, VTFM/VHTFM, matrix moves) ignore
-  source and destination prefixes in this slice; the documented
-  operand overlap restrictions are not enforced. VCMOV with selector
-  7 is unspecified in the documentation; this core treats it as the
-  per-lane inverted form.
+- Matrix operations (VMMUL, VMSCL, VTFM/VHTFM, matrix moves) read
+  their operands raw (no source prefix) in this core; the prefix
+  consumption reset still applies to them as compute ops. The
+  documented operand overlap restrictions are not enforced, except
+  that ordinary VV ops read all inputs before writing (the corpus
+  overlap test passes; the vcrsp in-place hazard is the documented
+  exception). VCMOV with selector 7 is unspecified in the
+  documentation; this core treats it as the per-lane inverted form.
 - Two encodings could not be confirmed in the published documents:
   VREPL and VSPLT appear in neither reference text, so they sit at
   free function values in the unary group (0x08 and 0x09) with the
-  semantics the instruction names imply, flagged in the source.
-  VCST indexes the 8-entry prefix constant table here; one reference
-  defines a longer constant list of its own, so VCST values past the
-  shared entries may differ from hardware. The random control
-  registers are mapped at 136 to 143 (8 words); one reference lists
-  the range as 136 to 147. VIDT keeps the full identity-vector write
-  from the first build; one reference describes a per-vector
-  identity init instead. All of these are PSP-3 cross-check items
-  for the pspautotests vfpu set.
+  semantics the instruction names imply, flagged in the source; no
+  pspautotests binary uses them either (PSP-3 cross-check, still
+  open). VCST uses the hardware 19-entry constant list from the
+  published documentation (PSP-3; the corpus checkConstants
+  adjudication is pending only because the vector test stalls
+  before that section, see the PSP-3 corpus results). The random
+  control registers are mapped at 136 to 143 (8 words), the range
+  the corpus corroborates.
 - GE rasterization interpolates per pixel with barycentric weights
   and NO perspective correction: texture coordinates and colors are
   affine across the triangle. Most PSP test scenes and simple
