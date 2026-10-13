@@ -14,9 +14,69 @@ out. No third-party Go dependencies.
 
 ## Status
 
-**GCN-2 (this slice): the floating point unit, paired
-singles, and the GX GPU as a software renderer, wired
-into the system.**
+**GCN-3 (this slice): the DSP, the audio, disc,
+external and serial interfaces, the video interface,
+the processor interrupt aggregate, and IPL HLE boot,
+wired into the system.**
+
+- `chips/dsp`: the GameCube DSP as a cycle-stepped
+  core running IRAM microcode, with its mailbox link
+  to the CPU, ARAM and the AR DMA engine, the audio
+  interrupt mirror from the AI, and full save state
+  support.
+- `ai`: the audio interface: control, volume, sample
+  counter and interrupt timing registers, and the
+  audio DMA engine streaming big-endian stereo samples
+  out of MEM1 at 48000 Hz or 32000 Hz, volume scaled,
+  drained to the host through the system's
+  `AudioBuffer` and `AudioRate`.
+- `di`: the disc interface: status, cover, command
+  buffer, DMA and control registers, and the
+  synchronous command set (DMA and non-DMA reads,
+  identify, stop motor, the audio configuration
+  family) served from the loaded disc image.
+- `exi`: the external interface: three channels, the
+  SRAM and RTC chip (the RTC advances with CPU
+  cycles), memory cards in slots A and B, the AD16
+  chip, and the IPL ROM window reading as zeros (this
+  project ships no IPL bytes). Card images are
+  persistent media held outside save states; SRAM is
+  inside save states.
+- `si`: the serial interface: four controller
+  channels polled into the input buffers (a POLL
+  write polls at once, and the system re-polls once
+  per frame), the command transfer engine, rumble
+  motor state, and the I/O buffer window. Channel 0
+  reports the machine pad state.
+- `vi`: the video interface register window with a
+  simplified even-field timing model and the four
+  display interrupt registers; the frame's halfline
+  counter advances with CPU cycles and a display
+  interrupt fires once per frame for an enabled
+  target.
+- `system`: the processor interface (PI) interrupt
+  aggregate at 0x0C003000: PI_INTSR is a computed
+  read-only word over the DSP, AI, EXI, SI, DI and VI
+  interrupt outputs, PI_INTMSK is stored, and the CPU
+  external interrupt line is the masked aggregate,
+  refreshed after device MMIO accesses and at the end
+  of every run. `BootDisc` performs the HLE boot: the
+  FST copied into MEM1 after the DOL, the documented
+  boot info block, exception vectors holding a branch
+  to self, BATs and segment registers covering MEM1,
+  translation and the FPU on, and the CPU started at
+  the DOL entry with r3 and r4 pointing at the FST.
+  No IPL or apploader code is executed or embedded.
+- `system` save states are version 3: the version 2
+  blocks, then the DSP, AI, DI, EXI, SI and VI device
+  blocks, and a machine tail extended with the total
+  CPU cycle count, the DSP cycle remainder, PI_INTMSK
+  and the booted flag, at 54,768,032 bytes. Version 2
+  states are rejected.
+
+**GCN-2: the floating point unit, paired singles, and
+the GX GPU as a software renderer, wired into the
+system.**
 
 - `chips/gekko` FPU: the complete PowerPC floating point
   set of the 750. Scalar arithmetic (fadd/fadds,
@@ -90,11 +150,12 @@ into the system.**
   the GPU, and `Framebuffer` presents the EFB through
   the BP copy source rectangle, nearest fit, no
   deflicker.
-- `system` save states are version 2: the CPU state
-  (now including FPSCR and the GQRs), the complete
-  GPU state, MEM1, the locked cache, and both
-  hardware pages, at 37,711,354 bytes. Version 1
-  states are rejected.
+- `system` save states were version 2 in that slice:
+  the CPU state (including FPSCR and the GQRs), the
+  complete GPU state, MEM1, the locked cache, and
+  both hardware pages, at 37,711,354 bytes. Version 1
+  states were rejected then; GCN-3 superseded the
+  format with version 3, above.
 
 **GCN-1: the integer CPU, the memory map, disc image
 foundations, and the system skeleton.**
@@ -220,13 +281,14 @@ determinism gates above.
 - GCN-2 (done): the floating point unit and paired
   singles (the GameCube's signature extension), plus
   the GX GPU as a software rasterizer.
-- GCN-3: the DSP audio unit, the DI disc drive, EXI and
-  SI devices, and IPL HLE boot (this project never ships
+- GCN-3 (done): the DSP audio unit, the DI disc drive,
+  EXI and SI devices, the AI and VI, the PI interrupt
+  aggregate, and IPL HLE boot (this project never ships
   the Nintendo IPL; games boot through the DOL staging
   path and an HLE BIOS layer).
-- GCN-4: the libretro shell, a real-game enginetest
-  against a user-supplied game image, and the app wiring
-  for the android-64bit build.
+- GCN-4: the libretro shell, an enginetest with a
+  homebrew DOL, and the app wiring for the
+  android-64bit build.
 - Wii track (after the GameCube core proves out): MEM2
   (the extra 64 MB), the Starlet ARM coprocessor, and IOS
   HLE, as their own slices in this same module.
@@ -318,11 +380,45 @@ determinism gates above.
   field mask from it; MSR[LE] is honored on data and
   instruction accesses (little-endian mode works, it is
   simply not what GameCube software uses).
-- The remaining hardware register pages (the PE area
-  of the 0x0C page and the DSP, DI, SI, EXI, and AI
-  blocks) are stored stubs: values written are values
-  read back, and nothing acts on them until their
-  slices land. The CP window and the GX FIFO port on
-  the 0x0C page are live since GCN-2. The locked cache
-  window is plain RAM backing; the lock control
-  registers are not modeled.
+- The remaining unmodeled hardware register areas
+  (the PE area of the 0x0C page outside the GX blocks,
+  and the rest of the 0x0D page) are stored stubs:
+  values written are values read back, and nothing
+  acts on them. The CP window and the GX FIFO port on
+  the 0x0C page are live since GCN-2, and the DSP, DI,
+  SI, EXI, AI, VI and PI windows are live since GCN-3.
+  The locked cache window is plain RAM backing; the
+  lock control registers are not modeled.
+- **DSP scope limits, stated plainly.** The DSP IROM
+  and DROM read as zeros: this project ships no DSP
+  ROM dump, so microcode that depends on ROM
+  coefficients gets zeros. The DSP reset starts at
+  IRAM 0 in this HLE model. DSP memory sizes follow
+  the published GameCube DSP sizes: IRAM 8 KB, IROM
+  8 KB, DRAM 8 KB, DROM 4 KB. AR DMA is atomic on the
+  count-low write, and the DSP stacks wrap on
+  overflow.
+- **EXI scope limits, stated plainly.** Transfers
+  complete immediately, and the memory card unlock
+  sequence is simplified to an ID-read wake. Card
+  images are persistent media, not part of save
+  states; SRAM is part of save states.
+- **DI scope limits, stated plainly.** Commands
+  complete synchronously, and non-DMA reads are
+  simplified (games use DMA reads).
+- **SI scope limits, stated plainly.** POLL writes
+  poll immediately, in addition to the per-frame
+  polling the system performs.
+- **VI scope limits, stated plainly.** The timing
+  model is a simplified even-field model. The XFB
+  frame buffer base registers are stored only;
+  presentation stays with the GX embedded frame
+  buffer.
+- **PI scope limit, stated plainly.** The GX cause
+  bit (0x00000040) is reserved and not raised: the
+  GPU exposes no PE interrupt output in this slice.
+  The error bit is never raised either.
+- **Boot honesty.** The boot info is an HLE
+  reconstruction from published layout facts. No IPL
+  or apploader code is executed or embedded anywhere
+  in this module.
