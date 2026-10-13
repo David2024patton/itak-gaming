@@ -46,6 +46,15 @@ type System struct {
 	audioAcc float64 // fractional samples owed
 	frame    uint64  // frames run since power-on (drives cumulative cycle targets)
 	loaded   bool
+
+	// Anchors for timestamping Z80 writes to the YM2612 (see the
+	// SetYMClock closure in LoadGame): the YM time at the start of
+	// the scanline whose Z80 budget is currently running, and the
+	// Z80 cycle counter at that moment. Recomputed at every line
+	// before any Z80 write can occur, so they never need to be
+	// serialized.
+	z80LineYM     int64
+	z80LineCycles uint64
 }
 
 // New returns an empty machine; call LoadGame before RunFrame.
@@ -63,6 +72,33 @@ func (s *System) LoadGame(data []byte) error {
 	s.bus = bus.New(c, s.vdp, s.sound)
 	s.cpu = m68k.New(s.bus)
 	s.zcpu = z80.New(s.bus)
+	// Timestamp source for YM2612 writes, so the sound section
+	// can render the pending FM span before a write lands (the
+	// bus calls it at the write's emulated moment). The YM2612
+	// clock equals the 68000 clock (both master / 7), so a 68000
+	// write is stamped with the CPU's own counter, which both
+	// CPUs charge after each instruction: a stamp is the time at
+	// the start of the executing instruction, instruction
+	// granularity (a few cycles, far inside the ~465-clock
+	// spacing of a DAC stream). A Z80 write is stamped from the
+	// line anchors set in RunFrame: the line's start time plus
+	// the Z80 cycles elapsed in the line, converted at the fixed
+	// ratio (one Z80 cycle is 15/7 YM clocks; the conversion is
+	// computed from the anchor each call, so no fractional
+	// remainder ever accumulates). One imprecision is inherent
+	// to the frame loop's shape: the 68000 runs a whole line
+	// before the Z80 runs its share, so within one scanline a
+	// Z80 stamp can fall up to a line (~489 clocks, ~3.4 native
+	// samples) behind 68000 time already rendered; the sound
+	// section clamps such spans to nothing, and the relative
+	// spacing of writes from one CPU, which is what a sample
+	// stream is made of, stays exact.
+	s.bus.SetYMClock(func(fromZ80 bool) int64 {
+		if fromZ80 {
+			return s.z80LineYM + int64((s.zcpu.Cycles()-s.z80LineCycles)*15/7)
+		}
+		return int64(s.cpu.Cycles())
+	})
 	s.audio = nil
 	s.audioAcc = 0
 	s.frame = 0
@@ -176,11 +212,16 @@ func (s *System) run68k(target uint64) {
 }
 
 // runZ80Line advances the Z80 by one scanline of cycles, honoring the
-// bus-request and reset lines the 68000 controls.
-func (s *System) runZ80Line() {
+// bus-request and reset lines the 68000 controls. lineStartYM is the
+// scanline's start time in YM2612 clocks; it and the Z80 counter at
+// entry anchor the timestamps of any YM2612 writes the Z80 makes
+// during the line (see the SetYMClock closure in LoadGame).
+func (s *System) runZ80Line(lineStartYM int64) {
 	if s.bus.TakeZ80Reset() {
 		s.zcpu.Reset()
 	}
+	s.z80LineYM = lineStartYM
+	s.z80LineCycles = s.zcpu.Cycles()
 	if s.bus.Z80Halted() {
 		return
 	}
@@ -224,7 +265,9 @@ func (s *System) RunFrame() {
 			s.zcpu.INT(false, 0)
 		}
 		s.run68k(base + m68kTarget(line))
-		s.runZ80Line()
+		// The line starts, in 68000 (and YM2612) cycles, at the
+		// previous line's cumulative target.
+		s.runZ80Line(int64(base + uint64(line)*masterFrame/7/linesTotal))
 		target := base + m68kTarget(line)
 		s.sound.AdvanceClocks(uint32(target - clocked))
 		clocked = target
