@@ -34,18 +34,21 @@ type PresenceSource interface {
 type Handler struct {
 	store    *Store
 	identity IdentitySource // may be nil: identities come back empty
-	presence PresenceSource // may be nil: everyone reads offline
+	presence PresenceSource // may be nil: no one reads in_lobby
+	tracker  *Presence      // app-open presence; always set by NewHandler
 	log      *log.Logger
 }
 
 // NewHandler builds a Handler over a friends store, an identity
 // source (for display names and regions), and a presence source
-// (for who is in a lobby right now).
+// (for who is in a lobby right now). The app-open presence
+// tracker is part of the handler: it holds no state worth
+// configuring, so it is created here rather than wired in main.
 func NewHandler(store *Store, identity IdentitySource, presence PresenceSource, logger *log.Logger) *Handler {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Handler{store: store, identity: identity, presence: presence, log: logger}
+	return &Handler{store: store, identity: identity, presence: presence, tracker: NewPresence(), log: logger}
 }
 
 // Register adds the friends routes to a mux. Method patterns make
@@ -54,6 +57,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /friends", h.handleList)
 	mux.HandleFunc("POST /friends", h.handleAdd)
 	mux.HandleFunc("POST /friends/remove", h.handleRemove)
+	mux.HandleFunc("POST /friends/presence", h.handlePresence)
 }
 
 // Handlers.
@@ -100,9 +104,32 @@ func (h *Handler) handleRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.buildList(clean(req.Player)))
 }
 
+// presenceRequest is the wire form of a presence ping: just the
+// player whose app is open.
+type presenceRequest struct {
+	Player string `json:"player"`
+}
+
+// handlePresence records an app-open ping. It answers 204 with
+// no body: the client fires these on a timer and has nothing to
+// render from them, so the handler stays as cheap as a map write.
+func (h *Handler) handlePresence(w http.ResponseWriter, r *http.Request) {
+	var req presenceRequest
+	if err := decodeBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := h.tracker.Ping(req.Player); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // buildList assembles the response for one player: each followed
 // name in order, enriched with the identity the leaderboard knows
-// and with live presence from the lobby registry.
+// and with live presence. Presence precedence: a live lobby wins
+// over app-open, which wins over offline.
 func (h *Handler) buildList(player string) ListResponse {
 	names := h.store.List(player)
 	out := ListResponse{Player: player, Friends: make([]Entry, 0, len(names))}
@@ -116,6 +143,9 @@ func (h *Handler) buildList(player string) ListResponse {
 				e.Status = StatusInLobby
 				e.Game = pub.Game
 			}
+		}
+		if e.Status == StatusOffline && h.tracker != nil && h.tracker.Online(name) {
+			e.Status = StatusOnline
 		}
 		out.Friends = append(out.Friends, e)
 	}
