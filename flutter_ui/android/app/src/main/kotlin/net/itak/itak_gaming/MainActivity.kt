@@ -3,6 +3,9 @@ package net.itak.itak_gaming
 import android.content.Context
 import android.content.Intent
 import android.hardware.input.InputManager
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +17,7 @@ import android.view.KeyEvent
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.BufferedWriter
 import java.io.File
@@ -33,6 +37,22 @@ class MainActivity : FlutterActivity() {
 
     private var channel: MethodChannel? = null
     private var lastControllerPromptMs = 0L
+
+    // Self-update download progress, streamed to Dart over the
+    // update_progress event channel while downloadAndInstall runs
+    // on its worker thread.
+    @Volatile
+    private var updateProgressSink: EventChannel.EventSink? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun reportUpdateProgress(downloaded: Long, total: Long) {
+        if (updateProgressSink == null) return
+        mainHandler.post {
+            updateProgressSink?.success(
+                mapOf("downloaded" to downloaded, "total" to total)
+            )
+        }
+    }
 
     // Controller assignment capture: while armed, the next gamepad
     // button press identifies that controller to Dart.
@@ -174,6 +194,18 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         val ch = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "net.itak/emu")
         channel = ch
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "net.itak/emu/update_progress"
+        ).setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                updateProgressSink = events
+            }
+
+            override fun onCancel(arguments: Any?) {
+                updateProgressSink = null
+            }
+        })
         ch.setMethodCallHandler { call, result ->
                 when (call.method) {
                     // SharedPreferences bridge (itak_prefs), shared with
@@ -244,6 +276,25 @@ class MainActivity : FlutterActivity() {
                         result.success(
                             mapOf("is64" to android.os.Build.SUPPORTED_64_BIT_ABIS.isNotEmpty())
                         )
+                    }
+                    // Friend alert chime: Dart calls this when a
+                    // friend alert banner shows. Fire and forget;
+                    // the chime plays on its own thread and any
+                    // failure is silent.
+                    "playNotifySound" -> {
+                        playNotifyChime()
+                        result.success(true)
+                    }
+                    // Settings -> Sound test: the native speaker and
+                    // microphone level-bar screen.
+                    "soundTest" -> {
+                        startActivity(
+                            android.content.Intent(
+                                this,
+                                SoundTestActivity::class.java
+                            )
+                        )
+                        result.success(true)
                     }
                     // A player rename moves their saves folder and
                     // stats file so nothing is lost.
@@ -353,21 +404,24 @@ class MainActivity : FlutterActivity() {
                     }
                     // Self-update: download the APK on a worker
                     // thread, verify its SHA-256, then hand it to
-                    // the system installer. Returns "" on success,
-                    // "needs-permission" when the TV still has to
-                    // allow installs from this app (the settings
-                    // page is opened for the user), or an error
-                    // message. Android always shows its own Install
-                    // prompt; no sideloaded app can skip that.
+                    // the system installer. Byte progress streams to
+                    // Dart over the update_progress event channel.
+                    // Returns "" on success, "needs-permission" when
+                    // the TV still has to allow installs from this
+                    // app (the settings page is opened for the user),
+                    // or an error message. Android always shows its
+                    // own Install prompt; no sideloaded app can skip
+                    // that.
                     "installUpdate" -> {
                         val dlUrl = call.argument<String>("url")
                         val wantSha = call.argument<String>("sha256")
+                        val wantSize = call.argument<Number>("size")?.toLong() ?: 0L
                         if (dlUrl == null || wantSha == null) {
                             result.error("BAD_ARGS", "url and sha256 required", null)
                         } else {
                             thread(name = "app-update") {
                                 val outcome = try {
-                                    downloadAndInstall(dlUrl, wantSha)
+                                    downloadAndInstall(dlUrl, wantSha, wantSize)
                                 } catch (e: Exception) {
                                     "Download failed: ${e.message ?: "network error"}"
                                 }
@@ -409,8 +463,17 @@ class MainActivity : FlutterActivity() {
     // Downloads an update APK, verifies it, and opens the system
     // installer. Runs on a worker thread; returns "" on success,
     // "needs-permission", or a plain error message for the user.
-    private fun downloadAndInstall(dlUrl: String, wantSha: String): String {
+    // The bytes land in update.apk.part first and are renamed to
+    // update.apk only after the size and SHA-256 both check out,
+    // so a partial file can never reach the installer.
+    private fun downloadAndInstall(
+        dlUrl: String,
+        wantSha: String,
+        wantSize: Long
+    ): String {
         val out = File(cacheDir, "update.apk")
+        val part = File(cacheDir, "update.apk.part")
+        part.delete()
         val digest = MessageDigest.getInstance("SHA-256")
         val conn = URL(dlUrl).openConnection() as HttpURLConnection
         conn.connectTimeout = 15000
@@ -420,21 +483,52 @@ class MainActivity : FlutterActivity() {
         if (conn.responseCode != 200) {
             return "Download failed: server answered ${conn.responseCode}"
         }
-        conn.inputStream.use { input ->
-            FileOutputStream(out).use { fos ->
-                val buf = ByteArray(64 * 1024)
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    fos.write(buf, 0, n)
-                    digest.update(buf, 0, n)
+        // Progress total: the HTTP length when the server sends one,
+        // else the size version.json promised (0 = unknown).
+        val httpTotal = conn.contentLengthLong
+        val total = if (httpTotal > 0) httpTotal else wantSize
+        var downloaded = 0L
+        reportUpdateProgress(0L, total)
+        try {
+            conn.inputStream.use { input ->
+                FileOutputStream(part).use { fos ->
+                    val buf = ByteArray(64 * 1024)
+                    var lastReport = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        fos.write(buf, 0, n)
+                        digest.update(buf, 0, n)
+                        downloaded += n
+                        if (downloaded - lastReport >= 256 * 1024) {
+                            lastReport = downloaded
+                            reportUpdateProgress(downloaded, total)
+                        }
+                    }
                 }
             }
+        } catch (e: Exception) {
+            part.delete()
+            throw e
+        }
+        reportUpdateProgress(downloaded, total)
+        if (httpTotal > 0 && downloaded != httpTotal) {
+            part.delete()
+            return "Download failed: the connection dropped. Try again."
         }
         val gotSha = digest.digest().joinToString("") { "%02x".format(it) }
         if (!gotSha.equals(wantSha, ignoreCase = true)) {
-            out.delete()
+            part.delete()
             return "Download failed: the file did not verify. Try again."
+        }
+        if (!part.renameTo(out)) {
+            try {
+                part.copyTo(out, overwrite = true)
+                part.delete()
+            } catch (e: Exception) {
+                part.delete()
+                return "Download failed: could not save the update file."
+            }
         }
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
             // One-time TV setting: allow iTaK Gaming to install
@@ -455,5 +549,69 @@ class MainActivity : FlutterActivity() {
         )
         startActivity(install)
         return ""
+    }
+
+    // Soft two-tone chime for friend alerts, generated as sine
+    // samples (no audio asset ships with the app): a low tone
+    // then a higher one, about 0.35 s total at modest volume,
+    // each tone fading in and out so it dings instead of clicks.
+    // Plays through the notification stream. Everything is
+    // wrapped so a failure can never crash or block the caller.
+    private fun playNotifyChime() {
+        thread(name = "notify-chime") {
+            try {
+                val sampleRate = 44100
+                val tones = doubleArrayOf(880.0, 1318.5)
+                val segSeconds = 0.175
+                val framesPerSeg = (sampleRate * segSeconds).toInt()
+                val frames = framesPerSeg * tones.size
+                val samples = ShortArray(frames)
+                val peak = Short.MAX_VALUE * 0.22
+                for (seg in tones.indices) {
+                    val freq = tones[seg]
+                    for (j in 0 until framesPerSeg) {
+                        val t = j / sampleRate.toDouble()
+                        val attack = Math.min(1.0, t / 0.012)
+                        val decay = Math.exp(-2.4 * t / segSeconds)
+                        val s = Math.sin(2.0 * Math.PI * freq * t) *
+                            attack * decay * peak
+                        samples[seg * framesPerSeg + j] = s.toInt().toShort()
+                    }
+                }
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                            .setContentType(
+                                AudioAttributes.CONTENT_TYPE_SONIFICATION
+                            )
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(samples.size * 2)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+                try {
+                    track.write(samples, 0, samples.size)
+                    track.play()
+                    // MODE_STATIC plays out in real time; wait a
+                    // little past the end before releasing.
+                    Thread.sleep(500)
+                } finally {
+                    try {
+                        track.release()
+                    } catch (e: Exception) { /* already gone */ }
+                }
+            } catch (e: Exception) {
+                // Silent by design: an alert sound must never
+                // take the app down with it.
+            }
+        }
     }
 }
