@@ -154,6 +154,11 @@ func Parse(data []byte) (*Image, error) {
 	img.FSTOffset = be32(data, 0x424)
 	img.FSTSize = be32(data, 0x428)
 
+	// The bi2 block runs to 0x45C; the 0x440 floor above
+	// only covers the header fields.
+	if len(data) < 0x460 {
+		return nil, ErrTruncated
+	}
 	img.BI2 = BI2{
 		DebugMonitorSize:    be32(data, 0x440),
 		SimulatedMemorySize: be32(data, 0x444),
@@ -215,7 +220,7 @@ func (img *Image) DOL() (*DOL, error) {
 	}
 	data := img.data
 	base := img.DOLOffset
-	if uint32(len(data)) < base+0x100 {
+	if uint64(len(data)) < uint64(base)+0x100 {
 		return nil, ErrTruncated
 	}
 	h := data[base:]
@@ -230,7 +235,9 @@ func (img *Image) DOL() (*DOL, error) {
 		if size == 0 {
 			return nil
 		}
-		if uint32(len(data)) < base+off+size {
+		// 64 bit math: base+off+size in 32 bits can wrap
+		// past the length check on a corrupt header.
+		if uint64(len(data)) < uint64(base)+uint64(off)+uint64(size) {
 			return ErrTruncated
 		}
 		d.Sections = append(d.Sections, DOLSection{
@@ -277,11 +284,13 @@ func (img *Image) Files() ([]FileEntry, error) {
 	}
 	data := img.data
 	base := img.FSTOffset
-	if uint32(len(data)) < base+12 {
+	if uint64(len(data)) < uint64(base)+12 {
 		return nil, ErrTruncated
 	}
 	count := int(be32(data, base+8))
-	if count <= 0 || uint32(len(data)) < base+uint32(count*12) {
+	// 64 bit math: a wild entry count must not wrap the
+	// table size past the length check.
+	if count <= 0 || uint64(len(data)) < uint64(base)+uint64(count)*12 {
 		return nil, ErrTruncated
 	}
 	strBase := base + uint32(count*12)
@@ -290,7 +299,7 @@ func (img *Image) Files() ([]FileEntry, error) {
 		off := base + uint32(i*12)
 		nameOff := uint32(data[off+1])<<16 | uint32(data[off+2])<<8 | uint32(data[off+3])
 		name := ""
-		if strBase+nameOff < uint32(len(data)) {
+		if uint64(strBase)+uint64(nameOff) < uint64(len(data)) {
 			name = cstr(data[strBase+nameOff:])
 		}
 		ents[i] = fstEntry{
@@ -359,7 +368,7 @@ func (img *Image) Extract(path string) ([]byte, error) {
 	path = strings.TrimPrefix(path, "/")
 	for _, f := range files {
 		if f.Path == path {
-			if uint32(len(img.data)) < f.Offset+f.Size {
+			if uint64(len(img.data)) < uint64(f.Offset)+uint64(f.Size) {
 				return nil, ErrTruncated
 			}
 			out := make([]byte, f.Size)
