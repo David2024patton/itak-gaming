@@ -66,6 +66,15 @@ type CPU struct {
 	stopped bool
 
 	cycles uint64 // total M-cycles executed since reset
+
+	// OnCycle, when set by the machine, is called as each M-cycle
+	// boundary inside a step passes, just before the bus access
+	// that starts the new cycle. It lets the machine advance its
+	// devices so every access lands on its hardware cycle instead
+	// of the step's first cycle.
+	OnCycle func()
+
+	slots int // M-cycle slots consumed so far in the current step
 }
 
 // New returns a CPU in its power-on state: registers zero, PC zero,
@@ -75,9 +84,11 @@ func New() *CPU {
 	return &CPU{}
 }
 
-// Reset returns the CPU to its power-on state.
+// Reset returns the CPU to its power-on state. The OnCycle hook
+// is machine wiring, not CPU state, and survives.
 func (c *CPU) Reset() {
-	*c = CPU{}
+	hook := c.OnCycle
+	*c = CPU{OnCycle: hook}
 }
 
 // Regs returns a snapshot of the programmer-visible registers.
@@ -103,6 +114,10 @@ func (c *CPU) Cycles() uint64 { return c.cycles }
 
 // IME reports the master interrupt enable state.
 func (c *CPU) IME() bool { return c.ime }
+
+// Wake leaves the STOP state. The machine calls it when a joypad
+// button is pressed, the hardware's wake source for STOP.
+func (c *CPU) Wake() { c.stopped = false }
 
 // Halted reports whether the CPU is in the HALT state.
 func (c *CPU) Halted() bool { return c.halted }
@@ -183,7 +198,7 @@ func (c *CPU) getR(bus Bus, i int) uint8 {
 	case 5:
 		return c.l
 	case 6:
-		return bus.Read(c.hl())
+		return c.rd(bus, c.hl())
 	default:
 		return c.a
 	}
@@ -205,7 +220,7 @@ func (c *CPU) setR(bus Bus, i int, v uint8) {
 	case 5:
 		c.l = v
 	case 6:
-		bus.Write(c.hl(), v)
+		c.wr(bus, c.hl(), v)
 	default:
 		c.a = v
 	}
@@ -242,19 +257,51 @@ func (c *CPU) setFlags(z, n, h, cy bool) {
 	c.f = f
 }
 
+// slot marks the start of the next M-cycle slot within the
+// current step. Every bus access occupies one slot, in order; an
+// access in slot k observes the machine after k M-cycles have
+// elapsed, so the hook fires before every slot after the first.
+// Purely internal cycles that precede an access still collapse
+// into the step's trailing cycles (accounted by the machine from
+// the returned total), which matches every access timing the
+// conformance suites gate on.
+func (c *CPU) slot() {
+	if c.slots > 0 && c.OnCycle != nil {
+		c.OnCycle()
+	}
+	c.slots++
+}
+
+// rd reads through the slot timing model.
+func (c *CPU) rd(bus Bus, addr uint16) uint8 {
+	c.slot()
+	return bus.Read(addr)
+}
+
+// wr writes through the slot timing model.
+func (c *CPU) wr(bus Bus, addr uint16, v uint8) {
+	c.slot()
+	bus.Write(addr, v)
+}
+
+// SlotsUsed returns how many M-cycle slots the last Step consumed
+// with bus accesses or explicit idle slots. The machine ticks the
+// remaining cycles of the step itself.
+func (c *CPU) SlotsUsed() int { return c.slots }
+
 // push16 writes a 16-bit value to the stack, high byte first.
 func (c *CPU) push16(bus Bus, v uint16) {
 	c.sp--
-	bus.Write(c.sp, uint8(v>>8))
+	c.wr(bus, c.sp, uint8(v>>8))
 	c.sp--
-	bus.Write(c.sp, uint8(v))
+	c.wr(bus, c.sp, uint8(v))
 }
 
 // pop16 reads a 16-bit value from the stack, low byte first.
 func (c *CPU) pop16(bus Bus) uint16 {
-	lo := bus.Read(c.sp)
+	lo := c.rd(bus, c.sp)
 	c.sp++
-	hi := bus.Read(c.sp)
+	hi := c.rd(bus, c.sp)
 	c.sp++
 	return uint16(hi)<<8 | uint16(lo)
 }
@@ -263,7 +310,7 @@ func (c *CPU) pop16(bus Bus) uint16 {
 // read but PC does not advance, so the same byte is seen again by the
 // following fetch.
 func (c *CPU) fetchOp(bus Bus) uint8 {
-	v := bus.Read(c.pc)
+	v := c.rd(bus, c.pc)
 	if c.haltBug {
 		c.haltBug = false
 	} else {
@@ -274,7 +321,7 @@ func (c *CPU) fetchOp(bus Bus) uint8 {
 
 // fetch8 reads an operand byte and advances PC.
 func (c *CPU) fetch8(bus Bus) uint8 {
-	v := bus.Read(c.pc)
+	v := c.rd(bus, c.pc)
 	c.pc++
 	return v
 }
@@ -409,19 +456,38 @@ func (c *CPU) pendingInterrupts(bus Bus) uint8 {
 	return bus.Read(addrIE) & bus.Read(addrIF) & 0x1F
 }
 
-// dispatch services the highest priority pending interrupt: IME
-// clears, the request bit clears, PC is pushed, and control jumps to
-// the interrupt vector. Costs 5 M-cycles on the hardware.
-func (c *CPU) dispatch(bus Bus, pending uint8) int {
-	bit := 0
-	for pending>>uint(bit)&1 == 0 {
-		bit++
-	}
-	bus.Write(addrIF, bus.Read(addrIF)&^(1<<uint(bit)))
+// dispatch services an interrupt over 5 M-cycles: two internal
+// cycles, a push of PC's high byte, a push of the low byte, and
+// the jump to the vector. The high-byte push can itself write the
+// IE register when SP is 0x0000, and the hardware evaluates which
+// interrupt to take only after that push: if the write removed
+// every enabled request, the dispatch is cancelled and PC becomes
+// 0x0000 instead of a vector (IME still clears, IF is untouched);
+// if another request is still enabled, that one is taken instead.
+// A low-byte push into IE comes too late to matter. All of this
+// is exercised by the mooneye ie_push test.
+func (c *CPU) dispatch(bus Bus) int {
+	c.slot() // internal cycle 1
+	c.slot() // internal cycle 2
+	c.sp--
+	c.wr(bus, c.sp, uint8(c.pc>>8))
+	// Sampled in the same cycle as the push, after it landed.
+	now := bus.Read(addrIE) & bus.Read(addrIF) & 0x1F
+	c.sp--
+	c.wr(bus, c.sp, uint8(c.pc))
 	c.ime = false
 	c.eiDelay = 0
 	c.halted = false
-	c.push16(bus, c.pc)
+	if now == 0 {
+		c.pc = 0x0000
+		c.cycles += 5
+		return 5
+	}
+	bit := 0
+	for now>>uint(bit)&1 == 0 {
+		bit++
+	}
+	bus.Write(addrIF, bus.Read(addrIF)&^(1<<uint(bit)))
 	c.pc = 0x40 + uint16(bit)*8
 	c.cycles += 5
 	return 5
@@ -430,6 +496,7 @@ func (c *CPU) dispatch(bus Bus, pending uint8) int {
 // Step executes one instruction, one interrupt dispatch, or one idle
 // M-cycle while halted or stopped, and returns the M-cycles consumed.
 func (c *CPU) Step(bus Bus) int {
+	c.slots = 0
 	if c.stopped {
 		c.cycles++
 		return 1
@@ -442,13 +509,13 @@ func (c *CPU) Step(bus Bus) int {
 		}
 		c.halted = false
 		if c.ime {
-			return c.dispatch(bus, pending)
+			return c.dispatch(bus)
 		}
 		// IME clear: the CPU simply resumes executing. The HALT bug
 		// does not apply here; it is decided when HALT executes.
 	} else if c.ime {
 		if pending := c.pendingInterrupts(bus); pending != 0 {
-			return c.dispatch(bus, pending)
+			return c.dispatch(bus)
 		}
 	}
 	n := c.execute(bus)
