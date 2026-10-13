@@ -302,17 +302,22 @@ func TestNMIFlag(t *testing.T) {
 
 func TestAPUMailboxes(t *testing.T) {
 	s := newLoopSys(t)
+	// A write to $2140 lands in the APU's input latch
+	// (read by the SPC at $00F4); it is not readable from
+	// the main side.
 	wrReg(s, 0x2140, 0x5A)
-	if v := s.apuOut[0]; v != 0x5A {
-		t.Errorf("apuOut[0] = %#x, want 0x5a stored", v)
+	// Run a frame: the SPC700 boots its IPL ROM, which
+	// posts the documented ready signature on the output
+	// ports the main CPU reads.
+	s.RunFrame()
+	if v := rdReg(s, 0x2140); v != 0xAA {
+		t.Errorf("$2140 read = %#x, want 0xaa (IPL signature)", v)
 	}
-	// Nothing on the SPC side yet (SNES-3): reads return
-	// the power-on state.
-	if v := rdReg(s, 0x2140); v != 0 {
-		t.Errorf("$2140 read = %#x, want 0 (no SPC700 yet)", v)
+	if v := rdReg(s, 0x2141); v != 0xBB {
+		t.Errorf("$2141 read = %#x, want 0xbb (IPL signature)", v)
 	}
 	// The mirror window $2144-$217F folds onto the ports.
-	if v := rdReg(s, 0x2144); v != 0 {
+	if v := rdReg(s, 0x2144); v != 0xAA {
 		t.Errorf("$2144 read = %#x, want mirror of $2140", v)
 	}
 }
