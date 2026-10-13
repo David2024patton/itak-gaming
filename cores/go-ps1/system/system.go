@@ -2,14 +2,20 @@
 // the go-ps1 core, in the same family shape as the
 // other iTaK cores.
 //
-// PS1-2 wiring: the R3000A CPU (chips/r3000a) runs on
-// the memory bus (bus) with the GTE register file as
-// CP2 (math is PS1-3). The bus register page is
-// routed to a peripheral multiplexer (mux.go) serving
-// the GPU (gpu), the root counters (timers), the DMA
-// controller (dma), the CD controller subset (cd) and
-// the SPU RAM transfer port (spu), plus the real
-// interrupt controller registers I_STAT and I_MASK.
+// PS1-3 wiring: the R3000A CPU (chips/r3000a) runs on
+// the memory bus (bus) with the full GTE (chips/gte)
+// as CP2. The bus register page is routed to a
+// peripheral multiplexer (mux.go) serving the GPU
+// (gpu), the root counters (timers), the DMA
+// controller (dma), the full CD controller (cd), the
+// full SPU (spu), the MDEC codec (mdec) and the
+// joypad and memory card serial controller (pad),
+// plus the real interrupt controller registers
+// I_STAT and I_MASK. A from-scratch HLE BIOS
+// (bios.go) intercepts the documented call vectors,
+// and PS-X EXE images load through LoadEXE (exe.go).
+// There is no Sony BIOS and no Sony code anywhere in
+// the machine.
 //
 // Execution model (stated in the core README):
 // peripherals advance at instruction boundaries in
@@ -21,10 +27,15 @@
 // mode), so hblank/vblank windows, dotclock ticks and
 // timer sync behavior are computed from the machine's
 // true position, not from free-running approximations.
-// Interrupt sources (VBlank, GPU, CDROM, DMA,
-// TMR0/1/2) latch bits in I_STAT; the CPU external
-// interrupt line follows (I_STAT AND I_MASK) through
-// the CPU's CP0 IP2 path.
+// The CD controller and the SPU advance on the same
+// per-step cycle counts; the SPU synthesizes 44,100 Hz
+// output through an exact ratio accumulator and pulls
+// one CD input sample per output sample from the CD
+// controller. Interrupt sources (VBlank, GPU, CDROM,
+// DMA, TMR0/1/2, PAD, SPU) latch bits in I_STAT; the
+// CPU external interrupt line follows (I_STAT AND
+// I_MASK) through the CPU's CP0 IP2 path, and each
+// latch also delivers the matching BIOS event.
 //
 // Frame budget: the NTSC CPU frame remains the
 // PS1-1 exact rational (33,868,800 x 100 / 5994, so
@@ -44,6 +55,8 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-ps1/chips/r3000a"
 	"github.com/davidpatton/itak-gaming/cores/go-ps1/dma"
 	"github.com/davidpatton/itak-gaming/cores/go-ps1/gpu"
+	"github.com/davidpatton/itak-gaming/cores/go-ps1/mdec"
+	"github.com/davidpatton/itak-gaming/cores/go-ps1/pad"
 	"github.com/davidpatton/itak-gaming/cores/go-ps1/spu"
 	"github.com/davidpatton/itak-gaming/cores/go-ps1/timers"
 )
@@ -95,7 +108,7 @@ const (
 const (
 	cpuHz        = 33_868_800
 	frameRateHz  = 5994 // 59.94 Hz, scaled by 100
-	stateVersion = 2
+	stateVersion = 3
 	miscSize     = 96
 )
 
@@ -120,15 +133,21 @@ type Machine struct {
 	Disc cd.Reader
 
 	GPU    *gpu.GPU
+	GTE    *gte.GTE
 	Timers *timers.Timers
 	DMA    *dma.Controller
 	SPU    *spu.SPU
 	CD     *cd.Controller
+	MDEC   *mdec.MDEC
+	PAD    *pad.Controller
+
+	bios biosState
 
 	istat uint16
 	imask uint16
 
 	buttons   uint32
+	analog    [4]uint8 // rx, ry, lx, ly
 	frame     uint64
 	budgetRem int64
 
@@ -152,25 +171,48 @@ func New() *Machine {
 	m := &Machine{}
 	m.Bus = bus.New()
 	m.GPU = gpu.New()
+	m.GTE = gte.New()
 	m.Timers = timers.New()
 	m.DMA = dma.New()
 	m.SPU = spu.New()
 	m.CD = cd.NewController()
+	m.MDEC = mdec.New()
+	m.PAD = pad.New()
 	m.DMA.Mem = m.Bus
 	m.DMA.Dev = m
+	m.wireIRQCallbacks()
+	m.Bus.SetIODevice(m)
+	m.CPU = r3000a.New(m.Bus)
+	m.CPU.CP2 = m.GTE
+	m.Reset()
+	return m
+}
+
+// wireIRQCallbacks (re)installs the peripheral IRQ
+// callbacks. Reset calls it after the component
+// resets so a component that clears its callback
+// field on reset cannot unwire the machine.
+func (m *Machine) wireIRQCallbacks() {
 	m.DMA.OnIRQ = func() {
 		m.istat |= 1 << IRQDMA
+		m.deliverEvent(evClassDMA, evSpecIRQ)
 		m.updateIRQ()
 	}
 	m.CD.OnIRQ = func() {
 		m.istat |= 1 << IRQCDROM
+		m.deliverEvent(evClassCDROM, evSpecIRQ)
 		m.updateIRQ()
 	}
-	m.Bus.SetIODevice(m)
-	m.CPU = r3000a.New(m.Bus)
-	m.CPU.CP2 = gte.New()
-	m.Reset()
-	return m
+	m.SPU.OnIRQ = func() {
+		m.istat |= 1 << IRQSPU
+		m.deliverEvent(evClassSPU, evSpecIRQ)
+		m.updateIRQ()
+	}
+	m.PAD.OnIRQ = func() {
+		m.istat |= 1 << IRQPAD
+		m.deliverEvent(evClassPAD, evSpecIRQ)
+		m.updateIRQ()
+	}
 }
 
 // LoadDisc inserts a disc image and resets the
@@ -201,13 +243,20 @@ func (m *Machine) Reset() {
 	disc := m.Disc
 	m.Bus.Reset()
 	m.CPU.Reset()
-	m.CPU.CP2 = gte.New()
+	m.GTE = gte.New()
+	m.CPU.CP2 = m.GTE
 	m.GPU.Reset()
 	m.Timers.Reset()
 	m.DMA.Reset()
 	m.SPU.Reset()
 	m.CD.Reset()
 	m.CD.SetDisc(disc)
+	m.MDEC.Reset()
+	m.PAD.Reset()
+	m.bios.reset()
+	m.PAD.SetButtons(m.buttons)
+	m.PAD.SetAnalog(m.analog[0], m.analog[1], m.analog[2], m.analog[3])
+	m.wireIRQCallbacks()
 	m.istat = 0
 	m.imask = 0
 	m.frame = 0
@@ -392,11 +441,20 @@ func (m *Machine) advance(cycles int) {
 
 	if in.VBlankPulse > 0 {
 		m.istat |= 1 << IRQVBlank
+		m.deliverEvent(evClassVBlank, evSpecIRQ)
+		m.deliverEvent(evClassRCntVB, evSpecRCnt)
+		m.fillPadBuffers()
 	}
 	asserted := m.Timers.Advance(in)
 	for i := 0; i < timers.Count; i++ {
 		if asserted&(1<<uint(i)) != 0 {
 			m.istat |= 1 << uint(IRQTMR0+i)
+			class := uint32(evClassTMR0 + i)
+			if i == 2 {
+				class = evClassTMR1 // TMR2 shares TMR1's class (documented quirk)
+			}
+			m.deliverEvent(class, evSpecIRQ)
+			m.deliverEvent(evClassRCnt0+uint32(i), evSpecRCnt)
 		}
 	}
 	// GPU interrupt source is edge-latched from the
@@ -405,6 +463,7 @@ func (m *Machine) advance(cycles int) {
 	irq := m.GPU.IRQRequested()
 	if irq && !m.gpuIRQPrev {
 		m.istat |= 1 << IRQGPU
+		m.deliverEvent(evClassGPU, evSpecIRQ)
 	}
 	m.gpuIRQPrev = irq
 
@@ -413,13 +472,25 @@ func (m *Machine) advance(cycles int) {
 	m.GPU.Field = int(m.displayFrames & 1)
 	m.GPU.OddFrame = m.displayFrames&1 == 1
 
+	// The CD controller's timed work (seek and sector
+	// delivery, playback position) and the SPU run on
+	// the same cycle count. The SPU pulls one CD input
+	// sample per generated output sample.
+	m.CD.Advance(cycles)
+	m.SPU.Advance(cycles, m.CD.PullCDSample)
+
 	m.updateIRQ()
 }
 
-// Step executes one CPU instruction, advances the
+// Step executes one CPU instruction (or one BIOS HLE
+// interception: a call vector, a critical-section
+// syscall, or an event callback frame), advances the
 // peripheral model by its cycles, and returns the
 // cycles consumed.
 func (m *Machine) Step() int {
+	if c, handled := m.stepBIOS(); handled {
+		return c
+	}
 	c := m.CPU.Step()
 	m.advance(c)
 	return c
@@ -464,20 +535,53 @@ func (m *Machine) DisplayWidth() int { return m.GPU.DisplayWidth() }
 // pixels for the current display mode.
 func (m *Machine) DisplayHeight() int { return m.GPU.DisplayHeight() }
 
-// SetButtons stores the digital pad state for port 1.
-func (m *Machine) SetButtons(mask uint32) { m.buttons = mask }
+// SetButtons stores the digital pad state for port 1
+// and forwards it to the pad controller.
+func (m *Machine) SetButtons(mask uint32) {
+	m.buttons = mask
+	m.PAD.SetButtons(mask)
+}
 
 // Buttons returns the stored pad state.
 func (m *Machine) Buttons() uint32 { return m.buttons }
 
+// SetAnalog stores the analog stick positions for
+// port 1 (right stick X/Y, left stick X/Y) and
+// forwards them to the pad controller.
+func (m *Machine) SetAnalog(rx, ry, lx, ly uint8) {
+	m.analog = [4]uint8{rx, ry, lx, ly}
+	m.PAD.SetAnalog(rx, ry, lx, ly)
+}
+
+// Analog returns the stored stick positions
+// (rx, ry, lx, ly).
+func (m *Machine) Analog() (rx, ry, lx, ly uint8) {
+	return m.analog[0], m.analog[1], m.analog[2], m.analog[3]
+}
+
+// AudioBuffer drains the SPU's pending output:
+// interleaved stereo int16 samples at 44,100 Hz.
+func (m *Machine) AudioBuffer() []int16 { return m.SPU.AudioBuffer() }
+
+// AudioSampleRate is the SPU output rate.
+const AudioSampleRate = 44100
+
+// CardImage returns the live 128 KB memory card
+// image (port 1). The pad package owns the protocol;
+// the image is exposed here for persistence by the
+// shell in a later slice.
+func (m *Machine) CardImage() []byte { return m.PAD.CardImage() }
+
 // StateSize returns the exact serialized state size
-// for version 2: version byte, CPU, RAM, scratchpad,
-// GPU, timers, DMA, interrupt controller, SPU, CD
-// controller and the machine misc block.
+// for version 3: version byte, CPU, RAM, scratchpad,
+// GPU, GTE, timers, DMA, interrupt controller, SPU,
+// CD controller, MDEC, pad and card, the BIOS HLE
+// block and the machine misc block.
 func (m *Machine) StateSize() int {
 	return 1 + r3000a.StateSize + bus.RAMSize + bus.ScratchpadSize +
-		gpu.StateSize + timers.StateSize() + dma.StateSize + 4 +
-		spu.StateSize + cd.CtrlStateSize + miscSize
+		gpu.StateSize + gte.StateSize + timers.StateSize() + dma.StateSize + 4 +
+		spu.StateSize + cd.CtrlStateSize + mdec.StateSize + pad.StateSize +
+		biosStateSize + miscSize
 }
 
 // Serialize returns the machine state. The disc image
@@ -496,6 +600,7 @@ func (m *Machine) Serialize() []byte {
 	put(m.Bus.RAM())
 	put(m.Bus.Scratchpad())
 	put(m.GPU.Serialize())
+	put(m.GTE.Serialize())
 	put(m.Timers.Serialize())
 	put(m.DMA.Serialize())
 	{
@@ -508,6 +613,9 @@ func (m *Machine) Serialize() []byte {
 	}
 	put(m.SPU.Serialize())
 	put(m.CD.Serialize())
+	put(m.MDEC.Serialize())
+	put(m.PAD.Serialize())
+	put(m.serializeBIOS())
 	{
 		b := make([]byte, miscSize)
 		put64(b[0:], uint64(m.frame))
@@ -524,6 +632,7 @@ func (m *Machine) Serialize() []byte {
 		put64(b[64:], uint64(m.prevDotTicks))
 		put64(b[72:], uint64(m.prevHBlank))
 		put64(b[80:], uint64(m.prevVBlank))
+		copy(b[88:], m.analog[:])
 		put(b)
 	}
 	return out
@@ -549,6 +658,9 @@ func (m *Machine) Deserialize(in []byte) error {
 	copy(m.Bus.RAM(), take(bus.RAMSize))
 	copy(m.Bus.Scratchpad(), take(bus.ScratchpadSize))
 	m.GPU.Deserialize(take(gpu.StateSize))
+	if err := m.GTE.Deserialize(take(gte.StateSize)); err != nil {
+		return err
+	}
 	m.Timers.Deserialize(take(timers.StateSize()))
 	m.DMA.Deserialize(take(dma.StateSize))
 	{
@@ -560,6 +672,13 @@ func (m *Machine) Deserialize(in []byte) error {
 	if err := m.CD.Deserialize(take(cd.CtrlStateSize)); err != nil {
 		return err
 	}
+	if err := m.MDEC.Deserialize(take(mdec.StateSize)); err != nil {
+		return err
+	}
+	if err := m.PAD.Deserialize(take(pad.StateSize)); err != nil {
+		return err
+	}
+	m.deserializeBIOS(take(biosStateSize))
 	{
 		b := take(miscSize)
 		m.frame = get64(b[0:])
@@ -574,7 +693,10 @@ func (m *Machine) Deserialize(in []byte) error {
 		m.prevDotTicks = int64(get64(b[64:]))
 		m.prevHBlank = int64(get64(b[72:]))
 		m.prevVBlank = int64(get64(b[80:]))
+		copy(m.analog[:], b[88:92])
 	}
+	m.PAD.SetButtons(m.buttons)
+	m.PAD.SetAnalog(m.analog[0], m.analog[1], m.analog[2], m.analog[3])
 	m.updateIRQ()
 	return nil
 }
