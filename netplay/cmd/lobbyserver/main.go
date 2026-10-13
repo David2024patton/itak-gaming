@@ -22,6 +22,7 @@ import (
 	"github.com/davidpatton/itak-gaming/netplay/internal/appdist"
 	"github.com/davidpatton/itak-gaming/netplay/internal/friends"
 	"github.com/davidpatton/itak-gaming/netplay/internal/lobby"
+	"github.com/davidpatton/itak-gaming/netplay/internal/matches"
 	"github.com/davidpatton/itak-gaming/netplay/internal/server"
 	"github.com/davidpatton/itak-gaming/netplay/internal/stats"
 )
@@ -54,17 +55,32 @@ func defaultFriendsFile(statsFile string) string {
 	return filepath.Join(filepath.Dir(statsFile), "friends.json")
 }
 
+// defaultMatchesFile is where tournament results persist: the
+// ITAK_MATCHES_FILE environment variable wins, else a matches.json
+// next to the stats file, alongside the friends file.
+func defaultMatchesFile(statsFile string) string {
+	if p := os.Getenv("ITAK_MATCHES_FILE"); p != "" {
+		return p
+	}
+	return filepath.Join(filepath.Dir(statsFile), "matches.json")
+}
+
 func main() {
 	addr := flag.String("addr", ":8790", "listen address (host:port)")
 	sweepInterval := flag.Duration("sweep", 15*time.Second, "lobby reaper interval")
 	statsFile := flag.String("statsfile", defaultStatsFile(), "path to the global leaderboard stats file")
 	friendsFile := flag.String("friendsfile", "", "path to the friends list file (default: friends.json next to the stats file)")
+	matchesFile := flag.String("matchesfile", "", "path to the tournament results file (default: matches.json next to the stats file)")
 	appDir := flag.String("appdir", defaultAppDir(), "directory with published app builds (version.json + APK) for self-update; empty disables")
 	flag.Parse()
 
 	friendsPath := *friendsFile
 	if friendsPath == "" {
 		friendsPath = defaultFriendsFile(*statsFile)
+	}
+	matchesPath := *matchesFile
+	if matchesPath == "" {
+		matchesPath = defaultMatchesFile(*statsFile)
 	}
 
 	logger := log.New(os.Stdout, "lobbyserver ", log.LstdFlags)
@@ -83,6 +99,13 @@ func main() {
 	friendsStore := friends.Open(friendsPath, logger)
 	friendsHandler := friends.NewHandler(friendsStore, statsStore, store, logger)
 
+	// Tournament results: same binary, same port. Host clients
+	// report match outcomes and champions; the board is served
+	// from memory and persisted to the matches file in the
+	// background, separate from the playtime leaderboard.
+	matchesStore := matches.Open(matchesPath, logger)
+	matchesHandler := matches.NewHandler(matchesStore, statsStore, logger)
+
 	// Reaper: expired lobbies are collected in the background so the
 	// request path never pays for cleanup.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -90,10 +113,12 @@ func main() {
 	go reapLoop(ctx, store, *sweepInterval, logger)
 	go statsStore.SaveLoop(ctx, 10*time.Second)
 	go friendsStore.SaveLoop(ctx, 10*time.Second)
+	go matchesStore.SaveLoop(ctx, 10*time.Second)
 
 	mux := http.NewServeMux()
 	statsHandler.Register(mux)
 	friendsHandler.Register(mux)
+	matchesHandler.Register(mux)
 	if *appDir != "" {
 		appdist.New(*appDir, logger).Register(mux)
 		logger.Printf("app updates served from %s", *appDir)
