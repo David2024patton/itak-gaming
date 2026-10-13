@@ -271,7 +271,7 @@ func (p *PPU) bgSample(mi modeInfo, bg, x, y, w int) sample {
 	}
 	s := sample{layer: bg, opaque: true, rank: rank}
 	if p.bgMode == 3 || p.bgMode == 4 {
-		if bg == 0 && bpp == 8 && p.cgwsel&0x40 != 0 {
+		if bg == 0 && bpp == 8 && p.cgwsel&0x01 != 0 {
 			// Direct color: the 8-bit index is the color,
 			// in the documented BBGGGRRR packing expanded
 			// to 15 bits (low bits zero).
@@ -635,27 +635,46 @@ func (p *PPU) colorWindowInside(x int) bool { return p.windowInside(5, x) }
 
 // mathAt decides the color-math outcome at a pixel.
 // Returns the resulting 15-bit color.
+//
+// CGWSEL ($2130) layout, per the SNES hardware
+// documentation: bits 7-6 select the region where the
+// main screen is forced to black and bits 5-4 select
+// the region where the sub screen is forced
+// transparent, both encoded 0 = nowhere, 1 = outside
+// the color window, 2 = inside the color window,
+// 3 = everywhere. Bit 1 selects the addend (0 = fixed
+// color, 1 = sub screen); bit 0 is the direct color
+// mode used by the 8bpp fetch path, not here. The
+// color window itself comes from WOBJSEL bits 4-7;
+// when it is not enabled, every pixel counts as
+// outside it.
 func (p *PPU) mathAt(main, sub sample, x int) uint16 {
 	mainColor := main.color
 	cw := p.colorWindowInside(x)
-	// Clip to black comes first: the main pixel is black
-	// (and no math happens on it).
-	switch (p.cgwsel >> 0) & 3 {
-	case 1:
-		if !cw {
-			return 0
+	inRegion := func(sel uint8) bool {
+		switch sel {
+		case 1:
+			return !cw
+		case 2:
+			return cw
+		case 3:
+			return true
 		}
-	case 2:
-		if cw {
-			return 0
-		}
-	case 3:
-		return 0
+		return false
+	}
+	// The main screen black region replaces the main
+	// pixel with black before math. Color math can
+	// still apply on the blacked pixel.
+	blacked := inRegion(uint8(p.cgwsel >> 6))
+	if blacked {
+		mainColor = 0
 	}
 	if !main.opaque {
 		// The backdrop: math applies per the backdrop bit.
 		main.layer = 5
-		mainColor = p.cgram[0]
+		if !blacked {
+			mainColor = p.cgram[0]
+		}
 	}
 	// Math enable for the winning main layer.
 	layerBit := uint(main.layer)
@@ -665,49 +684,47 @@ func (p *PPU) mathAt(main, sub sample, x int) uint16 {
 	if p.cgadsb&(1<<layerBit) == 0 {
 		return mainColor
 	}
-	switch (p.cgwsel >> 2) & 3 {
-	case 1:
-		if !cw {
-			return mainColor
-		}
-	case 2:
-		if cw {
-			return mainColor
-		}
-	case 3:
-		return mainColor
-	}
+	// The sub screen transparent region: where it
+	// applies (and where no sub layer produced a
+	// pixel) the sub screen counts as transparent, and
+	// a sub screen addend falls back to the fixed
+	// color.
+	subTransparent := !sub.opaque || inRegion(uint8(p.cgwsel>>4&3))
 	var add uint16
-	if sub.opaque {
+	if p.cgwsel&0x02 != 0 && !subTransparent {
 		add = sub.color
-	} else if p.cgwsel&0x80 != 0 {
-		// The subscreen backdrop is the addend instead of
-		// the fixed color.
-		add = p.cgram[0]
 	} else {
 		add = uint16(p.fixedB)<<10 | uint16(p.fixedG)<<5 | uint16(p.fixedR)
 	}
-	if p.cgadsb&0x40 != 0 { // halve the addend, per channel
-		add = ((add & 0x1F) >> 1) | (((add >> 5) & 0x1F) >> 1 << 5) | (((add >> 10) & 0x1F) >> 1 << 10)
-	}
+	// Halving divides the math result, not the addend,
+	// and is suppressed when the main pixel was forced
+	// black or when a sub screen addend fell back
+	// because the sub screen was transparent.
+	half := p.cgadsb&0x40 != 0 && !blacked && !(p.cgwsel&0x02 != 0 && subTransparent)
 	subMode := p.cgadsb&0x80 != 0
-	r := channelMath(uint(mainColor&0x1F), uint(add&0x1F), subMode)
-	g := channelMath(uint((mainColor>>5)&0x1F), uint((add>>5)&0x1F), subMode)
-	b := channelMath(uint((mainColor>>10)&0x1F), uint((add>>10)&0x1F), subMode)
+	r := channelMath(int(mainColor&0x1F), int(add&0x1F), subMode, half)
+	g := channelMath(int((mainColor>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
+	b := channelMath(int((mainColor>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
 	return uint16(b<<10 | g<<5 | r)
 }
 
-func channelMath(m, a uint, sub bool) uint {
+// channelMath runs one 5-bit channel through the
+// add/subtract, optional halving, and clamp pipeline.
+func channelMath(m, a int, sub, half bool) int {
+	d := m + a
 	if sub {
-		if m < a {
-			return 0
-		}
-		return m - a
+		d = m - a
 	}
-	if m+a > 31 {
+	if half {
+		d >>= 1
+	}
+	if d < 0 {
+		return 0
+	}
+	if d > 31 {
 		return 31
 	}
-	return m + a
+	return d
 }
 
 // RenderLine composes display line y (0-based) into the
