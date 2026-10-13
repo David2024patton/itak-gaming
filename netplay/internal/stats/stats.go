@@ -25,6 +25,10 @@ const (
 	MaxGameChars   = 120
 	// MaxDeviceChars bounds the opaque device ID.
 	MaxDeviceChars = 128
+	// MaxDisplayChars and MaxRegionChars bound the optional
+	// identity strings a report may carry.
+	MaxDisplayChars = 60
+	MaxRegionChars  = 40
 
 	// MaxValue clamps cumulative counters to a sane range (about
 	// 31 years of seconds); anything larger is treated as corrupt
@@ -38,6 +42,11 @@ const (
 // Report is one client's cumulative totals for one player in one
 // game, as kept for that (device, player, game) triple. Clients send
 // totals for the whole history of that triple, never deltas.
+//
+// Display and Region are optional identity extras (a display name
+// with initials, a home state or region) the client attaches so the
+// boards can tell players apart. Older clients omit them; the raw
+// Player name remains the identity and aggregation key either way.
 type Report struct {
 	DeviceID   string `json:"deviceId"`
 	Player     string `json:"player"`
@@ -45,15 +54,21 @@ type Report struct {
 	Plays      int    `json:"plays"`
 	Seconds    int    `json:"seconds"`
 	LastPlayed int64  `json:"lastPlayed"` // unix milliseconds
+	Display    string `json:"display,omitempty"`
+	Region     string `json:"region,omitempty"`
 }
 
 // PlayerStat is one row of the players leaderboard: a player name
-// aggregated across every device that reported it.
+// aggregated across every device that reported it. Display and
+// Region carry the identity from that player's most recent report
+// that included them.
 type PlayerStat struct {
 	Player  string `json:"player"`
 	Seconds int    `json:"seconds"`
 	Plays   int    `json:"plays"`
 	Games   int    `json:"games"` // distinct games played
+	Display string `json:"display,omitempty"`
+	Region  string `json:"region,omitempty"`
 }
 
 // GameStat is one row of the games leaderboard: a game aggregated
@@ -72,4 +87,6 @@ type RecentEntry struct {
 	Game       string `json:"game"`
 	LastPlayed int64  `json:"lastPlayed"` // unix milliseconds
 	Seconds    int    `json:"seconds"`
+	Display    string `json:"display,omitempty"`
+	Region     string `json:"region,omitempty"`
 }
