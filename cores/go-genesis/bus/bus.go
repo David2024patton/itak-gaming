@@ -4,6 +4,11 @@
 //
 //	0x000000-0x3FFFFF cartridge ROM (bank SRAM window at 0x200000+ when the
 //	                  cart has SRAM and ROM is switched out via 0xA130F1)
+//	                  With a Sega CD attached (AttachCD), three CD windows
+//	                  decode inside and above this space instead: main CPU
+//	                  Word RAM at 0x200000-0x23FFFF, the banked PRG-RAM
+//	                  window at 0x420000-0x43FFFF, and the 2M Word RAM
+//	                  window at 0x600000-0x63FFFF
 //	0xA00000-0xA07FFF Z80 address space window
 //	0xA04000-0xA04003 YM2612
 //	0xA06000          bank register mirror (Z80 view handles the real one)
@@ -210,6 +215,17 @@ func (b *Bus) writeROMByte(addr uint32, val uint8) {
 func (b *Bus) Read8(addr uint32) uint8 {
 	addr &= 0xFFFFFF
 	switch {
+	case b.cd != nil && addr >= 0x200000 && addr < 0x240000:
+		// Sega CD main CPU Word RAM window (1M halves / 2M owner view).
+		return b.cd.MainWordRead8(addr)
+	case b.cd != nil && addr >= 0x420000 && addr < 0x440000:
+		// Sega CD PRG-RAM bank window (128 KB, bank from the gate
+		// array memory mode register).
+		return b.cd.MainPRGRead8(addr)
+	case b.cd != nil && addr >= 0x600000 && addr < 0x640000:
+		// Sega CD 2M Word RAM window: the same main view as the
+		// 0x200000 window, decoded at its documented 2M address.
+		return b.cd.MainWordRead8(addr - 0x400000)
 	case addr < 0x400000:
 		return b.readROMByte(addr)
 	case addr >= 0xE00000:
@@ -287,6 +303,13 @@ func (b *Bus) Read32(addr uint32) uint32 {
 func (b *Bus) Write8(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
 	switch {
+	case b.cd != nil && addr >= 0x200000 && addr < 0x240000:
+		b.cd.MainWordWrite8(addr, val)
+	case b.cd != nil && addr >= 0x420000 && addr < 0x440000:
+		// PRG-RAM bank window; the unit enforces write protection.
+		b.cd.MainPRGWrite8(addr, val)
+	case b.cd != nil && addr >= 0x600000 && addr < 0x640000:
+		b.cd.MainWordWrite8(addr-0x400000, val)
 	case addr < 0x400000:
 		b.writeROMByte(addr, val)
 	case addr >= 0xE00000:
