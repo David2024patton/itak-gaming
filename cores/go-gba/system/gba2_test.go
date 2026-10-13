@@ -218,11 +218,11 @@ func TestKeypadRegister(t *testing.T) {
 	}
 }
 
-// TestStateVersion3 checks the v3 state shape: version
-// byte 3, exact size, and a v2-shaped input rejected
-// (the GBA-3 sound unit state joined the layout, so the
-// older formats no longer load).
-func TestStateVersion3(t *testing.T) {
+// TestStateVersion4 checks the v4 state shape: version
+// byte 4, exact size, and a v3-shaped input rejected
+// (the GBA-4 cartridge save device block joined the
+// layout, so the older formats no longer load).
+func TestStateVersion4(t *testing.T) {
 	m := New()
 	if err := m.LoadCart(irqSceneROM()); err != nil {
 		t.Fatalf("LoadCart: %v", err)
@@ -232,12 +232,12 @@ func TestStateVersion3(t *testing.T) {
 	if len(s) != m.StateSize() {
 		t.Fatalf("state size = %d, StateSize = %d", len(s), m.StateSize())
 	}
-	if s[0] != stateVersion || stateVersion != 3 {
-		t.Fatalf("version byte = %d, want 3", s[0])
+	if s[0] != stateVersion || stateVersion != 4 {
+		t.Fatalf("version byte = %d, want 4", s[0])
 	}
-	v2 := append([]byte{}, s...)
-	v2[0] = 2
-	if err := m.Deserialize(v2); err == nil {
-		t.Fatal("Deserialize accepted a version 2 state under the v3 format")
+	v3 := append([]byte{}, s...)
+	v3[0] = 3
+	if err := m.Deserialize(v3); err == nil {
+		t.Fatal("Deserialize accepted a version 3 state under the v4 format")
 	}
 }
