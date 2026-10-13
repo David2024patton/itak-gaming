@@ -28,6 +28,7 @@ import (
 	"github.com/davidpatton/itak-gaming/cores/go-gba/chips/arm7tdmi"
 	"github.com/davidpatton/itak-gaming/cores/go-gba/gpu"
 	"github.com/davidpatton/itak-gaming/cores/go-gba/periph"
+	"github.com/davidpatton/itak-gaming/cores/go-gba/save"
 )
 
 // Width and Height are the framebuffer dimensions, in the
@@ -74,8 +75,12 @@ const (
 // 3 covers the CPU state, the bus stores, the GBA-2
 // component states (PPU, interrupt controller, timers,
 // DMA, keypad, BIOS wait state), the GBA-3 sound unit
-// state, and the machine trailer.
-const stateVersion = 3
+// state, and the machine trailer. Version 4 adds the
+// GBA-4 cartridge save device block (contents and
+// protocol state, see the save package) between the
+// sound unit block and the trailer; version 3 states are
+// refused, as version 2 states were before them.
+const stateVersion = 4
 
 // machineTrailerSize is the fixed trailer behind the
 // component blocks: buttons, current line, and the FIFO
@@ -95,6 +100,14 @@ type Machine struct {
 	keys   *periph.Keypad
 	apu    *apu.APU
 	biosH  *bios.Handler
+
+	// dev is the cartridge save device (flash or EEPROM,
+	// per the cartridge's detected kind), installed
+	// behind the bus save hooks. SRAM and signature-less
+	// cartridges leave it without a window to serve; their
+	// contents live in the bus SRAM store.
+	dev        *save.Device
+	devROMSize int
 
 	buttons uint32
 	line    int
@@ -152,6 +165,31 @@ func (m *Machine) power() {
 	m.cpu.SWIHook = m.biosH.Hook
 	m.bus.IORead = m.ioRead
 	m.bus.IOWrite = m.ioWrite
+	// The cartridge save device. Contents survive a
+	// machine reset (a battery does not empty when the
+	// console resets), so the device is rebuilt only when
+	// the cartridge or its ROM image changes; a plain
+	// reset keeps the device and just idles its protocol.
+	kind := cart.SaveNone
+	romSize := 0
+	if m.cart != nil {
+		kind = m.cart.SaveKind
+		romSize = len(m.cart.ROM)
+	}
+	if m.dev == nil || m.dev.Kind() != kind || m.devROMSize != romSize {
+		m.dev = save.New(kind, romSize)
+		m.devROMSize = romSize
+	} else {
+		m.dev.ResetProtocol()
+	}
+	m.bus.SaveRead = m.saveRead
+	m.bus.SaveWrite = m.saveWrite
+	if kind == cart.SaveSRAM || kind == cart.SaveNone {
+		// A 32 KB battery part (and the signature-less
+		// fallback window): the upper half of the window
+		// mirrors the lower half.
+		m.bus.SRAMMask = save.SRAMSize - 1
+	}
 	// The stack pointers the BIOS boot stub also sets,
 	// preset here so a CPU primed directly at the
 	// cartridge entry (as tools and tests do) still sees
@@ -271,6 +309,86 @@ func (m *Machine) ioWrite(off uint32, size int, val uint32) bool {
 	return true
 }
 
+// Save device hooks and the frontend save interface.
+
+// saveRead gives the save device first claim on its
+// windows: the top of the map for flash, the 0x0D window
+// (when the EEPROM window rule activates the address)
+// for EEPROM. Anything else falls through to the bus.
+func (m *Machine) saveRead(addr uint32, size int) (uint32, bool) {
+	switch addr >> 24 {
+	case 0x0E, 0x0F:
+		if m.dev.IsFlash() {
+			return m.dev.FlashRead(addr, size), true
+		}
+	case 0x0D:
+		if m.dev.EEPROMActive(addr) {
+			return m.dev.EEPROMRead(), true
+		}
+	}
+	return 0, false
+}
+
+// saveWrite is the write half of saveRead. EEPROM writes
+// clock one protocol bit per access, so DMA driven
+// transfers (one bus access per unit) work unchanged.
+func (m *Machine) saveWrite(addr uint32, size int, val uint32) bool {
+	switch addr >> 24 {
+	case 0x0E, 0x0F:
+		if m.dev.IsFlash() {
+			m.dev.FlashWrite(addr, val)
+			return true
+		}
+	case 0x0D:
+		if m.dev.EEPROMActive(addr) {
+			m.dev.EEPROMWrite(val)
+			return true
+		}
+	}
+	return false
+}
+
+// SaveRAM returns a copy of the cartridge's save
+// contents, sized by the detected save kind: 32 KB for
+// SRAM, 64 or 128 KB for flash, 512 bytes or 8 KB for
+// EEPROM (the size the device has identified). A
+// cartridge without a save signature gets the fallback
+// window: plain 32 KB SRAM behind the save window, which
+// is what signature-less homebrew (for example Anguna)
+// expects to find there. With no cartridge loaded it
+// returns nil.
+func (m *Machine) SaveRAM() []byte {
+	if m.cart == nil {
+		return nil
+	}
+	if m.dev.IsFlash() || m.dev.IsEEPROM() {
+		return m.dev.SaveRAM()
+	}
+	out := make([]byte, save.SRAMSize)
+	copy(out, m.bus.SRAM[:save.SRAMSize])
+	return out
+}
+
+// SetSaveRAM loads save contents saved earlier, the
+// counterpart of SaveRAM. Contents for the wrong family
+// or of an unrecognized length are ignored (see the
+// save package for the exact acceptance rules); SRAM
+// images shorter than 32 KB load with the rest zeroed.
+func (m *Machine) SetSaveRAM(b []byte) {
+	if m.dev.IsFlash() || m.dev.IsEEPROM() {
+		m.dev.SetSaveRAM(b)
+		return
+	}
+	for i := 0; i < save.SRAMSize; i++ {
+		m.bus.SRAM[i] = 0
+	}
+	copy(m.bus.SRAM[:save.SRAMSize], b)
+}
+
+// SaveDevice returns the cartridge save device, for
+// tools and tests.
+func (m *Machine) SaveDevice() *save.Device { return m.dev }
+
 // Execution.
 
 // runCPU steps the CPU for the given cycle budget,
@@ -278,13 +396,16 @@ func (m *Machine) ioWrite(off uint32, size int, val uint32) bool {
 // each step reports (timer overflows reach the sound
 // unit through the timers' OnOverflow hook, and the
 // sound unit then advances by the same count) and
-// keeping the CPU's IRQ input level current. A CPU
-// halted in a BIOS wait is polled so the wait can end as
-// soon as its wake condition lands.
+// keeping the CPU's IRQ input level current. A BIOS wait
+// in progress is polled on every step, not just while the
+// CPU is halted: the wait completes through the IRQ
+// dispatcher, and the handler's Poll watches both the
+// halted side and the return from dispatch (see
+// bios.Handler.Poll).
 func (m *Machine) runCPU(cycles int) {
 	spent := 0
 	for spent < cycles {
-		if m.cpu.Halted {
+		if m.biosH.Waiting() {
 			m.biosH.Poll(m.cpu)
 		}
 		m.cpu.IRQLine = m.irq.Asserted()
@@ -377,14 +498,15 @@ func (m *Machine) Buttons() uint32 { return m.buttons }
 // state: the version byte, the CPU block, the seven bus
 // stores, the component blocks (PPU, interrupt
 // controller, timers, DMA, keypad, BIOS wait state,
-// sound unit), and the machine trailer.
+// sound unit), the cartridge save device block, and the
+// machine trailer.
 func (m *Machine) StateSize() int {
 	return 1 + arm7tdmi.StateSize +
 		bus.EWRAMSize + bus.IWRAMSize + bus.SRAMSize +
 		bus.PaletteSize + bus.VRAMSize + bus.OAMSize + bus.IOSize +
 		gpu.StateSize + periph.IRQStateSize + periph.TimersStateSize +
 		periph.DMAStateSize + periph.KeypadStateSize + bios.HandlerStateSize +
-		apu.StateSize +
+		apu.StateSize + save.StateSize +
 		machineTrailerSize
 }
 
@@ -411,6 +533,7 @@ func (m *Machine) Serialize() []byte {
 	off += m.keys.Serialize(out[off:])
 	off += m.biosH.Serialize(out[off:])
 	off += m.apu.Serialize(out[off:])
+	off += m.dev.Serialize(out[off:])
 	binary.LittleEndian.PutUint32(out[off:], m.buttons)
 	off += 4
 	binary.LittleEndian.PutUint32(out[off:], uint32(m.line))
@@ -428,7 +551,7 @@ func (m *Machine) Serialize() []byte {
 
 // Deserialize restores a state produced by Serialize.
 // The input must be exactly StateSize bytes and carry
-// the current version; version 1 states are rejected by
+// the current version; older versions are rejected by
 // that check, as in the sibling cores. The memory stores
 // and components are restored before the CPU, because
 // the CPU's Deserialize re-fetches its executing
@@ -459,6 +582,7 @@ func (m *Machine) Deserialize(in []byte) error {
 		{periph.KeypadStateSize, m.keys.Deserialize},
 		{bios.HandlerStateSize, m.biosH.Deserialize},
 		{apu.StateSize, m.apu.Deserialize},
+		{save.StateSize, m.dev.Deserialize},
 	}
 	for _, b := range blocks {
 		if !b.load(in[off : off+b.size]) {
