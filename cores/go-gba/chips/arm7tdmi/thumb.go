@@ -237,7 +237,15 @@ func (c *CPU) execThumb(op uint16) int {
 	case op>>12 == 13:
 		cond := uint32((op >> 8) & 0xF)
 		if cond == 0xF {
-			// SWI in Thumb state: LR_svc is A+2.
+			// SWI in Thumb state: the system hook (BIOS HLE)
+			// gets first refusal with the 8-bit comment field;
+			// unhandled calls take the real exception, whose
+			// LR_svc is A+2.
+			if c.SWIHook != nil {
+				if n, ok := c.SWIHook(c, uint32(op&0xFF)); ok {
+					return n
+				}
+			}
 			return c.exception(0x08, ModeSVC, addr+2)
 		}
 		// Condition 14, undefined in the Thumb encoding, is
