@@ -262,6 +262,47 @@ func (s *Session) watchNoteLocked(e envelope) {
 		s.notePeerChat(from, e.Text)
 	case "offer", "answer", "ice":
 		s.notePeerSignal(e)
+	case "match_end":
+		// The match is over; the room is not (section 4.9).
+		// The watcher falls back to the room with everyone
+		// else: reconstruction state is cleared, the seat
+		// holders stay known, and a snapshot is owed so the
+		// next match has the same landing the first one did.
+		// Only the two players can end a match: an envelope
+		// stamped by another spectator is not believed, and
+		// an unstamped one is a player from before sender
+		// stamps, so it is.
+		fromPlayer := e.From == "" ||
+			(s.watchHost != "" && e.From == s.watchHost) ||
+			(s.watchGuest != "" && e.From == s.watchGuest) ||
+			(s.watchHost == "" && s.watchGuest == "")
+		if s.ended || !fromPlayer {
+			break
+		}
+		s.matchEndReason = e.Reason
+		s.matchEndSet = true
+		s.watchLive = false
+		s.watchIn1 = make(map[int]uint16)
+		s.watchIn2 = make(map[int]uint16)
+		s.watchFrame = 0
+		s.watchSnapFrame = -1
+		s.watchNeutralUntil = 0
+		s.watchMaxPair = 0
+		s.watchSnapPending = false
+		s.snapBuf = nil
+		s.snapWant, s.snapChunks, s.snapGot, s.snapFrame = 0, 0, 0, 0
+		s.snapReady = false
+		s.snapFrom = ""
+		s.watchNeedSync = true
+		s.lastWatchSync = time.Time{}
+		s.lastWatchStep = time.Now()
+	case "seat_assign":
+		// Seat calls are the host referee's (section 4.9).
+		// The watcher records them on the known host's stamp
+		// alone; anyone else's call is not the referee's.
+		if s.watchHost != "" && e.From == s.watchHost {
+			s.noteSeatAssignLocked(e.Player, e.Seat)
+		}
 	case "peer_left":
 		switch e.Role {
 		case "host":
@@ -366,6 +407,8 @@ func (s *Session) WatchStep() (p1, p2 uint16, frame int, ok bool) {
 	s.mu.Lock()
 	frame = s.watchFrame
 	live := s.watchLive && !s.ended
+	ended := s.ended
+	needSync := s.watchNeedSync
 	var m1, m2 uint16
 	have := false
 	if live {
@@ -395,10 +438,17 @@ func (s *Session) WatchStep() (p1, p2 uint16, frame int, ok bool) {
 	s.mu.Unlock()
 
 	if !have {
-		// Fallen far behind the live edge: a fresh snapshot
-		// is cheaper than grinding through the backlog.
-		if live && (behind > watchBehindFrames || stuckOnSnap) &&
+		// A snapshot is owed (the last match ended and the
+		// next needs its landing), or we have fallen far
+		// behind the live edge and a fresh snapshot is
+		// cheaper than grinding through the backlog.
+		if !ended && (needSync || (live && (behind > watchBehindFrames || stuckOnSnap))) &&
 			time.Since(lastSync) > watchSyncThrottle {
+			if needSync {
+				s.mu.Lock()
+				s.watchNeedSync = false
+				s.mu.Unlock()
+			}
 			_ = s.sendWatchSync()
 		}
 		return 0, 0, frame, false
