@@ -37,6 +37,24 @@ func (s *Session) reader() {
 		}
 		s.mu.Lock()
 		s.lastPeerMsg = time.Now()
+		if s.watch {
+			// A spectator session reads the whole room; its
+			// dispatch lives in watch.go.
+			s.watchNoteLocked(e)
+			s.mu.Unlock()
+			s.signal()
+			continue
+		}
+		// Sender filtering (PROTOCOL.md section 4.8): with
+		// spectators in the room, this socket also carries
+		// frames from people who are not the peer. Game
+		// critical envelopes count only when they come from
+		// the peer. Senders stamp "from" (see sendEnv); an
+		// empty from is an older client and is always
+		// accepted, and before the peer's name is known
+		// nothing is filtered, so a pre-spectator session is
+		// handled exactly as it always was.
+		fromPeer := s.peerName == "" || e.From == "" || e.From == s.peerName
 		switch e.Type {
 		case "peer_joined":
 			s.peerJoined = true
@@ -45,32 +63,60 @@ func (s *Session) reader() {
 				s.peerPresentAt = time.Now()
 			}
 		case "hello":
-			s.peerName = e.Player
-			if !s.peerPresent {
-				s.peerPresent = true
-				s.peerPresentAt = time.Now()
+			// A spectator's hello (role "spectator") never
+			// names our peer, and once the peer is known a
+			// hello from anyone else cannot rename them.
+			if e.Role == "spectator" {
+				break
+			}
+			if s.peerName == "" || e.From == "" || e.From == s.peerName {
+				s.peerName = e.Player
+				if !s.peerPresent {
+					s.peerPresent = true
+					s.peerPresentAt = time.Now()
+				}
 			}
 		case "ready":
-			s.peerReady = true
-			if !s.peerPresent {
-				s.peerPresent = true
-				s.peerPresentAt = time.Now()
+			if fromPeer {
+				s.peerReady = true
+				if !s.peerPresent {
+					s.peerPresent = true
+					s.peerPresentAt = time.Now()
+				}
 			}
 		case "countdown":
-			if e.EndsAt > 0 {
+			if fromPeer && e.EndsAt > 0 {
 				s.countdownEnds = time.UnixMilli(e.EndsAt)
 			}
 		case "pause":
-			s.peerPaused = e.Paused
+			if fromPeer {
+				s.peerPaused = e.Paused
+			}
 		case "chat":
 			// Recorded for the UI only. Chat must never touch
-			// lockstep state (see chat.go).
-			s.notePeerChat(e.Text)
+			// lockstep state (see chat.go). Anyone in the room
+			// may speak; the sender stamp says who did.
+			from := e.From
+			if from == "" {
+				from = s.peerName
+			}
+			s.notePeerChat(from, e.Text)
 		case "offer", "answer", "ice":
 			// Voice signaling, queued for the UI layer only.
 			// Like chat, it must never touch lockstep state
 			// (see signal.go).
 			s.notePeerSignal(e)
+		case "watch_sync":
+			// A spectator asking for a snapshot (watch.go).
+			// Not game traffic: anyone may ask, the bridge
+			// decides whether to answer.
+			name := e.From
+			if name == "" {
+				name = e.Player
+			}
+			if name != "" {
+				s.noteWatchSyncLocked(name)
+			}
 		case "peer_left":
 			if s.phase == phaseRoom {
 				// Still in the waiting room: the seat simply
@@ -91,53 +137,45 @@ func (s *Session) reader() {
 			s.ended = true
 			s.endErr = errors.New("the host closed the lobby")
 		case "session_offer":
-			cp := e
-			s.offer = &cp
+			if fromPeer {
+				cp := e
+				s.offer = &cp
+			}
 		case "session_accept":
-			cp := e
-			s.accept = &cp
+			if fromPeer {
+				cp := e
+				s.accept = &cp
+			}
 		case "session_reject":
-			s.reject = e.Reason
+			if fromPeer {
+				s.reject = e.Reason
+			}
 		case "input":
-			s.remoteIn[e.Frame] = e.Buttons
+			if fromPeer {
+				s.remoteIn[e.Frame] = e.Buttons
+			}
 		case "state_hash":
-			s.remoteHash[e.Frame] = e.Hash
+			if fromPeer {
+				s.remoteHash[e.Frame] = e.Hash
+			}
 		case "resync_request":
 			// Ignore requests for desyncs already healed: their
 			// snapshot frame is at or below the last completed one.
-			if s.cfg.IsHost && e.Frame >= s.lastResyncFrame {
+			if fromPeer && s.cfg.IsHost && e.Frame >= s.lastResyncFrame {
 				s.resyncPending = true
 				s.resyncReqFrame = e.Frame
 			}
-		case "snapshot_begin":
-			s.snapBuf = nil
-			s.snapWant = e.Bytes
-			s.snapChunks = e.Chunks
-			s.snapGot = 0
-			s.snapFrame = e.Frame
-			s.snapReady = false
-		case "snapshot_chunk":
-			if e.Seq == s.snapGot {
-				data, err := base64.StdEncoding.DecodeString(e.Data)
-				if err == nil {
-					s.snapBuf = append(s.snapBuf, data...)
-					s.snapGot++
-				}
-			}
-		case "snapshot_end":
-			if s.snapGot == s.snapChunks && len(s.snapBuf) == s.snapWant {
-				sum := sha256.Sum256(s.snapBuf)
-				if hex.EncodeToString(sum[:]) == e.SHA256 {
-					s.snapReady = true
-				}
-			}
+		case "snapshot_begin", "snapshot_chunk", "snapshot_end":
+			s.noteSnapshotLocked(e)
 		case "snapshot_applied":
-			if e.Frame > s.snapApplied {
+			if fromPeer && e.Frame > s.snapApplied {
 				s.snapApplied = e.Frame
 			}
 		case "session_end":
-			s.ended = true
-			s.endErr = fmt.Errorf("the other player ended the session: %s", e.Reason)
+			if fromPeer {
+				s.ended = true
+				s.endErr = fmt.Errorf("the other player ended the session: %s", e.Reason)
+			}
 		}
 		s.mu.Unlock()
 		s.signal()
@@ -183,21 +221,82 @@ func (s *Session) checkEnded() error {
 	return nil
 }
 
-func (s *Session) takeSnapshot() ([]byte, int) {
+// takeSnapshot drains the assembled snapshot, returning its
+// bytes, its frame, and who sent it (so the reply can be
+// addressed back, section 4.4).
+func (s *Session) takeSnapshot() ([]byte, int, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	buf := s.snapBuf
 	frame := s.snapFrame
+	from := s.snapFrom
 	s.snapBuf = nil
 	s.snapReady = false
-	return buf, frame
+	s.snapFrom = ""
+	return buf, frame, from
 }
 
-// sendSnapshot chunks a save state per PROTOCOL.md section 4.4.
+// noteSnapshotLocked folds one snapshot envelope into the
+// assembly state. Called by the reader with s.mu held. A
+// transfer addressed to another room member (a nonempty "to"
+// that is not us) is ignored envelope by envelope: several
+// transfers can share one room (a desync resync to the guest,
+// a watch answer to a spectator), and each receiver assembles
+// only its own. An empty "to" is the pre-spectator behavior
+// and is always assembled.
+func (s *Session) noteSnapshotLocked(e envelope) {
+	if e.To != "" && e.To != s.cfg.PlayerName {
+		return
+	}
+	switch e.Type {
+	case "snapshot_begin":
+		s.snapBuf = nil
+		s.snapWant = e.Bytes
+		s.snapChunks = e.Chunks
+		s.snapGot = 0
+		s.snapFrame = e.Frame
+		s.snapReady = false
+		s.snapFrom = e.From
+	case "snapshot_chunk":
+		if e.Seq == s.snapGot {
+			data, err := base64.StdEncoding.DecodeString(e.Data)
+			if err == nil {
+				s.snapBuf = append(s.snapBuf, data...)
+				s.snapGot++
+			}
+		}
+	case "snapshot_end":
+		if s.snapGot == s.snapChunks && len(s.snapBuf) == s.snapWant {
+			sum := sha256.Sum256(s.snapBuf)
+			if hex.EncodeToString(sum[:]) == e.SHA256 {
+				s.snapReady = true
+			}
+		}
+	}
+}
+
+// sendSnapshot chunks a save state per PROTOCOL.md section
+// 4.4, addressed to the peer. Guest side of the resync and
+// starting-snapshot paths; SendSnapshotTo (watch.go) is the
+// same delivery aimed at a spectator.
 func (s *Session) sendSnapshot(frame int, state []byte) error {
+	s.mu.Lock()
+	to := s.peerName
+	s.mu.Unlock()
+	return s.deliverSnapshot(frame, state, to)
+}
+
+// deliverSnapshot sends one snapshot transfer addressed to
+// the named room member (empty name: unaddressed, the
+// pre-spectator behavior). The transfer is serialized on
+// snapMu so two transfers never interleave their chunks.
+func (s *Session) deliverSnapshot(frame int, state []byte, to string) error {
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
 	chunks := (len(state) + snapshotChunkBytes - 1) / snapshotChunkBytes
 	if err := s.sendEnv(envelope{
-		Type: "snapshot_begin", Frame: frame, Bytes: len(state), Chunks: chunks,
+		Type: "snapshot_begin", Frame: frame, Bytes: len(state),
+		Chunks: chunks, To: to,
 	}); err != nil {
 		return err
 	}
@@ -208,7 +307,7 @@ func (s *Session) sendSnapshot(frame int, state []byte) error {
 			hi = len(state)
 		}
 		if err := s.sendEnv(envelope{
-			Type: "snapshot_chunk", Seq: i,
+			Type: "snapshot_chunk", Seq: i, To: to,
 			Data: base64.StdEncoding.EncodeToString(state[lo:hi]),
 		}); err != nil {
 			return err
@@ -216,7 +315,7 @@ func (s *Session) sendSnapshot(frame int, state []byte) error {
 	}
 	sum := sha256.Sum256(state)
 	return s.sendEnv(envelope{
-		Type: "snapshot_end", SHA256: hex.EncodeToString(sum[:]),
+		Type: "snapshot_end", SHA256: hex.EncodeToString(sum[:]), To: to,
 	})
 }
 
@@ -417,7 +516,7 @@ func (s *Session) guestResync() error {
 	if err := s.checkEnded(); err != nil {
 		return err
 	}
-	state, frame := s.takeSnapshot()
+	state, frame, from := s.takeSnapshot()
 	dbg("guestResync got snapshot frame=%d bytes=%d", frame, len(state))
 	if err := s.core.LoadState(state); err != nil {
 		return fmt.Errorf("loading resync snapshot: %w", err)
@@ -427,7 +526,7 @@ func (s *Session) guestResync() error {
 	s.mu.Unlock()
 	s.clearInputWindow(frame)
 	s.prefillNeutral(frame)
-	return s.sendEnv(envelope{Type: "snapshot_applied", Frame: frame})
+	return s.sendEnv(envelope{Type: "snapshot_applied", Frame: frame, To: from})
 }
 
 // clearInputWindow drops queued inputs inside the neutral window
@@ -458,6 +557,17 @@ func (s *Session) Desyncs() int {
 // End politely closes the session.
 func (s *Session) End(reason string) {
 	_ = s.sendEnv(envelope{Type: "session_end", Reason: reason})
+	s.mu.Lock()
+	s.ended = true
+	s.mu.Unlock()
+	s.signal()
+	_ = s.t.Close()
+}
+
+// Close tears the session down without a polite envelope.
+// Watch sessions use it: a spectator must never send session
+// traffic, not even a session_end.
+func (s *Session) Close() {
 	s.mu.Lock()
 	s.ended = true
 	s.mu.Unlock()
