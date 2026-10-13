@@ -27,6 +27,14 @@ func (im *Image) dataTrack() (trackState, error) {
 	return trackState{}, fmt.Errorf("cd: image has no data track")
 }
 
+// ReadLogicalSector reads the user data of the sector at position
+// lba relative to the start of the first data track. It is the
+// exported form of readLogicalSector, for the system boot code,
+// which loads the initial program from the start of the data area.
+func (im *Image) ReadLogicalSector(lba int) ([]byte, error) {
+	return im.readLogicalSector(lba)
+}
+
 // readLogicalSector reads the user data of the sector at position lba
 // relative to the start of the first data track.
 func (im *Image) readLogicalSector(lba int) ([]byte, error) {
