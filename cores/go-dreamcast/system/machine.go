@@ -72,8 +72,10 @@ type PadState struct {
 // Maple state (including the VMU images), the G2 DMA state, and
 // a small machine tail (the AICA clock accumulator remainder
 // and the Maple vblank trigger edge state) after the DC-2
-// sections.
-const stateVersion = 0x03
+// sections. Version 4 (DC-4) appends the BIOS HLE block (the
+// boot flag, the GD request queue, and the unimplemented-call
+// diagnostics) after the machine tail.
+const stateVersion = 0x04
 
 // machineTailSize is the size of the trailing machine block:
 // the AICA clock accumulator remainder (u64) and the Maple
@@ -116,6 +118,7 @@ type Machine struct {
 	framebuffer []uint32
 	pad         PadState
 	discPath    string
+	bios        biosState
 
 	// aicaAcc is the numerator remainder of the SH-4 to AICA
 	// master cycle conversion (denominator 2000000).
@@ -219,7 +222,7 @@ func (m *Machine) RunFrame() {
 		if chunk <= 0 || chunk > remaining {
 			chunk = remaining
 		}
-		m.CPU.Run(chunk)
+		m.stepCycles(chunk)
 		m.PVR.Advance(chunk)
 		m.advanceAICA(chunk)
 		m.pollMapleTrigger()
@@ -227,6 +230,29 @@ func (m *Machine) RunFrame() {
 	}
 	m.PVR.Present(m.framebuffer, Width, Height)
 }
+
+// stepCycles executes n flat-model cycles of SH-4 code. Each
+// cycle is one instruction step (the DC-1 model charges every
+// instruction one cycle), and each step first offers the
+// program counter to the BIOS HLE: a PC sitting on a handler
+// stub is a syscall, serviced in Go (see bios.go). A serviced
+// syscall still costs its one cycle.
+func (m *Machine) stepCycles(n int) {
+	for i := 0; i < n; i++ {
+		if m.stepBIOS() {
+			continue
+		}
+		m.CPU.Step()
+	}
+}
+
+// SystemRAM returns the machine's 16 MB main RAM, the
+// RETRO_MEMORY_SYSTEM_RAM block for the shell.
+func (m *Machine) SystemRAM() []byte { return m.Bus.RAM }
+
+// VMUImage returns the live 128 KB storage image of port 0's
+// VMU, the RETRO_MEMORY_SAVE_RAM block for the shell.
+func (m *Machine) VMUImage() []byte { return m.Maple.VMUImage(0) }
 
 // advanceAICA converts a span of SH-4 cycles to AICA master
 // cycles with the exact ratio 225792/2000000 and steps the sound
@@ -288,7 +314,7 @@ func (m *Machine) fixedStateSize() int {
 		len(m.Bus.RAM) + len(m.Bus.VRAM) + len(m.Bus.Flash) + len(m.Bus.AICARAM) +
 		holly.SerializeSize +
 		aica.SerializeSize + maple.SerializeSize + g2dma.SerializeSize +
-		machineTailSize
+		machineTailSize + biosStateSize
 }
 
 // StateSize is the exact byte size of a serialized machine state
@@ -299,7 +325,7 @@ func (m *Machine) StateSize() int {
 
 // Serialize captures the whole machine state. Layout:
 //
-//	byte 0        version (0x03)
+//	byte 0        version (0x04)
 //	bytes 1..     CPU state (sh4.SerializeSize bytes)
 //	then          main RAM   (len(Bus.RAM) bytes)
 //	then          VRAM       (len(Bus.VRAM) bytes)
@@ -311,6 +337,7 @@ func (m *Machine) StateSize() int {
 //	then          Maple state (maple.SerializeSize bytes)
 //	then          G2 DMA state (g2dma.SerializeSize bytes)
 //	then          machine tail (machineTailSize bytes)
+//	then          BIOS HLE block (biosStateSize bytes, DC-4)
 //
 // The register stub storage of the remaining stub ranges is not
 // part of the state: those registers have no behaviour yet, so
@@ -344,6 +371,8 @@ func (m *Machine) Serialize() []byte {
 	if m.vblankOut {
 		binary.LittleEndian.PutUint64(out[off+8:], 1)
 	}
+	off += machineTailSize
+	copy(out[off:], m.serializeBIOS())
 	return out
 }
 
@@ -399,5 +428,7 @@ func (m *Machine) Deserialize(b []byte) bool {
 	off += g2dma.SerializeSize
 	m.aicaAcc = binary.LittleEndian.Uint64(b[off:])
 	m.vblankOut = binary.LittleEndian.Uint64(b[off+8:]) != 0
+	off += machineTailSize
+	m.deserializeBIOS(b[off : off+biosStateSize])
 	return true
 }
