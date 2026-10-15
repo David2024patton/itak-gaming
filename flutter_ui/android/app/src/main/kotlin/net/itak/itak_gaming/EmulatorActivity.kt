@@ -198,6 +198,24 @@ class EmulatorActivity : Activity(), TextureListener {
     private var roomChat: ChatBox? = null
     private var pauseChat: ChatBox? = null
     private var chatOverlay: FrameLayout? = null
+
+    // Game picker (hold BACK in local play): a box art grid of
+    // the current system's games for a fast switch, plus the
+    // BACK gesture state (tap = pause menu, double tap = exit
+    // to the app home, hold = picker). David, 2026-10-15.
+    private var pickerOverlay: FrameLayout? = null
+    private var pickerGrid: android.widget.GridView? = null
+    private var pickerOpen = false
+    private val pickerArtCache = HashMap<String, android.graphics.Bitmap>()
+    private var backHeld = false
+    private var backConsumed = false
+    private var lastBackTapAt = 0L
+    private val backLongRunnable = Runnable {
+        if (backHeld && !pickerOpen && !menuOpen) {
+            backConsumed = true
+            openGamePicker()
+        }
+    }
     private val chatTicker = object : Runnable {
         override fun run() {
             if (chatOverlay?.visibility != View.VISIBLE || isFinishing) return
@@ -1907,6 +1925,221 @@ class EmulatorActivity : Activity(), TextureListener {
         showPauseMenu()
     }
 
+    // ---------- Game picker (hold BACK) ----------
+
+    // Double tap BACK: leave the game for the app home, with
+    // the same auto-save the confirmed exit makes.
+    private fun exitGameDirect() {
+        autoSaveNow()
+        finish()
+    }
+
+    private val pickerExts = mapOf(
+        "NES" to listOf(".nes"),
+        "SNES" to listOf(".sfc", ".smc"),
+        "Genesis" to listOf(".md", ".gen", ".bin"),
+        "SegaCD" to listOf(".cue", ".iso", ".bin"),
+        "GameBoy" to listOf(".gb", ".gbc"),
+        "GBA" to listOf(".gba"),
+        "PS1" to listOf(".cue", ".iso", ".bin"),
+        "N64" to listOf(".n64", ".z64", ".v64"),
+        "Dreamcast" to listOf(".gdi", ".iso", ".bin"),
+        "PSP" to listOf(".iso", ".elf", ".prx"),
+        "NDS" to listOf(".nds"),
+        "Saturn" to listOf(".cue", ".iso"),
+        "GameCube" to listOf(".iso", ".gcm"),
+    )
+
+    private fun pickerGames(): List<File> {
+        val dir = File(romPath).parentFile ?: return emptyList()
+        val exts = pickerExts[dir.name] ?: return emptyList()
+        val files = dir.listFiles() ?: return emptyList()
+        return files.filter {
+            it.isFile && exts.any { e -> it.name.lowercase().endsWith(e) }
+        }.sortedBy { it.name.lowercase() }
+    }
+
+    private fun openGamePicker() {
+        if (pickerOpen) return
+        val games = pickerGames()
+        if (games.isEmpty()) {
+            Toast.makeText(this, "No games found in this folder", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // Park the game exactly like the pause menu does.
+        pickerOpen = true
+        paused = true
+        var waited = 0
+        while (!pauseAck && waited < 200) {
+            Thread.sleep(5)
+            waited += 5
+        }
+        try { audioTrack?.pause() } catch (e: Exception) { /* ignore */ }
+        if (pickerOverlay == null) buildGamePicker(games)
+        pickerOverlay?.visibility = View.VISIBLE
+        pickerGrid?.requestFocus()
+        pickerGrid?.setSelection(
+            games.indexOfFirst { it.path == romPath }.coerceAtLeast(0)
+        )
+    }
+
+    private fun closeGamePicker() {
+        pickerOverlay?.visibility = View.GONE
+        pickerOpen = false
+        paused = false
+        try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
+    }
+
+    private fun buildGamePicker(games: List<File>) {
+        val overlay = FrameLayout(this)
+        overlay.setBackgroundColor(Color.argb(242, 10, 10, 20))
+        val panel = LinearLayout(this)
+        panel.orientation = LinearLayout.VERTICAL
+        panel.setPadding(56, 40, 56, 40)
+        val dirName = File(romPath).parentFile?.name ?: ""
+        panel.addView(roomText("Switch game  -  $dirName", 30f, true))
+        panel.addView(
+            roomText(
+                "Pick a game to jump straight into it. BACK returns to your game.",
+                17f, false
+            )
+        )
+        val grid = android.widget.GridView(this)
+        grid.numColumns = 4
+        grid.horizontalSpacing = 24
+        grid.verticalSpacing = 24
+        grid.setPadding(0, 24, 0, 0)
+        grid.isFocusable = true
+        grid.drawSelectorOnTop = true
+        val sel = android.graphics.drawable.GradientDrawable()
+        sel.setStroke(6, Color.WHITE)
+        sel.cornerRadius = 18f
+        sel.setColor(Color.argb(40, 255, 255, 255))
+        grid.selector = sel
+        grid.adapter = PickerAdapter(games)
+        grid.setOnItemClickListener { _, _, pos, _ -> switchToGame(games[pos]) }
+        pickerGrid = grid
+        panel.addView(
+            grid,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+        )
+        overlay.addView(
+            panel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        overlay.visibility = View.GONE
+        rootFrameRef?.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        pickerOverlay = overlay
+    }
+
+    private inner class PickerAdapter(val games: List<File>) :
+        android.widget.BaseAdapter() {
+        override fun getCount() = games.size
+        override fun getItem(pos: Int) = games[pos]
+        override fun getItemId(pos: Int) = pos.toLong()
+
+        override fun getView(
+            pos: Int,
+            convert: View?,
+            parent: android.view.ViewGroup
+        ): View {
+            val f = games[pos]
+            val cell: FrameLayout
+            val img: android.widget.ImageView
+            val label: android.widget.TextView
+            if (convert == null) {
+                cell = FrameLayout(this@EmulatorActivity)
+                val bg = android.graphics.drawable.GradientDrawable()
+                bg.cornerRadius = 14f
+                bg.setColor(0xFF22223A.toInt())
+                cell.background = bg
+                img = android.widget.ImageView(this@EmulatorActivity)
+                img.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                img.tag = "art"
+                cell.addView(
+                    img,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                )
+                label = android.widget.TextView(this@EmulatorActivity)
+                label.setTextColor(Color.WHITE)
+                label.textSize = 15f
+                label.maxLines = 1
+                label.ellipsize = android.text.TextUtils.TruncateAt.END
+                label.setPadding(10, 6, 10, 6)
+                label.setBackgroundColor(Color.argb(190, 0, 0, 0))
+                label.tag = "label"
+                val lp = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp.gravity = android.view.Gravity.BOTTOM
+                cell.addView(label, lp)
+                cell.layoutParams = android.widget.AbsListView.LayoutParams(
+                    android.widget.AbsListView.LayoutParams.MATCH_PARENT, 300
+                )
+            } else {
+                cell = convert as FrameLayout
+                img = cell.findViewWithTag("art")
+                label = cell.findViewWithTag("label")
+            }
+            val name = f.nameWithoutExtension
+            label.text = if (f.path == romPath) "NOW: $name" else name
+            val bmp = pickerArtFor(f)
+            if (bmp != null) {
+                img.setImageBitmap(bmp)
+            } else {
+                img.setImageDrawable(null)
+            }
+            return cell
+        }
+    }
+
+    private fun pickerArtFor(game: File): android.graphics.Bitmap? {
+        pickerArtCache[game.path]?.let { return it }
+        val art = File(game.parentFile, "boxart/${game.nameWithoutExtension}.png")
+        if (!art.exists()) return null
+        val opts = android.graphics.BitmapFactory.Options()
+        opts.inSampleSize = 2
+        val bmp = try {
+            android.graphics.BitmapFactory.decodeFile(art.path, opts)
+        } catch (e: Exception) {
+            null
+        }
+        if (bmp != null) pickerArtCache[game.path] = bmp
+        return bmp
+    }
+
+    private fun switchToGame(target: File) {
+        if (target.path == romPath) {
+            closeGamePicker()
+            return
+        }
+        // The same handoff as a role switch: the fresh
+        // activity instance owns the shared bridge next, so
+        // this instance must not tear it down on the way out.
+        autoSaveNow()
+        roleSwitching = true
+        val intent = android.content.Intent(this, EmulatorActivity::class.java)
+        intent.putExtra(EXTRA_CORE, coreAssetName)
+        intent.putExtra(EXTRA_ROM, target.path)
+        startActivity(intent)
+        finish()
+    }
+
     // TextureListener (from the GL renderer's first surface)
     override fun onSurfaceReady() {
         if (running) return
@@ -2386,6 +2619,15 @@ class EmulatorActivity : Activity(), TextureListener {
                 finish()
             })
         } else {
+        // Exit sits at the top on purpose (David, 2026-10-15):
+        // the menu still opens on Resume, and one UP from
+        // there is the quick way out.
+        entries.add("Exit Game" to {
+            // Exit asks for confirmation first; the game
+            // stays parked while the prompt is open.
+            keepPaused = true
+            window.decorView.postDelayed({ confirmExit() }, 200)
+        })
         entries.add("Resume" to { }) // resume via dismiss
         if (netplay) {
             entries.add("Chat" to {
@@ -2431,9 +2673,10 @@ class EmulatorActivity : Activity(), TextureListener {
         })
         entries.add("Picture: $filterName" to { cycleFilter() })
         entries.add("Display: $displayName" to { toggleDisplay() })
+        // Exit Game appears at both ends of the menu on
+        // purpose (David, 2026-10-15): top for a fast exit
+        // from Resume, bottom where it has always been.
         entries.add("Exit Game" to {
-            // Exit asks for confirmation first; the game
-            // stays parked while the prompt is open.
             keepPaused = true
             window.decorView.postDelayed({ confirmExit() }, 200)
         })
@@ -2455,6 +2698,13 @@ class EmulatorActivity : Activity(), TextureListener {
                 }
             }
             .show()
+        // The player menu opens on Resume (index 1; Exit Game
+        // is index 0 now), never on Exit itself.
+        if (!watching) {
+            pauseDialog?.listView?.post {
+                pauseDialog?.listView?.setSelection(1)
+            }
+        }
     }
 
     private fun resumeFromMenu() {
@@ -2678,7 +2928,26 @@ class EmulatorActivity : Activity(), TextureListener {
                 finish()
                 return true
             }
-            if (!menuOpen) showPauseMenu()
+            if (netplay || watching) {
+                if (!menuOpen) showPauseMenu()
+                return true
+            }
+            // Local play: BACK is a small gesture language.
+            // A tap opens the pause menu, a double tap exits
+            // to the app home, and holding opens the game
+            // picker. The tap resolves on key up so the three
+            // can be told apart.
+            if (pickerOpen) {
+                backConsumed = true
+                closeGamePicker()
+                return true
+            }
+            if (menuOpen) return true
+            if (event.repeatCount > 0) return true
+            backHeld = true
+            backConsumed = false
+            uiHandler.removeCallbacks(backLongRunnable)
+            uiHandler.postDelayed(backLongRunnable, 550)
             return true
         }
         val btn = mapButton(keyCode)
@@ -2705,6 +2974,27 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (!netplay && !watching) {
+                uiHandler.removeCallbacks(backLongRunnable)
+                backHeld = false
+                if (pickerOpen || menuOpen) return true
+                if (backConsumed) {
+                    backConsumed = false
+                    return true
+                }
+                // A plain tap, or the second tap of a pair.
+                val now = System.currentTimeMillis()
+                if (now - lastBackTapAt < 400) {
+                    lastBackTapAt = 0L
+                    exitGameDirect()
+                } else {
+                    lastBackTapAt = now
+                    showPauseMenu()
+                }
+            }
+            return true
+        }
         val btn = mapButton(keyCode)
         if (btn != null) {
             if (watching) {
@@ -2728,6 +3018,7 @@ class EmulatorActivity : Activity(), TextureListener {
         uiHandler.removeCallbacks(pauseTicker)
         uiHandler.removeCallbacks(chatTicker)
         uiHandler.removeCallbacks(watchTicker)
+        uiHandler.removeCallbacks(backLongRunnable)
         try {
             val im = getSystemService(android.content.Context.INPUT_SERVICE)
                 as android.hardware.input.InputManager
