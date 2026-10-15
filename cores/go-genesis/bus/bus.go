@@ -193,6 +193,21 @@ func (b *Bus) readROMByte(addr uint32) uint8 {
 	return b.cart.ReadROM(addr)
 }
 
+// readROMWord reads a big-endian word from the cartridge window.
+// When the word touches the SRAM overlay it composes from byte
+// reads so each byte follows the overlay rules exactly; otherwise
+// it reads the ROM image directly in one access.
+func (b *Bus) readROMWord(addr uint32) uint16 {
+	if b.sramOn && b.cart != nil && b.cart.SRAM &&
+		addr <= b.cart.SRAMEnd && addr+1 >= b.cart.SRAMStart {
+		return uint16(b.readROMByte(addr))<<8 | uint16(b.readROMByte(addr+1))
+	}
+	if b.cart == nil {
+		return 0xFFFF
+	}
+	return b.cart.ReadROM16(addr)
+}
+
 // writeROMByte stores into the SRAM overlay when it is switched in; plain
 // ROM writes are ignored.
 func (b *Bus) writeROMByte(addr uint32, val uint8) {
@@ -214,6 +229,16 @@ func (b *Bus) writeROMByte(addr uint32, val uint8) {
 // Read8 reads one byte from the 68k address space.
 func (b *Bus) Read8(addr uint32) uint8 {
 	addr &= 0xFFFFFF
+	// Fast paths for the two regions that dominate execution,
+	// cartridge ROM and work RAM, reached only when no Sega CD
+	// window decode can claim the address first (the CD windows
+	// inside the cartridge range sit at 0x200000-0x23FFFF).
+	if addr >= 0xE00000 {
+		return b.RAM[addr&0xFFFF]
+	}
+	if addr < 0x400000 && (b.cd == nil || addr < 0x200000 || addr >= 0x240000) {
+		return b.readROMByte(addr)
+	}
 	switch {
 	case b.cd != nil && addr >= 0x200000 && addr < 0x240000:
 		// Sega CD main CPU Word RAM window (1M halves / 2M owner view).
@@ -272,7 +297,8 @@ func (b *Bus) Read8(addr uint32) uint8 {
 }
 
 // Read16 reads a big-endian word. Device regions with their own word
-// semantics (VDP ports, Z80 control, TMSS) are handled directly; all other
+// semantics (VDP ports, Z80 control, TMSS) are handled directly; the
+// cartridge and RAM windows have direct word reads below; all other
 // regions compose from byte reads.
 func (b *Bus) Read16(addr uint32) uint16 {
 	addr &= 0xFFFFFF
@@ -289,6 +315,12 @@ func (b *Bus) Read16(addr uint32) uint16 {
 		return 0
 	case addr >= 0xA14000 && addr <= 0xA14003:
 		return 0
+	case addr < 0x3FFFFF && (b.cd == nil || addr < 0x1FFFFF || addr >= 0x240000):
+		// Cartridge window, the whole word inside it and clear
+		// of the Sega CD Word RAM window (see Read8).
+		return b.readROMWord(addr)
+	case addr >= 0xE00000 && addr < 0xFFFFFF:
+		return uint16(b.RAM[addr&0xFFFF])<<8 | uint16(b.RAM[(addr+1)&0xFFFF])
 	}
 	return uint16(b.Read8(addr))<<8 | uint16(b.Read8(addr+1))
 }
@@ -302,6 +334,11 @@ func (b *Bus) Read32(addr uint32) uint32 {
 // Write8 writes one byte into the 68k address space.
 func (b *Bus) Write8(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
+	if addr >= 0xE00000 {
+		// Work RAM mirror range; no device decode reaches here.
+		b.RAM[addr&0xFFFF] = val
+		return
+	}
 	switch {
 	case b.cd != nil && addr >= 0x200000 && addr < 0x240000:
 		b.cd.MainWordWrite8(addr, val)
@@ -369,6 +406,13 @@ func (b *Bus) Write16(addr uint32, val uint16) {
 	addr &= 0xFFFFFF
 	if addr >= 0xC00000 && addr < 0xE00000 {
 		b.vdp.WritePort(addr&0x1F, val)
+		return
+	}
+	if addr >= 0xE00000 && addr < 0xFFFFFF {
+		// Work RAM word: the same two byte stores Write8 would
+		// make, without the region decode twice.
+		b.RAM[addr&0xFFFF] = uint8(val >> 8)
+		b.RAM[(addr+1)&0xFFFF] = uint8(val)
 		return
 	}
 	b.Write8(addr, uint8(val>>8))
