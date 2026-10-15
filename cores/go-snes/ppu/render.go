@@ -246,11 +246,11 @@ func (p *PPU) bgSample(mi modeInfo, bg, x, y, w int) sample {
 	entry := p.tilemapEntry(b, tx&(b.tilemapW-1), ty&(b.tilemapH-1))
 	tile := entry & 0x3FF
 	pal := int((entry >> 10) & 0x07)
-	// Tilemap entry bits: 15 priority, 14 flip Y, 13 flip X.
-	if entry&0x2000 != 0 { // flip X
+	// Tilemap entry bits: 15 flip Y, 14 flip X, 13 priority.
+	if entry&0x4000 != 0 { // flip X
 		px = tileW - 1 - px
 	}
-	if entry&0x4000 != 0 { // flip Y
+	if entry&0x8000 != 0 { // flip Y
 		py = tileH - 1 - py
 	}
 	if tileW == 16 {
@@ -266,7 +266,7 @@ func (p *PPU) bgSample(mi modeInfo, bg, x, y, w int) sample {
 		return sample{}
 	}
 	rank := mi.objBase[bg]
-	if entry&0x8000 != 0 {
+	if entry&0x2000 != 0 { // priority bit
 		rank = mi.objPrio[bg]
 	}
 	s := sample{layer: bg, opaque: true, rank: rank}
