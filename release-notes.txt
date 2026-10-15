@@ -1,1 +1,1 @@
-Fixes games closing right at start in build 58. A counter inside the game bridge used an operation the TV chip cannot do the way it was written; it is written the safe way now. Nothing else changes.
+Fixes games closing during play, a crash that slipped into builds 57 and 58. The update box is safer too: it now starts on a small middle help button so pressing OK cannot install or dismiss by accident, and the button you are on turns white and grows so it is easy to see.
