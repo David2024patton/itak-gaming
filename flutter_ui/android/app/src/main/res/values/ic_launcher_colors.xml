@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Background color of the launcher icon. Sampled from the flat
+     surround of the logo artwork itself (#171E26 at every corner of
+     ic_launcher.png), so the adaptive icon background and the
+     foreground artwork blend with no visible seam. -->
+<resources>
+    <color name="ic_launcher_background">#171E26</color>
+</resources>
