@@ -139,6 +139,35 @@ type PPU struct {
 	frames   uint64
 	oddFrame bool // the frame in progress is an odd frame
 
+	// Lazy advance: the machine owes the PPU dots it has not
+	// rendered yet. Advance records owed dots (and the segment
+	// boundary the SetInLastTick accounting needs); CatchUp and
+	// CatchUpTo render them, oldest first, so every observer
+	// (register accesses, the interrupt poll, save states)
+	// syncs the chip to its exact dot before looking. executed
+	// counts the dots rendered since the last epoch reset
+	// (power-on or a state load); targets and marks are named
+	// in the same count.
+	pending      int
+	executed     int64
+	segEnds      []int64 // absolute end dot of each unrendered Advance segment
+	segHead      int
+	segPrev      int64 // end dot of the most recently completed segment
+	bulkBackdrop uint32
+	bulkOff      bool
+	lastSet      int64 // executed count just after the vblank set dot last fired, -1 if none
+
+	// Dot marks: snapshots of the vblank flag at the bus sync
+	// points the machine records (one per bus access, at the
+	// dot the access's first two dots complete). The flag half
+	// is filled in as rendering crosses the mark's dot; the
+	// ctrl half is taken when the mark is recorded, because the
+	// access's own $2000 write lands before its sync point and
+	// the level there uses the new value.
+	marks    [32]dotMark
+	markFill int // sequence number of the oldest unfilled mark, -1 if none
+	markSeq  int // sequence number the next Mark call expects
+
 	// Memory.
 	ciram   [4096]uint8 // only 2048 used unless four-screen
 	palette [32]uint8
@@ -194,7 +223,10 @@ const (
 // is documented to ignore it for roughly two vblanks, which
 // is what games and test ROMs do.
 func New(mem Memory) *PPU {
-	p := &PPU{mem: mem, SetInLastTick: -1, scanline: preLine, dot: dotsPerLine - 2, oddFrame: true, a12Watched: true}
+	p := &PPU{mem: mem, SetInLastTick: -1, scanline: preLine, dot: dotsPerLine - 2, oddFrame: true, a12Watched: true, lastSet: -1, markFill: -1}
+	for i := range p.marks {
+		p.marks[i].seq = -1
+	}
 	if w, ok := mem.(interface{ UsesA12IRQ() bool }); ok {
 		p.a12Watched = w.UsesA12IRQ()
 	}
@@ -374,4 +406,352 @@ func (p *PPU) setLatchLow(v uint8) {
 // applyDecay.
 func (p *PPU) decayTick() {
 	p.decayDebt++
+}
+
+// dotMark is one recorded bus sync point: the dot it names,
+// the $2000 value in force there, and (once rendering has
+// crossed the dot) the vblank flag as it stood there.
+type dotMark struct {
+	seq    int
+	dot    int64
+	ctrl   uint8
+	vbl    bool
+	filled bool
+}
+
+// Advance records n more owed dots without rendering them.
+// The segment boundary is kept because SetInLastTick is
+// defined relative to the most recent advance call, exactly
+// as it was relative to the most recent Tick call when Tick
+// rendered eagerly.
+func (p *PPU) Advance(n int) {
+	if n <= 0 {
+		return
+	}
+	p.pending += n
+	p.segEnds = append(p.segEnds, p.executed+int64(p.pending))
+}
+
+// CatchUp renders every owed dot.
+func (p *PPU) CatchUp() { p.renderTo(p.executed + int64(p.pending)) }
+
+// CatchUpTo renders up to the given absolute dot count (a
+// no-op when rendering is already past it).
+func (p *PPU) CatchUpTo(d int64) {
+	if d > p.executed {
+		p.renderTo(d)
+	}
+}
+
+// Target returns the absolute dot count rendering will reach
+// when every owed dot is rendered.
+func (p *PPU) Target() int64 { return p.executed + int64(p.pending) }
+
+// renderTo executes dots until executed reaches d. Bulk
+// spans (see bulkRoom) advance in closed form; live spans
+// step dot by dot to the end of the current scanline before
+// bulk eligibility is checked again, so the check costs
+// nothing per dot. The segment and mark bookkeeping rides
+// the step loop as two compares per dot against the next
+// segment end and the oldest unfilled mark.
+func (p *PPU) renderTo(d int64) {
+	for p.executed < d {
+		if n := p.bulkRoom(d); n > 0 {
+			p.advanceBulk(n)
+			continue
+		}
+		line := p.scanline
+		for p.executed < d && p.scanline == line {
+			p.step()
+			p.executed++
+			p.pending--
+			// A segment end completes the SetInLastTick
+			// accounting for the segment that just
+			// finished: the value counts the dots of
+			// that segment that followed the vblank set
+			// dot, or stays -1 when the set dot was not
+			// in it.
+			if p.segHead < len(p.segEnds) && p.segEnds[p.segHead] == p.executed {
+				end := p.segEnds[p.segHead]
+				if p.lastSet > p.segPrev && p.lastSet <= end {
+					p.SetInLastTick = int(end - p.lastSet)
+				} else {
+					p.SetInLastTick = -1
+				}
+				p.segPrev = end
+				p.segHead++
+				if p.segHead == len(p.segEnds) {
+					p.segEnds = p.segEnds[:0]
+					p.segHead = 0
+				}
+			}
+			// Marks fill in as their dots render. A mark
+			// the record-time snapshot already filled is
+			// only stepped over, never refilled: its
+			// value is the flag at its dot, not the flag
+			// now.
+			for p.markFill >= 0 {
+				m := &p.marks[p.markFill&31]
+				if m.seq != p.markFill {
+					break
+				}
+				if !m.filled {
+					if m.dot > p.executed {
+						break
+					}
+					m.vbl = p.vblFlag
+					m.filled = true
+				}
+				p.markFill++
+				if p.markFill > p.markSeq {
+					p.markFill = -1
+				}
+			}
+		}
+	}
+}
+
+// bulkRoom returns how many of the dots owed toward d can
+// be bulk-advanced from the current position: dots on which
+// the per-dot machinery provably does nothing but advance
+// the position, run the open-bus decay counter, and present
+// a constant address to the cartridge. That is the dead
+// lines (240-260) with rendering on, and every line with
+// rendering off (fetches, evaluation, and scroll work are
+// all gated on rendering; the visible lines owe only the
+// backdrop fill). The vblank set dot and the pre-render
+// clear dot are stepped singly, never bulked over: both
+// carry flag edges other logic races against. The room is
+// also capped at the next segment end and the oldest
+// unfilled mark, the two bookkeeping stops.
+func (p *PPU) bulkRoom(d int64) int64 {
+	off := !p.rendering()
+	if !off && (p.scanline < 240 || p.scanline == preLine) {
+		return 0
+	}
+	if p.dot == 1 && (p.scanline == vblSetLine || p.scanline == preLine) {
+		return 0
+	}
+	room := d - p.executed
+	pos := int64(p.scanline*dotsPerLine + p.dot)
+	if !off {
+		// The pre-render line runs fetches with rendering
+		// on, so the dead region ends where it starts.
+		if r := int64(preLine*dotsPerLine) - pos; r < room {
+			room = r
+		}
+	}
+	// The timing event dots are single-stepped: cap the
+	// room at the distance to each, wrapping the frame
+	// boundary when rendering is off (the only mode whose
+	// spans can cross it, since its frames have no
+	// odd-frame skip).
+	frame := int64(linesPerFrame * dotsPerLine)
+	for _, ev := range []int64{vblSetLine*dotsPerLine + 1, preLine*dotsPerLine + 1} {
+		dist := ev - pos
+		if dist < 0 {
+			if !off {
+				continue
+			}
+			dist += frame
+		}
+		if dist < room {
+			room = dist
+		}
+	}
+	return room
+}
+
+// advanceBulk executes n dots of a bulk-eligible span in
+// closed form: the constant bus address's A12 effect, the
+// decay counter, the backdrop fill on visible lines when
+// rendering is off (the exact value outputPixel would
+// store, palette-space v included), and the position
+// advance with its frame counter and odd-frame rules.
+func (p *PPU) advanceBulk(n int64) {
+	off := !p.rendering()
+	p.bulkOff = off
+	if off {
+		idx := p.palette[0]
+		if a := p.v & 0x3FFF; a >= 0x3F00 {
+			idx = p.palette[paletteIndex(a)]
+		}
+		if p.mask&0x01 != 0 {
+			idx &= 0x30
+		}
+		p.bulkBackdrop = p.colorRGB(idx)
+	}
+	if p.a12Watched {
+		if p.v&0x1000 != 0 {
+			if !p.prevA12 && p.a12Low >= a12MinLowDots {
+				p.mem.ClockA12()
+			}
+			p.prevA12 = true
+			p.a12Low = 0
+		} else {
+			p.prevA12 = false
+			p.a12Low += int(n)
+		}
+	}
+	p.decayDebt += int(n)
+	for n > 0 {
+		chunk := n
+		if p.segHead < len(p.segEnds) {
+			if r := p.segEnds[p.segHead] - p.executed; r < chunk {
+				chunk = r
+			}
+		}
+		if p.markFill >= 0 {
+			if m := &p.marks[p.markFill&31]; m.seq == p.markFill && !m.filled {
+				if r := m.dot - p.executed; r < chunk {
+					chunk = r
+				}
+			}
+		}
+		p.bulkDots(chunk)
+		n -= chunk
+		// The chunk ended on a segment end or a mark dot
+		// (or the span's end): complete the bookkeeping
+		// for what it crossed.
+		if p.segHead < len(p.segEnds) && p.segEnds[p.segHead] == p.executed {
+			end := p.segEnds[p.segHead]
+			if p.lastSet > p.segPrev && p.lastSet <= end {
+				p.SetInLastTick = int(end - p.lastSet)
+			} else {
+				p.SetInLastTick = -1
+			}
+			p.segPrev = end
+			p.segHead++
+			if p.segHead == len(p.segEnds) {
+				p.segEnds = p.segEnds[:0]
+				p.segHead = 0
+			}
+		}
+		for p.markFill >= 0 {
+			m := &p.marks[p.markFill&31]
+			if m.seq != p.markFill {
+				break
+			}
+			if !m.filled {
+				if m.dot > p.executed {
+					break
+				}
+				m.vbl = p.vblFlag
+				m.filled = true
+			}
+			p.markFill++
+			if p.markFill > p.markSeq {
+				p.markFill = -1
+			}
+		}
+	}
+}
+
+// bulkDots advances the position (and the visible-line
+// backdrop fill when rendering is off) by n dots of a bulk
+// span whose backdrop value and A12 effect the caller has
+// already applied for the whole span.
+func (p *PPU) bulkDots(n int64) {
+	rem := int(n)
+	for rem > 0 {
+		take := dotsPerLine - p.dot
+		if take > rem {
+			take = rem
+		}
+		if p.bulkOff && p.scanline < 240 {
+			lo := p.dot
+			if lo < 1 {
+				lo = 1
+			}
+			hi := p.dot + take
+			if hi > 257 {
+				hi = 257
+			}
+			row := p.framebuffer[p.scanline*Width:]
+			for pos := lo; pos < hi; pos++ {
+				row[pos-1] = p.bulkBackdrop
+			}
+		}
+		p.dot += take
+		rem -= take
+		if p.dot == dotsPerLine {
+			p.dot = 0
+			p.scanline++
+			if p.scanline == linesPerFrame {
+				p.scanline = 0
+				p.oddFrame = !p.oddFrame
+			}
+			if p.scanline == vblSetLine {
+				p.frames++
+			}
+		}
+	}
+	p.executed += n
+	p.pending -= int(n)
+}
+
+// Mark records a bus sync point at the current target dot,
+// under the machine's per-access sequence number. Marks must
+// be recorded in sequence order.
+func (p *PPU) Mark(seq int) {
+	m := &p.marks[seq&31]
+	m.seq = seq
+	m.dot = p.Target()
+	m.ctrl = p.ctrl
+	m.vbl = false
+	m.filled = false
+	if m.dot <= p.executed {
+		// The access that records this mark caught the
+		// chip up inside its own dispatch (register
+		// accesses do), so the mark's dot has already
+		// rendered and rendering will never cross it
+		// again. The flag as it stands is the flag at
+		// the dot: nothing has rendered since, and the
+		// dispatch itself (a $2002 read's flag clear,
+		// above all) is part of the point's state,
+		// exactly as the eager sync read it after the
+		// access.
+		m.vbl = p.vblFlag
+		m.filled = true
+	}
+	if p.markFill < 0 {
+		p.markFill = seq
+	}
+	p.markSeq = seq
+}
+
+// MarkNMI returns the NMI output level (vblank flag AND $2000
+// enable) as it stood at the sync point recorded under seq,
+// rendering up to that dot first if rendering has not reached
+// it. ok is false when the mark is no longer on record.
+func (p *PPU) MarkNMI(seq int) (level bool, ok bool) {
+	m := &p.marks[seq&31]
+	if m.seq != seq {
+		return false, false
+	}
+	if !m.filled {
+		p.CatchUpTo(m.dot)
+	}
+	if !m.filled {
+		return false, false
+	}
+	return m.vbl && m.ctrl&0x80 != 0, true
+}
+
+// resetLazy clears the advance bookkeeping after a state
+// load: the restored position is the new epoch, fully caught
+// up by definition.
+func (p *PPU) resetLazy() {
+	p.pending = 0
+	p.executed = 0
+	p.segEnds = p.segEnds[:0]
+	p.segHead = 0
+	p.segPrev = 0
+	p.lastSet = -1
+	p.markFill = -1
+	p.markSeq = 0
+	for i := range p.marks {
+		p.marks[i].seq = -1
+		p.marks[i].filled = false
+	}
 }
