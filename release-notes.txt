@@ -1,1 +1,1 @@
-Fixes games closing after a short time or right away in build 57. The game and sound threads could reach into the emulator at the same moment and crash it; they are now kept apart. Picture tearing during play is fixed by the same change. Nothing else changes.
+Fixes games closing right at start in build 58. A counter inside the game bridge used an operation the TV chip cannot do the way it was written; it is written the safe way now. Nothing else changes.
