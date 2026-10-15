@@ -719,6 +719,7 @@ func (c *CPU) execBRK() {
 	c.push(c.statusByte(true))
 	c.p |= FlagI
 	vector := uint16(VectorIRQ)
+	c.syncLatch()
 	if c.nmiPending {
 		c.nmiPending = false
 		vector = VectorNMI
