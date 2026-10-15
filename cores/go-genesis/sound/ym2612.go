@@ -494,38 +494,78 @@ func ymOpStep(fnum, block, dt, mul int, pmFactor float64) uint32 {
 	return uint32(step)
 }
 
+// ymChanPrep holds one FM channel's render constants derived from
+// the register file: everything ymChannel used to recompute from
+// registers on every native sample (some 6,000 times per frame per
+// channel). A channel is re-prepared lazily when the register
+// generation (Sound.ymRegGen) has moved since its last prepare;
+// register writes only land between render spans, so a prepared
+// channel is exact for the whole span it serves.
+type ymChanPrep struct {
+	gen   uint64
+	ready bool
+	pan   uint8
+	dacOn bool
+	algo  int
+	fb    int
+	ams   int
+	pms   int
+	// Per operator, in render order: the phase step before LFO
+	// pitch modulation, the total-level contribution to the
+	// attenuation index, and the AM enable bit.
+	stepPre [4]uint32
+	tlAtt   [4]int
+	amOn    [4]bool
+}
+
+// ymPrepChannel rebuilds one channel's prepared constants from the
+// current register file.
+func (s *Sound) ymPrepChannel(ch int, p *ymChanPrep) {
+	bank, off := s.ymBank(ch)
+	p.pan = bank[0xB4+off]
+	p.dacOn = ch == 5 && s.ymRegsA[0x2B]&0x80 != 0
+	p.algo = int(bank[0xB0+off] & 0x07)
+	p.fb = int((bank[0xB0+off] >> 3) & 0x07)
+	p.ams = int((bank[0xB4+off] >> 4) & 0x03)
+	p.pms = int(bank[0xB4+off] & 0x07)
+	for op := 0; op < 4; op++ {
+		slot := opSlot[op]
+		fnum, block := s.ymOpFreq(ch, op)
+		dtMul := bank[0x30+slot*4+off]
+		p.stepPre[op] = ymOpStep(fnum, block, int(dtMul>>4)&0x07, int(dtMul&0x0F), 1)
+		p.tlAtt[op] = int(bank[0x40+slot*4+off]&0x7F) * 8
+		p.amOn[op] = bank[0x60+slot*4+off]&0x80 != 0
+	}
+	p.gen = s.ymRegGen
+	p.ready = true
+}
+
 // ymChannel renders one native-rate stereo pair's worth of one FM
 // channel into the l/r accumulators, applying pan. DAC mode on
 // channel 6 replaces the FM output.
 func (s *Sound) ymChannel(ch int, lfoSigned, lfoTri float64, lfoOn bool, acc *[2]float32) {
-	bank, off := s.ymBank(ch)
-	pan := bank[0xB4+off]
-
-	dacOn := ch == 5 && s.ymRegsA[0x2B]&0x80 != 0
-
-	algo := bank[0xB0+off] & 0x07
-	fb := (bank[0xB0+off] >> 3) & 0x07
-	ams := (bank[0xB4+off] >> 4) & 0x03
-	pms := bank[0xB4+off] & 0x07
+	p := &s.ymPrep[ch]
+	if !p.ready || p.gen != s.ymRegGen {
+		s.ymPrepChannel(ch, p)
+	}
 
 	pmFactor := 1.0
-	if lfoOn && pms != 0 {
-		pmFactor = math.Pow(2, lfoSigned*pmsCents[pms]/1200)
+	if lfoOn && p.pms != 0 {
+		pmFactor = math.Pow(2, lfoSigned*pmsCents[p.pms]/1200)
 	}
 	amAtt := int32(0)
 	if lfoOn {
-		amAtt = int32(float64(amsSteps[ams]) * lfoTri)
+		amAtt = int32(float64(amsSteps[p.ams]) * lfoTri)
 	}
 
 	var outs [4]float32
 	for op := 0; op < 4; op++ {
 		o := &s.ym.ops[ch][op]
-		slot := opSlot[op]
 
 		// Modulation input from earlier operators plus, for
 		// operator 1, its feedback history.
 		var mod float32
-		m := modMask[algo][op]
+		m := modMask[p.algo][op]
 		for src := 0; src < op; src++ {
 			if m&(1<<uint(src)) != 0 {
 				mod += outs[src]
@@ -534,17 +574,23 @@ func (s *Sound) ymChannel(ch int, lfoSigned, lfoTri float64, lfoOn bool, acc *[2
 		idxOff := int32(mod * 512)
 		if op == 0 {
 			avg := (s.ym.chans[ch].fb0 + s.ym.chans[ch].fb1) * 0.5
-			idxOff += int32(avg * fbScale[fb])
+			idxOff += int32(avg * fbScale[p.fb])
 		}
 		idx := (int32(o.phase>>11) + idxOff) & 1023
 
-		fnum, block := s.ymOpFreq(ch, op)
-		dtMul := bank[0x30+slot*4+off]
-		step := ymOpStep(fnum, block, int(dtMul>>4)&0x07, int(dtMul&0x0F), pmFactor)
+		// The prepared step already carries detune, multiple
+		// and the negative clamp; pitch modulation scales it
+		// exactly as ymOpStep's pmFactor path did (the product
+		// of a non-negative step and a positive factor cannot
+		// go negative, so the clamp cannot re-trigger).
+		step := p.stepPre[op]
+		if pmFactor != 1 {
+			step = uint32(int32(float64(step) * pmFactor))
+		}
 		o.phase += step
 
-		atten := int(o.levelFP>>20) + int(bank[0x40+slot*4+off]&0x7F)*8
-		if bank[0x60+slot*4+off]&0x80 != 0 { // AM enable for this operator
+		atten := int(o.levelFP>>20) + p.tlAtt[op]
+		if p.amOn[op] { // AM enable for this operator
 			atten += int(amAtt)
 		}
 		if atten > len(ampTable)-1 {
@@ -558,23 +604,26 @@ func (s *Sound) ymChannel(ch int, lfoSigned, lfoTri float64, lfoOn bool, acc *[2
 	s.ym.chans[ch].fb0 = outs[0]
 
 	var v float32
-	if dacOn {
+	if p.dacOn {
 		// DAC sample: unsigned 8-bit data, 0x80 is the center.
+		// The data register is read live, not from the prep: a
+		// DAC write bumps the generation and re-prepares, but
+		// the byte itself is the stream.
 		v = float32(int(s.ymRegsA[0x2A])-128) / 128 * 0.75
 	} else {
-		cm := carrierMask[algo]
+		cm := carrierMask[p.algo]
 		for op := 0; op < 4; op++ {
 			if cm&(1<<uint(op)) != 0 {
 				v += outs[op]
 			}
 		}
-		v *= carrierGain[algo]
+		v *= carrierGain[p.algo]
 	}
 
-	if pan&0x80 != 0 {
+	if p.pan&0x80 != 0 {
 		acc[0] += v
 	}
-	if pan&0x40 != 0 {
+	if p.pan&0x40 != 0 {
 		acc[1] += v
 	}
 }
