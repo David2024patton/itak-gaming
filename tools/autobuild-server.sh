@@ -76,12 +76,15 @@ rsync -a --delete \
     --exclude 'testdata' \
     "$CLONE/" "$WORK/" || fail "rsync"
 
-# Rebind the Go backend only when it changed.
+# Rebind the Go backend when it or the bundled cores changed.
+# The cores are linked into the backend as native packages, so a
+# core-only fix must rebind too; hashing go_backend alone would
+# silently ship the stale AAR.
 export JAVA_HOME=$HOME/toolchain/jdk17
 export PATH=$JAVA_HOME/bin:$HOME/toolchain/go/bin:$HOME/go/bin:/usr/bin:/bin
 export ANDROID_NDK_HOME=$HOME/toolchain/android-sdk/ndk/26.1.10909125
 export ANDROID_HOME=$HOME/toolchain/android-sdk
-AAR_TREE=$(git -C "$CLONE" rev-parse HEAD:go_backend)
+AAR_TREE=$(git -C "$CLONE" rev-parse HEAD:go_backend HEAD:cores | sha256sum | cut -d" " -f1)
 if [ "$AAR_TREE" != "$(state_get AAR_TREE)" ] || [ ! -f "$WORK/flutter_ui/android/app/libs/itak_backend.aar" ]; then
     echo "go_backend changed; rebinding AAR"
     (cd "$WORK/go_backend" && gomobile bind -target=android/arm -androidapi 24 \
