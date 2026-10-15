@@ -4,6 +4,9 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.StateListDrawable
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -16,6 +19,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.widget.AdapterView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -2698,11 +2702,46 @@ class EmulatorActivity : Activity(), TextureListener {
                 }
             }
             .show()
-        // The player menu opens on Resume (index 1; Exit Game
-        // is index 0 now), never on Exit itself.
-        if (!watching) {
-            pauseDialog?.listView?.post {
-                pauseDialog?.listView?.setSelection(1)
+        // Make the current row impossible to miss (David,
+        // 2026-10-15): the TV dialog theme's own selector is a
+        // faint bar nobody can see, his parents included. The
+        // selected row gets a solid white bar with black bold
+        // text, the same language as the update dialog buttons.
+        pauseDialog?.listView?.let { lv ->
+            val sel = StateListDrawable()
+            val bar = ColorDrawable(Color.WHITE)
+            sel.addState(intArrayOf(android.R.attr.state_focused), bar)
+            sel.addState(intArrayOf(android.R.attr.state_selected), bar)
+            sel.addState(intArrayOf(android.R.attr.state_pressed), bar)
+            sel.addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+            lv.selector = sel
+            val paint = {
+                val chosen = lv.selectedItemPosition
+                for (i in 0 until lv.childCount) {
+                    val row = lv.getChildAt(i) as? TextView ?: continue
+                    if (lv.firstVisiblePosition + i == chosen) {
+                        row.setTextColor(Color.BLACK)
+                        row.setTypeface(row.typeface, Typeface.BOLD)
+                    } else {
+                        row.setTextColor(Color.WHITE)
+                        row.setTypeface(row.typeface, Typeface.NORMAL)
+                    }
+                }
+            }
+            lv.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: AdapterView<*>?, view: View?, pos: Int, id: Long
+                ) {
+                    lv.post { paint() }
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) { }
+            }
+            lv.post {
+                // The player menu opens on Resume (index 1; Exit
+                // Game is index 0 now), never on Exit itself.
+                if (!watching) lv.setSelection(1)
+                paint()
             }
         }
     }
