@@ -339,6 +339,20 @@ type APU struct {
 	fcPending int // ticks until a $4017 reset lands; -1 none
 	fcPendMd  int
 
+	// Lazy advance: the machine owes the APU cycles it has
+	// not run yet. Advance records owed cycles; CatchUp and
+	// CatchUpTo run them, oldest first, so every observer
+	// (register accesses, the interrupt poll, save states)
+	// syncs the unit to its exact cycle before looking.
+	// executed counts the cycles run since the last epoch
+	// reset (power-on or a state load); marks are named in
+	// the same count.
+	pending  int
+	executed int64
+	marks    [32]cycleMark
+	markFill int // sequence number of the oldest unfilled mark, -1 if none
+	markLast int // sequence number of the newest mark recorded
+
 	// FetchDMC, when set, is called for each DMC sample byte:
 	// it returns the byte at addr and charges the machine the
 	// DMA stall. The system installs it.
@@ -367,11 +381,14 @@ type APU struct {
 // New returns a powered-on APU: all channels disabled, the
 // frame sequencer at the start of its 4-step sequence.
 func New() *APU {
-	a := &APU{fcPending: -1}
+	a := &APU{fcPending: -1, markFill: -1}
 	a.pulse1.onesComp = true
 	a.noi.lfsr = 1
 	a.dm.silent = true
 	a.dm.bitsLeft = 8
+	for i := range a.marks {
+		a.marks[i].seq = -1
+	}
 	return a
 }
 
@@ -729,7 +746,11 @@ func (a *APU) mix() float64 {
 // sequencer, the channel timers (APU-rate units on the
 // divider phase, CPU-rate units every cycle), the DMC, and
 // the sample accumulator.
-func (a *APU) Tick() {
+func (a *APU) Tick() { a.tickCycle() }
+
+// tickCycle is one CPU cycle of APU work, shared by the eager
+// Tick and the lazy CatchUp.
+func (a *APU) tickCycle() {
 	a.phase = !a.phase
 	a.fcTick(a.phase)
 	if a.phase {
@@ -823,3 +844,463 @@ func (a *APU) DebugFrameCounter() (counter, mode, pending int, phase bool) {
 
 // ErrStateSize reports a save state block of the wrong size.
 var ErrStateSize = errors.New("sound: bad APU state size")
+
+// cycleMark is one recorded bus sync point: the cycle it
+// names and (once the advance has run that cycle) the IRQ
+// level as it stood there.
+type cycleMark struct {
+	seq    int
+	cycle  int64
+	irq    bool
+	filled bool
+}
+
+// Advance records n more owed cycles without running them.
+func (a *APU) Advance(n int) {
+	if n > 0 {
+		a.pending += n
+	}
+}
+
+// CatchUp runs every owed cycle.
+func (a *APU) CatchUp() { a.runTo(a.executed + int64(a.pending)) }
+
+// CatchUpTo runs cycles up to the given absolute count (a
+// no-op when the advance is already past it).
+func (a *APU) CatchUpTo(c int64) {
+	if c > a.executed {
+		a.runTo(c)
+	}
+}
+
+// Target returns the absolute cycle count the advance will
+// reach when every owed cycle has run.
+func (a *APU) Target() int64 { return a.executed + int64(a.pending) }
+
+// runTo executes cycles until executed reaches c, filling
+// in the marks their cycles carry. It advances in spans:
+// quietCycles computes how many cycles can pass before
+// anything the CPU or the mixer can observe changes (a
+// timer expiry, a frame sequencer threshold or reset
+// landing, a DMC fetch), those cycles fold in closed form,
+// and the event cycle itself runs the legacy per-cycle
+// path, so sweeps, envelope and length clocks, DMC fetch
+// stalls, and the frame IRQ's exact set cycle all keep
+// their original code and timing.
+func (a *APU) runTo(c int64) {
+	for a.executed < c {
+		room := c - a.executed
+		if q := a.quietCycles(room); q > 0 {
+			a.advanceQuiet(q)
+		} else {
+			a.tickCycle()
+			a.executed++
+			a.pending--
+		}
+		a.fillMarks()
+	}
+}
+
+// fillMarks stamps every recorded mark whose cycle has run
+// with the IRQ level as it stood there. Within a quiet span
+// the level cannot change (both of its sources are event
+// driven), so a mark inside one takes the current level,
+// which is the level the whole span carries.
+func (a *APU) fillMarks() {
+	for a.markFill >= 0 {
+		m := &a.marks[a.markFill&31]
+		if m.seq != a.markFill {
+			return
+		}
+		if !m.filled {
+			if m.cycle > a.executed {
+				return
+			}
+			m.irq = a.fcIRQ || a.dm.irqFlag
+			m.filled = true
+		}
+		a.markFill++
+		if a.markFill > a.markLast {
+			a.markFill = -1
+		}
+	}
+}
+
+// untilStepped returns the number of CPU cycles from now
+// until the j-th future APU-rate (stepped) cycle, j >= 1.
+// Stepped cycles are the ones the divider phase flips into:
+// with the phase currently set, the next cycle clears it and
+// the one after steps; with it clear, the next cycle steps.
+func (a *APU) untilStepped(j int) int {
+	if a.phase {
+		return 2 * j
+	}
+	return 2*j - 1
+}
+
+// quietCycles returns how many of the next room cycles are
+// quiet: cycles in which no timer expires, the frame
+// sequencer crosses no threshold, lands no reset, and
+// enters no IRQ set window, and the DMC needs no fetch. The
+// cycle that would do any of those is the event cycle and
+// is not counted.
+func (a *APU) quietCycles(room int64) int {
+	q := int(room)
+	bound := func(cycles int) {
+		if cycles-1 < q {
+			q = cycles - 1
+		}
+	}
+	// Channel timer expiries. The pulse and noise timers
+	// count APU-rate cycles: the expiry lands on the
+	// (timer+1)-th stepped cycle. An expiry is an event
+	// only when the channel can sound: a channel gated off
+	// (no length, muted, envelope at zero) evolves in
+	// closed form in advanceQuiet, duty steps and LFSR
+	// shifts included, because none of it reaches the
+	// mixer. The triangle timer counts CPU cycles, and its
+	// step only matters while its gate is open (a closed
+	// gate folds the timer without stepping).
+	if !pulseFoldable(&a.pulse1) {
+		bound(a.untilStepped(a.pulse1.timer + 1))
+	}
+	if !pulseFoldable(&a.pulse2) {
+		bound(a.untilStepped(a.pulse2.timer + 1))
+	}
+	if !noiseFoldable(&a.noi) {
+		bound(a.untilStepped(a.noi.timer + 1))
+	}
+	if a.tri.length.value > 0 && a.tri.linear > 0 {
+		bound(a.tri.timer + 1)
+	}
+	// DMC: a fetch is due the next cycle the reader is
+	// hungry. The output timer expiry is an event while
+	// the reader can still change the output level; the
+	// silent idle state (nothing left to play, buffer
+	// empty, output parked) only cycles its timer and bit
+	// counter, which advanceQuiet folds.
+	if !a.dm.bufferFull && a.dm.bytesLeft > 0 {
+		return 0
+	}
+	if !(a.dm.bytesLeft == 0 && !a.dm.bufferFull && a.dm.silent) {
+		bound(a.dm.timer + 1)
+	}
+	// Frame sequencer: a pending $4017 reset lands
+	// fcPending cycles out.
+	if a.fcPending >= 0 {
+		bound(a.fcPending)
+	}
+	// Frame sequencer thresholds: the stepped cycle that
+	// brings fcCounter to a clock point, the sequence end
+	// (which clocks), or one past it (which wraps).
+	end := 14915
+	if a.fcMode == 1 {
+		end = 18641
+	}
+	next := end + 1
+	for _, t := range []int{3729, 7457, 11186, 14914, end} {
+		if t > a.fcCounter && t < next {
+			next = t
+		}
+	}
+	if a.fcMode == 1 && next == 14914 {
+		// 14914 is only an IRQ-window point in 4-step mode;
+		// in 5-step mode nothing happens there.
+		next = end
+	}
+	bound(a.untilStepped(next - a.fcCounter))
+	// The frame IRQ set window, 4-step mode, not inhibited:
+	// the sequencer's set check also fires on the
+	// non-stepped cycles that sit at counter 14914 (one
+	// cycle after the stepped arrival there, a threshold
+	// above) and at counter 14915. In an untriggered span
+	// those cycles only re-set a set flag, but after a
+	// $4015 read clears the flag mid-window they are the
+	// cycles that set it again, so they are events.
+	if a.fcMode == 0 && !a.fcInhibit && a.phase &&
+		(a.fcCounter == 14914 || a.fcCounter == 14915) {
+		return 0
+	}
+	if q < 0 {
+		q = 0
+	}
+	return q
+}
+
+// advanceQuiet folds k quiet cycles into the state in closed
+// form. quietCycles guarantees no timer expires, no frame
+// threshold or reset lands, no IRQ window opens, and no DMC
+// fetch comes due inside the span, so every evolving value
+// is a countdown, an accumulation, or a phase flip.
+func (a *APU) advanceQuiet(k int) {
+	stepped := k / 2
+	if !a.phase && k%2 == 1 {
+		stepped++
+	}
+	if k%2 == 1 {
+		a.phase = !a.phase
+	}
+	// Frame sequencer: the counter advances by the stepped
+	// count (no threshold crossed), a pending reset counts
+	// down without landing.
+	a.fcCounter += stepped
+	if a.fcPending >= 0 {
+		a.fcPending -= k
+	}
+	// Channel timers: a channel whose expiry is an event
+	// was bounded above, so its countdown cannot reach
+	// zero here; the gated-off channels fold through
+	// their expiries in closed form.
+	if pulseFoldable(&a.pulse1) {
+		a.pulse1.timer, a.pulse1.step = foldPulse(&a.pulse1, stepped)
+	} else {
+		a.pulse1.timer -= stepped
+	}
+	if pulseFoldable(&a.pulse2) {
+		a.pulse2.timer, a.pulse2.step = foldPulse(&a.pulse2, stepped)
+	} else {
+		a.pulse2.timer -= stepped
+	}
+	if noiseFoldable(&a.noi) {
+		a.noi.timer = foldNoise(&a.noi, stepped)
+	} else {
+		a.noi.timer -= stepped
+	}
+	if a.tri.length.value > 0 && a.tri.linear > 0 {
+		// Gate open: expiries are events, so the span
+		// cannot reach one.
+		a.tri.timer -= k
+	} else {
+		// Gate closed: the timer still counts and
+		// reloads; only the step is parked.
+		a.tri.timer, _ = countdown(a.tri.timer, a.tri.period, k)
+	}
+	if a.dm.bytesLeft == 0 && !a.dm.bufferFull && a.dm.silent {
+		a.dm.timer = foldDMCIdle(&a.dm, k)
+	} else {
+		a.dm.timer -= k
+	}
+	// The mixer accumulates the current (memoized) level
+	// for the whole span, split at the sample emission
+	// points so the produced samples are the ones the
+	// per-cycle accumulation would have made.
+	m := a.mix()
+	rem := k
+	for rem > 0 {
+		need := (cpuHz - a.mixPhase + SampleRate - 1) / SampleRate
+		if need < 1 {
+			need = 1
+		}
+		if need > rem {
+			need = rem
+		}
+		a.mixSum += m * float64(need)
+		a.mixCount += need
+		a.mixPhase += need * SampleRate
+		rem -= need
+		if a.mixPhase >= cpuHz {
+			a.mixPhase -= cpuHz
+			avg := a.mixSum / float64(a.mixCount)
+			s := int16(avg * 30000)
+			a.out = append(a.out, s, s)
+			a.mixSum = 0
+			a.mixCount = 0
+		}
+	}
+	a.executed += int64(k)
+	a.pending -= k
+}
+
+// pulseFoldable reports whether a pulse channel's timer
+// expiries cannot reach the mixer: no length counter, the
+// mute conditions (period under 8, sweep target overflow),
+// or an envelope sitting at zero. Everything about the gate
+// is static across a quiet span (length and envelope move
+// only on frame clocks, which are events; the mute inputs
+// change only on register writes, which break spans).
+func pulseFoldable(p *pulse) bool {
+	return p.length.value == 0 || p.muted() || p.env.out() == 0
+}
+
+// noiseFoldable is the noise channel's version: no length
+// counter or an envelope at zero. (The LFSR bit itself is
+// not a gate; it moves with every expiry.)
+func noiseFoldable(n *noise) bool {
+	return n.length.value == 0 || n.env.out() == 0
+}
+
+// countdown folds a countdown-with-reload timer over ticks
+// ticks: it returns the timer value after the span and the
+// number of expiries (reloads) inside it. The cycle length
+// is period+1 ticks: the timer decrements to zero over
+// timer ticks and expires on the next one.
+func countdown(timer, period, ticks int) (int, int) {
+	if ticks <= timer {
+		return timer - ticks, 0
+	}
+	rem := ticks - timer - 1
+	e := 1 + rem/(period+1)
+	return period - rem%(period+1), e
+}
+
+// foldPulse folds a pulse timer over stepped APU-rate ticks,
+// advancing the duty step once per expiry.
+func foldPulse(p *pulse, stepped int) (timer, step int) {
+	t, e := countdown(p.timer, p.period, stepped)
+	return t, (p.step + e) & 7
+}
+
+// foldNoise folds the noise timer over stepped APU-rate
+// ticks, shifting the LFSR once per expiry exactly as the
+// per-cycle path does.
+func foldNoise(n *noise, stepped int) int {
+	t, e := countdown(n.timer, noisePeriods[n.period]-1, stepped)
+	for ; e > 0; e-- {
+		var tap uint16
+		if n.mode {
+			tap = (n.lfsr >> 6) & 1
+		} else {
+			tap = (n.lfsr >> 1) & 1
+		}
+		fb := (n.lfsr & 1) ^ tap
+		n.lfsr = (n.lfsr >> 1) | (fb << 14)
+	}
+	return t
+}
+
+// foldDMCIdle folds the DMC output timer and bit counter
+// over k CPU cycles in the silent idle state: expiries
+// reload the timer from the rate table and count the bit
+// counter down, wrapping it to 8 (the transfer attempt
+// finds the buffer empty and the reader stays silent, so
+// nothing audible evolves).
+func foldDMCIdle(d *dmc, k int) int {
+	t, e := countdown(d.timer, dmcRates[d.rateIdx]-1, k)
+	bl := (d.bitsLeft - 1 - e) % 8
+	if bl < 0 {
+		bl += 8
+	}
+	d.bitsLeft = bl + 1
+	return t
+}
+
+// ProjectIRQ returns the IRQ level (frame flag OR DMC flag)
+// as it will stand at the given absolute cycle, computed
+// from the current rendered state without running cycles,
+// plus whether the projection is valid. The frame flag's
+// evolution between renders is pure sequencer arithmetic:
+// the counter advances on APU-rate cycles with one wrap,
+// and the flag can only be set inside the 4-step set window
+// (or stay as it is); the flag clears only on register
+// accesses, which render first, so no clear can hide inside
+// a projection interval. The projection bails (ok false)
+// when a $4017 reset lands inside the interval (it rewrites
+// the counter path) or while the DMC reader is active (its
+// fetches stall the CPU and end samples on their own
+// schedule; those stretches render instead, and they are
+// short and rare).
+func (a *APU) ProjectIRQ(cycle int64) (level bool, ok bool) {
+	if cycle < a.executed {
+		return false, false
+	}
+	if a.dm.bytesLeft > 0 || a.dm.bufferFull {
+		return false, false
+	}
+	d := int(cycle - a.executed)
+	if a.fcPending >= 0 && a.fcPending <= d {
+		return false, false
+	}
+	level = a.fcIRQ || a.dm.irqFlag
+	if level || a.fcMode != 0 || a.fcInhibit {
+		return level, true
+	}
+	// Distance, in cycles from the last rendered cycle, to
+	// the first cycle of the set window: the stepped cycle
+	// that brings the counter to 14915, or a non-stepped
+	// cycle sitting at 14914 or 14915 when the counter is
+	// already there.
+	c0 := a.fcCounter
+	var dist int
+	switch {
+	case c0 < 14914:
+		dist = a.untilStepped(14914 - c0)
+		// The arrival at 14914 is stepped; if it is not
+		// itself the window (it is not: the set needs
+		// 14915 stepped, or a non-stepped cycle at
+		// 14914/14915 right after), the window opens on
+		// the cycle right after the arrival.
+		dist++
+	case c0 == 14914:
+		dist = 1
+	default: // c0 == 14915
+		if a.phase {
+			dist = 1
+		} else {
+			// The next cycle is the stepped wrap (the
+			// counter restarts at 1); the window comes
+			// back one sequence later, on the cycle
+			// after the next arrival at 14914.
+			dist = a.untilStepped(14914) + 1
+		}
+	}
+	if d >= dist {
+		level = true
+	}
+	return level, true
+}
+
+// Mark records a bus sync point at the current target cycle,
+// under the machine's per-access sequence number. Marks must
+// be recorded in sequence order.
+func (a *APU) Mark(seq int) {
+	m := &a.marks[seq&31]
+	m.seq = seq
+	m.cycle = a.Target()
+	m.irq = false
+	m.filled = false
+	if m.cycle <= a.executed {
+		// Same record-time snapshot as the PPU's marks:
+		// the access caught the unit up inside its own
+		// dispatch, so the level as it stands is the
+		// level at the cycle (a $4015 read's frame IRQ
+		// clear included, as the eager sync read it).
+		m.irq = a.fcIRQ || a.dm.irqFlag
+		m.filled = true
+	}
+	if a.markFill < 0 {
+		a.markFill = seq
+	}
+	a.markLast = seq
+}
+
+// MarkIRQ returns the IRQ level as it stood at the sync
+// point recorded under seq, running cycles up to that point
+// first if the advance has not reached it. ok is false when
+// the mark is no longer on record.
+func (a *APU) MarkIRQ(seq int) (level bool, ok bool) {
+	m := &a.marks[seq&31]
+	if m.seq != seq {
+		return false, false
+	}
+	if !m.filled {
+		a.CatchUpTo(m.cycle)
+	}
+	if !m.filled {
+		return false, false
+	}
+	return m.irq, true
+}
+
+// resetLazy clears the advance bookkeeping after a state
+// load: the restored cycle state is the new epoch, fully
+// caught up by definition.
+func (a *APU) resetLazy() {
+	a.pending = 0
+	a.executed = 0
+	a.markFill = -1
+	a.markLast = 0
+	for i := range a.marks {
+		a.marks[i].seq = -1
+		a.marks[i].filled = false
+	}
+}
