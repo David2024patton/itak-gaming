@@ -3548,12 +3548,18 @@ class _UpdateOfferDialog extends StatefulWidget {
   final String body;
   final String leftLabel;
   final String rightLabel;
+  // Old version on the left, new version on the right (David,
+  // 2026-10-15): people should see the change they are making.
+  final String fromVersion;
+  final String toVersion;
 
   const _UpdateOfferDialog({
     required this.title,
     required this.body,
     required this.leftLabel,
     required this.rightLabel,
+    this.fromVersion = '',
+    this.toVersion = '',
   });
 
   @override
@@ -3572,6 +3578,27 @@ class _UpdateOfferDialogState extends State<_UpdateOfferDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (widget.fromVersion.isNotEmpty && widget.toVersion.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Row(
+                children: [
+                  Text(widget.fromVersion,
+                      style: const TextStyle(
+                          fontSize: 22, color: Colors.white70)),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: Icon(Icons.arrow_forward,
+                        color: Color(0xFF00E676), size: 26),
+                  ),
+                  Text(widget.toVersion,
+                      style: const TextStyle(
+                          fontSize: 22,
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
           Text(widget.body),
           if (_showHint)
             const Padding(
@@ -3636,10 +3663,13 @@ Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
           'iTaK Gaming ${avail.versionName} is ready to install.${avail.notes.isEmpty ? '' : '\n\n${avail.notes}'}',
       leftLabel: 'Later',
       rightLabel: 'Update now',
+      fromVersion: check.currentName,
+      toVersion: avail.versionName,
     ),
   );
   if (go != true || !context.mounted) return;
-  var result = await _downloadWithProgress(context, avail);
+  var result =
+      await _downloadWithProgress(context, avail, fromVersion: check.currentName);
   while (true) {
     if (result.isEmpty) return; // the system installer is on screen
     if (!context.mounted) return;
@@ -3672,22 +3702,29 @@ Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
         body: result,
         leftLabel: 'Later',
         rightLabel: 'Try again',
+        fromVersion: check.currentName,
+        toVersion: avail.versionName,
       ),
     );
     if (retry != true || !context.mounted) return;
-    result = await _downloadWithProgress(context, avail);
+    result = await _downloadWithProgress(context, avail,
+        fromVersion: check.currentName);
   }
 }
 
 /// Shows the live download progress dialog while the native side
 /// fetches the APK, then returns install()'s result string.
 Future<String> _downloadWithProgress(
-    BuildContext context, AppUpdateInfo avail) async {
+    BuildContext context, AppUpdateInfo avail,
+    {String fromVersion = ''}) async {
   showDialog<void>(
     context: context,
     barrierDismissible: false,
     barrierColor: Colors.black.withOpacity(0.8),
-    builder: (_) => _UpdateProgressDialog(expectedSize: avail.size),
+    builder: (_) => _UpdateProgressDialog(
+        expectedSize: avail.size,
+        fromVersion: fromVersion,
+        toVersion: avail.versionName),
   );
   final result = await AppUpdate.install(avail);
   if (context.mounted) {
@@ -3702,7 +3739,12 @@ Future<String> _downloadWithProgress(
 /// the size is unknown.
 class _UpdateProgressDialog extends StatefulWidget {
   final int expectedSize;
-  const _UpdateProgressDialog({required this.expectedSize});
+  final String fromVersion;
+  final String toVersion;
+  const _UpdateProgressDialog(
+      {required this.expectedSize,
+      this.fromVersion = '',
+      this.toVersion = ''});
 
   @override
   State<_UpdateProgressDialog> createState() => _UpdateProgressDialogState();
@@ -3748,6 +3790,14 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (widget.fromVersion.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Text(
+                'iTaK Gaming ${widget.fromVersion}  to  ${widget.toVersion}',
+                style: const TextStyle(fontSize: 18, color: Colors.white),
+              ),
+            ),
           LinearProgressIndicator(
             value: frac,
             minHeight: 10,
