@@ -511,7 +511,16 @@ func (s *System) RunFrame() {
 // frame sequencer's divider twin advances once per device dot,
 // keeping the APU sequencer at 512 Hz of device time at either
 // CPU speed.
+//
+// The timer loop stays per device dot because its overflow
+// bookkeeping reads s.dot. Every other device consumes the
+// whole span at once: no device reads another's state mid-span,
+// and the CPU samples device state only at span boundaries, so
+// the end state matches stepping dot by dot.
 func (s *System) tick(dots int) {
+	if dots <= 0 {
+		return
+	}
 	steps := s.speed
 	if steps < 1 {
 		steps = 1
@@ -521,12 +530,23 @@ func (s *System) tick(dots int) {
 		for k := 0; k < steps; k++ {
 			s.tickTimerStep()
 		}
-		s.tickSeqDot()
-		s.ppu.Tick(1, s.ppuIRQ)
-		s.tickDMADot()
-		s.tickSerialDot()
-		s.apu.Tick(1)
-		s.tickRTCDot()
+	}
+	s.tickSeqDots(dots)
+	s.ppu.Tick(dots, s.ppuIRQ)
+	// The DMA ticker is a no-op outside a transfer; testing the
+	// window here keeps idle frames off the call path. A live
+	// transfer still steps per dot: it is short and rare.
+	if s.dmaClock >= 0 || s.dmaPend >= 0 {
+		for i := 0; i < dots; i++ {
+			s.tickDMADot()
+		}
+	}
+	if s.serialActive {
+		s.tickSerialDots(dots)
+	}
+	s.apu.Tick(dots)
+	if s.Cart != nil && s.Cart.HasTimer && s.Cart.RTC.DayHigh&0x40 == 0 {
+		s.tickRTCDots(dots)
 	}
 }
 
@@ -556,16 +576,18 @@ func (s *System) tickTimerStep() {
 	s.timerBit = bit
 }
 
-// tickSeqDot advances the frame sequencer's divider twin by one
-// device dot; a falling edge of its bit 12 clocks the APU's frame
-// sequencer, the same rule GB-2 applied to the main divider (the
-// two are identical until double speed engages).
-func (s *System) tickSeqDot() {
-	prevBit12 := s.seqDiv>>12&1 == 1
-	s.seqDiv++
-	if prevBit12 && s.seqDiv>>12&1 == 0 {
+// tickSeqDots advances the frame sequencer's divider twin by
+// the given number of device dots; a falling edge of its bit 12
+// clocks the APU's frame sequencer, the same rule GB-2 applied
+// to the main divider (the two are identical until double speed
+// engages). Bit 12 falls once per 8192 dots, at the counter's
+// 8192-dot wraps.
+func (s *System) tickSeqDots(dots int) {
+	total := int(s.seqDiv) + dots
+	for e := int(s.seqDiv)/8192 + 1; e <= total/8192; e++ {
 		s.apu.StepFrameSequencer()
 	}
+	s.seqDiv = uint16(total)
 }
 
 // timerSignal computes the timer circuit's current output: the TAC
@@ -650,12 +672,12 @@ func (s *System) tickDMADot() {
 	}
 }
 
-// tickSerialDot advances an internal-clock serial transfer. The
-// bit period is 512 device dots (8192 Hz) at normal clock, or 16
-// dots (262144 Hz) with the CGB fast clock (SC bit 1); double
-// speed halves either period, as the published double-speed
-// rules describe.
-func (s *System) tickSerialDot() {
+// tickSerialDots advances an internal-clock serial transfer by
+// the given number of device dots. The bit period is 512 device
+// dots (8192 Hz) at normal clock, or 16 dots (262144 Hz) with
+// the CGB fast clock (SC bit 1); double speed halves either
+// period, as the published double-speed rules describe.
+func (s *System) tickSerialDots(dots int) {
 	if !s.serialActive {
 		return
 	}
@@ -664,52 +686,53 @@ func (s *System) tickSerialDot() {
 		period = 16
 	}
 	period /= s.Speed()
-	s.serialClock++
-	if s.serialClock >= period {
-		s.serialClock = 0
+	s.serialClock += dots
+	for s.serialClock >= period {
+		s.serialClock -= period
 		s.serialBits++
 		if s.serialBits == 8 {
 			s.serialActive = false
+			s.serialClock = 0
 			s.serialSC &^= 0x80
 			s.serial = append(s.serial, s.serialSB)
 			s.requestIRQ(3)
+			return
 		}
 	}
 }
 
-// tickRTCDot advances the MBC3 real-time clock from emulated time:
-// one second of dots per RTC second, when the cart has a timer and
-// it is not halted.
-func (s *System) tickRTCDot() {
+// tickRTCDots advances the MBC3 real-time clock by the given
+// number of device dots: one second of dots per RTC second,
+// when the cart has a timer and it is not halted.
+func (s *System) tickRTCDots(dots int) {
 	if s.Cart == nil || !s.Cart.HasTimer {
 		return
 	}
 	if s.Cart.RTC.DayHigh&0x40 != 0 {
 		return // halted
 	}
-	s.rtcAcc++
-	if s.rtcAcc < masterHz {
-		return
-	}
-	s.rtcAcc -= masterHz
-	r := &s.Cart.RTC
-	r.Seconds++
-	if r.Seconds >= 60 {
-		r.Seconds = 0
-		r.Minutes++
-		if r.Minutes >= 60 {
-			r.Minutes = 0
-			r.Hours++
-			if r.Hours >= 24 {
-				r.Hours = 0
-				day := uint16(r.DayLow) | uint16(r.DayHigh&1)<<8
-				day++
-				if day >= 512 {
-					day = 0
-					r.DayHigh |= 0x80 // day carry
+	s.rtcAcc += uint64(dots)
+	for s.rtcAcc >= masterHz {
+		s.rtcAcc -= masterHz
+		r := &s.Cart.RTC
+		r.Seconds++
+		if r.Seconds >= 60 {
+			r.Seconds = 0
+			r.Minutes++
+			if r.Minutes >= 60 {
+				r.Minutes = 0
+				r.Hours++
+				if r.Hours >= 24 {
+					r.Hours = 0
+					day := uint16(r.DayLow) | uint16(r.DayHigh&1)<<8
+					day++
+					if day >= 512 {
+						day = 0
+						r.DayHigh |= 0x80 // day carry
+					}
+					r.DayLow = uint8(day)
+					r.DayHigh = r.DayHigh&^1 | uint8(day>>8)&1
 				}
-				r.DayLow = uint8(day)
-				r.DayHigh = r.DayHigh&^1 | uint8(day>>8)&1
 			}
 		}
 	}
