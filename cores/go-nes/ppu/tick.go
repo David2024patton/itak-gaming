@@ -15,20 +15,16 @@ import "math/bits"
 // reloads, the timing events, and finally the A12 sample for
 // the dot.
 
-// Tick advances n dots. The machine calls it with 3 (one CPU
-// cycle) before every bus access.
+// Tick advances n dots and renders them immediately. The
+// machine no longer calls it per bus access (it records owed
+// dots with Advance and syncs with CatchUp at the points that
+// observe the chip), but Tick keeps its exact eager semantics
+// for the unit tests and any other direct driver: the segment
+// machinery in renderTo reproduces the SetInLastTick value
+// this call has always produced.
 func (p *PPU) Tick(n int) {
-	p.SetInLastTick = -1
-	for i := 0; i < n; i++ {
-		p.step()
-		if p.scanline == vblSetLine && p.dot == 2 && p.vblFlag {
-			// The dot just executed was the set dot (the
-			// position now points one past it) and the
-			// flag went up: record how many dots of this
-			// tick followed it.
-			p.SetInLastTick = n - 1 - i
-		}
-	}
+	p.Advance(n)
+	p.CatchUp()
 }
 
 // step executes the dot at the current position, then advances
@@ -73,6 +69,10 @@ func (p *PPU) step() {
 			p.suppress = false
 		} else {
 			p.vblFlag = true
+			// The set dot is the (executed+1)-th dot
+			// rendered; renderTo's segment accounting
+			// measures SetInLastTick from here.
+			p.lastSet = p.executed + 1
 		}
 	case line == preLine && dot == 1:
 		p.vblFlag = false
@@ -427,8 +427,13 @@ func (p *PPU) outputPixel(line, x int) {
 		}
 	}
 	// Sprite shift registers and X counters run on every
-	// output dot, whether or not a pixel was found.
-	for i := 0; i < 8; i++ {
+	// output dot, whether or not a pixel was found. Only
+	// the live slots run: a dead slot's shifters hold zero
+	// pattern (that is what the live mask records), so
+	// shifting them is a no-op and their counters gate a
+	// pixel that can never be opaque.
+	for m := p.sprLiveMask; m != 0; m &= m - 1 {
+		i := bits.TrailingZeros8(m)
 		if p.sprXCnt[i] == 0 {
 			p.sprShLo[i] <<= 1
 			p.sprShHi[i] <<= 1
