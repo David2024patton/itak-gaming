@@ -73,3 +73,21 @@ func (c *Cart) ReadROM(addr uint32) uint8 {
 	}
 	return c.Data[addr%uint32(len(c.Data))]
 }
+
+// ReadROM16 returns the big-endian ROM word at addr, applying the
+// same mirror wrap as ReadROM to each byte: byte one is the byte
+// ReadROM(addr) returns, byte two is ReadROM(addr+1), with a single
+// modulo for the pair.
+func (c *Cart) ReadROM16(addr uint32) uint16 {
+	n := uint32(len(c.Data))
+	if n == 0 {
+		return 0xFFFF
+	}
+	i := addr % n
+	hi := uint16(c.Data[i])
+	i++
+	if i == n {
+		i = 0
+	}
+	return hi<<8 | uint16(c.Data[i])
+}
