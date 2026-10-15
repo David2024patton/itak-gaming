@@ -172,10 +172,14 @@ func (p *PPU) atAddress() uint16 {
 
 // bgPatternAddress is the fetch address of the current
 // background tile's low pattern byte. The background pattern
-// table is $2000 bit 3.
+// table select is PPUCTRL bit 4 (the sprite table select is
+// bit 3; the two were swapped until 2026-10-15, which fetched
+// every background tile from the sprite half of CHR and
+// garbled the backgrounds of real games while the CPU and
+// register test suites still passed).
 func (p *PPU) bgPatternAddress() uint16 {
 	base := uint16(0)
-	if p.ctrl&0x08 != 0 {
+	if p.ctrl&0x10 != 0 {
 		base = 0x1000
 	}
 	return base | (uint16(p.ntLatch) << 4) | ((p.v >> 12) & 7)
@@ -194,9 +198,9 @@ func (p *PPU) sprPatternAddress(slot int) uint16 {
 	if slot >= p.evalCount {
 		// Empty slots fetch tile $FF from the sprite table
 		// and the result is discarded. The sprite pattern
-		// table is $2000 bit 4.
+		// table select is PPUCTRL bit 3.
 		base := uint16(0)
-		if p.ctrl&0x10 != 0 {
+		if p.ctrl&0x08 != 0 {
 			base = 0x1000
 		}
 		return base | (0xFF << 4)
@@ -221,7 +225,7 @@ func (p *PPU) sprPatternAddress(slot int) uint16 {
 		row = 7 - row
 	}
 	base := uint16(0)
-	if p.ctrl&0x10 != 0 {
+	if p.ctrl&0x08 != 0 {
 		base = 0x1000
 	}
 	return base | (uint16(tile) << 4) | uint16(row)
