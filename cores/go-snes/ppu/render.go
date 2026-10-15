@@ -353,25 +353,30 @@ var objSizes = [8][2][2]int{
 	{{16, 32}, {32, 32}},
 }
 
-// objLine precomputes the OBJ layer's per-pixel sample for
-// one display line: the first sprite (in evaluation order,
-// with priority rotation applied) to cover a pixel wins it.
-func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
-	out := make([]sample, w)
-	type spr struct {
-		x, y     int
-		tile     uint16
-		pal      int
-		prio     int
-		flipX    bool
-		flipY    bool
-		wid, hgt int
-	}
+// objSpr is one sprite selected for a line, kept in
+// evaluation order.
+type objSpr struct {
+	x, y     int
+	tile     uint16
+	pal      int
+	prio     int
+	flipX    bool
+	flipY    bool
+	wid, hgt int
+}
+
+// objLineB composes the OBJ layer per-pixel samples for
+// one display line into out: the first sprite (in
+// evaluation order, with priority rotation applied) to
+// cover a pixel wins it. The sprite structs live in PPU
+// scratch arrays, so composing a line allocates nothing.
+func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) {
+	clear(out.opaque[:w])
 	start := 0
 	if p.oamPrioRot {
 		start = (p.oamAddr >> 2) & 0x7F
 	}
-	var onLine []spr
+	nOn := 0
 	for i := 0; i < 128; i++ {
 		n := (start + i) & 0x7F
 		o := n * 4
@@ -390,7 +395,7 @@ func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
 			continue
 		}
 		attr := p.oam[o+3]
-		s := spr{
+		p.objOnLine[nOn] = objSpr{
 			x: x0, y: y0,
 			tile:  uint16(p.oam[o+2]) | uint16(attr&1)<<8,
 			pal:   int((attr >> 1) & 0x07),
@@ -399,18 +404,19 @@ func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
 			flipY: attr&0x80 != 0,
 			wid:   sz[0], hgt: sz[1],
 		}
-		onLine = append(onLine, s)
-		if len(onLine) == 33 {
+		nOn++
+		if nOn == 33 {
 			p.rangeOver = true
-			onLine = onLine[:32]
+			nOn = 32
 			break
 		}
 	}
 	// Sprite tile budget: at most 34 8x8 tiles are fetched
 	// per line; sprites past the budget are not drawn.
 	tiles := 0
-	var draw []spr
-	for _, s := range onLine {
+	nDraw := 0
+	for i := 0; i < nOn; i++ {
+		s := &p.objOnLine[i]
 		end := s.x + s.wid
 		if end > w {
 			end = w
@@ -418,7 +424,7 @@ func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
 		if end <= 0 || s.x >= w {
 			continue // fully off-screen horizontally
 		}
-		// Tiles fetched span from the sprite's left edge
+		// Tiles fetched span from the sprite left edge
 		// to its last on-screen pixel.
 		n := (end - s.x + 7) / 8
 		tiles += n
@@ -426,12 +432,15 @@ func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
 			p.timeOver = true
 			break
 		}
-		draw = append(draw, s)
+		p.objDraw[nDraw] = *s
+		nDraw++
 	}
 	// Draw from the last evaluated to the first, so the
-	// first sprite to cover a pixel keeps it.
-	for i := len(draw) - 1; i >= 0; i-- {
-		s := draw[i]
+	// first sprite to cover a pixel keeps it. Each 8-pixel
+	// tile row is fetched once; px runs in tile space and
+	// sx maps it to the screen (mirrored under flipX).
+	for i := nDraw - 1; i >= 0; i-- {
+		s := &p.objDraw[i]
 		ry := y - s.y
 		if ry < 0 {
 			ry += 256
@@ -439,16 +448,9 @@ func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
 		if s.flipY {
 			ry = s.hgt - 1 - ry
 		}
-		for sx := 0; sx < s.wid; sx++ {
-			dx := s.x + sx
-			if dx < 0 || dx >= w {
-				continue
-			}
-			px := sx
-			if s.flipX {
-				px = s.wid - 1 - sx
-			}
-			tile := s.tile + uint16(ry/8)*16 + uint16(px/8)
+		rank := int8(mi.objRank[s.prio])
+		for cx := 0; cx < s.wid; cx += 8 {
+			tile := s.tile + uint16(ry/8)*16 + uint16(cx/8)
 			base := p.objBase
 			if tile&0x100 != 0 {
 				base += p.objGap
@@ -456,21 +458,29 @@ func (p *PPU) objLine(mi modeInfo, y, w int) []sample {
 			word := (base + (tile&0xFF)*16 + uint16(ry%8)) & 0x7FFF
 			w0 := p.vram[word]
 			w1 := p.vram[(word+8)&0x7FFF]
-			bit := uint(7 - (px % 8))
-			idx := int((w0>>bit)&1) | int((w0>>(bit+8))&1)<<1 |
-				int((w1>>bit)&1)<<2 | int((w1>>(bit+8))&1)<<3
-			if idx == 0 {
-				continue
-			}
-			out[dx] = sample{
-				color:  p.cgram[128+s.pal*16+idx],
-				rank:   mi.objRank[s.prio],
-				layer:  4,
-				opaque: true,
+			for j := 0; j < 8 && cx+j < s.wid; j++ {
+				px := cx + j
+				sx := px
+				if s.flipX {
+					sx = s.wid - 1 - px
+				}
+				dx := s.x + sx
+				if dx < 0 || dx >= w {
+					continue
+				}
+				bit := uint(7 - j)
+				idx := int((w0>>bit)&1) | int((w0>>(bit+8))&1)<<1 |
+					int((w1>>bit)&1)<<2 | int((w1>>(bit+8))&1)<<3
+				if idx == 0 {
+					continue
+				}
+				out.color[dx] = p.cgram[128+s.pal*16+idx]
+				out.rank[dx] = rank
+				out.layer[dx] = 4
+				out.opaque[dx] = true
 			}
 		}
 	}
-	return out
 }
 
 // --- Mode 7 --------------------------------------------------------------
@@ -588,16 +598,23 @@ func (p *PPU) layerWindowLog(layer int) int {
 // is inside the combined window region.
 func (p *PPU) windowInside(layer, x int) bool {
 	inv1, en1, inv2, en2 := p.layerWindowSel(layer)
+	return windowEval(inv1, en1, inv2, en2, p.layerWindowLog(layer), &p.wh, x)
+}
+
+// windowEval is the window test with the layer select bits
+// and combination logic already decoded: it reports
+// whether x is inside the combined window region.
+func windowEval(inv1, en1, inv2, en2 bool, log int, wh *[4]uint8, x int) bool {
 	if !en1 && !en2 {
 		return false
 	}
-	in1 := x >= int(p.wh[0]) && x <= int(p.wh[1])
-	in2 := x >= int(p.wh[2]) && x <= int(p.wh[3])
+	in1 := x >= int(wh[0]) && x <= int(wh[1])
+	in2 := x >= int(wh[2]) && x <= int(wh[3])
 	v1 := in1 != inv1
 	v2 := in2 != inv2
 	switch {
 	case en1 && en2:
-		switch p.layerWindowLog(layer) {
+		switch log {
 		case 0:
 			return v1 || v2
 		case 1:
@@ -729,8 +746,15 @@ func channelMath(m, a int, sub, half bool) int {
 
 // RenderLine composes display line y (0-based) into the
 // framebuffer. Lines past the 224-line framebuffer in
-// overscan mode are counted by the machine's timing but
+// overscan mode are counted by the machine timing but
 // have nowhere to land, and are dropped here.
+//
+// Composition follows the documented priority tables for
+// each background mode: every layer produces, per pixel, a
+// color and a numeric rank, and the highest rank wins on
+// each screen (main and sub are composed independently,
+// then color math combines them). Layers render once into
+// PPU scratch line buffers and merge into both screens.
 func (p *PPU) RenderLine(y int) {
 	if y < 0 || y >= Height {
 		return
@@ -748,103 +772,97 @@ func (p *PPU) RenderLine(y int) {
 	if hires {
 		w = 512
 	}
-	obj := p.objLine(mi, y, w)
+	p.lineStamp++
+	if p.lineStamp == 0 {
+		for i := range p.rowMemo {
+			p.rowMemo[i].stamp = 0
+		}
+		p.lineStamp = 1
+	}
+	p.prepLineWindows(w, hires)
+	main := &p.lbMain
+	sub := &p.lbSub
+	clear(main.opaque[:w])
+	clear(sub.opaque[:w])
 	extbg := p.bgMode == 7 && p.setINI&0x40 != 0
-	main := make([]sample, w)
-	sub := make([]sample, w)
-	for x := 0; x < w; x++ {
-		wx := x
-		if hires {
-			wx = x >> 1
-		}
-		// Main screen.
-		var best sample
-		if p.bgMode == 7 {
+	if p.bgMode == 7 {
+		if (p.tm|p.ts)&0x01 != 0 {
+			p.m7Line(y, w, false, &p.lbBG[0])
 			if p.tm&0x01 != 0 {
-				if s := p.m7Sample(x, y, false); s.opaque {
-					best = s
-				}
+				mergeLine(main, &p.lbBG[0], w)
 			}
-			if extbg && p.tm&0x02 != 0 {
-				s2 := p.m7Sample(x, y, true)
-				if s2.opaque && (!best.opaque || s2.rank > best.rank) {
-					best = s2
-				}
-			}
-		} else {
-			for bg := 0; bg < 4; bg++ {
-				if mi.bpp[bg] == 0 || p.tm&(1<<uint(bg)) == 0 {
-					continue
-				}
-				s := p.bgSample(mi, bg, x, y, w)
-				if s.opaque && (!best.opaque || s.rank > best.rank) {
-					best = s
-				}
-			}
-		}
-		if p.tm&0x10 != 0 {
-			if s := obj[x]; s.opaque && (!best.opaque || s.rank > best.rank) {
-				best = s
-			}
-		}
-		main[x] = best
-		// Sub screen (no OBJ window masks or TM bits: its
-		// own TS enable set).
-		var sb sample
-		if p.bgMode == 7 {
 			if p.ts&0x01 != 0 {
-				if s := p.m7Sample(x, y, false); s.opaque {
-					sb = s
-				}
-			}
-			if extbg && p.ts&0x02 != 0 {
-				s2 := p.m7Sample(x, y, true)
-				if s2.opaque && (!sb.opaque || s2.rank > sb.rank) {
-					sb = s2
-				}
-			}
-		} else {
-			for bg := 0; bg < 4; bg++ {
-				if mi.bpp[bg] == 0 || p.ts&(1<<uint(bg)) == 0 {
-					continue
-				}
-				s := p.bgSample(mi, bg, x, y, w)
-				if s.opaque && (!sb.opaque || s.rank > sb.rank) {
-					sb = s
-				}
+				mergeLine(sub, &p.lbBG[0], w)
 			}
 		}
-		if p.ts&0x10 != 0 {
-			if s := obj[x]; s.opaque && (!sb.opaque || s.rank > sb.rank) {
-				sb = s
+		if extbg && (p.tm|p.ts)&0x02 != 0 {
+			p.m7Line(y, w, true, &p.lbBG[1])
+			if p.tm&0x02 != 0 {
+				mergeLine(main, &p.lbBG[1], w)
+			}
+			if p.ts&0x02 != 0 {
+				mergeLine(sub, &p.lbBG[1], w)
 			}
 		}
-		sub[x] = sb
-		// Window masks, per screen.
-		if main[x].opaque {
-			m := main[x]
-			p.maskWindows(&m, m.layer, wx, false)
-			main[x] = m
-		}
-		if sub[x].opaque {
-			m := sub[x]
-			p.maskWindows(&m, m.layer, wx, true)
-			sub[x] = m
+	} else {
+		for bg := 0; bg < 4; bg++ {
+			if mi.bpp[bg] == 0 || (p.tm|p.ts)&(1<<uint(bg)) == 0 {
+				continue
+			}
+			p.bgLine(&mi, bg, y, w, &p.lbBG[bg])
+			if p.tm&(1<<uint(bg)) != 0 {
+				mergeLine(main, &p.lbBG[bg], w)
+			}
+			if p.ts&(1<<uint(bg)) != 0 {
+				mergeLine(sub, &p.lbBG[bg], w)
+			}
 		}
 	}
+	if (p.tm|p.ts)&0x10 != 0 {
+		p.objLineB(&mi, y, w, &p.lbObj)
+		if p.tm&0x10 != 0 {
+			mergeLine(main, &p.lbObj, w)
+		}
+		if p.ts&0x10 != 0 {
+			mergeLine(sub, &p.lbObj, w)
+		}
+	}
+	// Window masks, per screen: where the winning layer
+	// mask bit for that screen is set and the pixel is
+	// inside the layer window, the winner drops out.
+	if p.tmw != 0 {
+		for x := 0; x < w; x++ {
+			if main.opaque[x] {
+				l := main.layer[x]
+				if l <= 4 && p.tmw&(1<<uint(l)) != 0 && p.winIn[l][x] {
+					main.opaque[x] = false
+				}
+			}
+		}
+	}
+	if p.tsw != 0 {
+		for x := 0; x < w; x++ {
+			if sub.opaque[x] {
+				l := sub.layer[x]
+				if l <= 4 && p.tsw&(1<<uint(l)) != 0 && p.winIn[l][x] {
+					sub.opaque[x] = false
+				}
+			}
+		}
+	}
+	tab := p.expandTable()
 	if !hires {
 		for x := 0; x < w; x++ {
-			c := p.mathAt(main[x], sub[x], x)
-			row[x] = p.expand(c)
+			row[x] = tab[p.mathLine(main, sub, x)]
 		}
 		return
 	}
 	// Hi-res: adjacent sub-pixel pairs are averaged after
 	// color math (the documented 512-to-256 pairing).
 	for x := 0; x < Width; x++ {
-		c0 := p.mathAt(main[2*x], sub[2*x], x)
-		c1 := p.mathAt(main[2*x+1], sub[2*x+1], x)
-		row[x] = avgExpand(p.expand(c0), p.expand(c1))
+		c0 := p.mathLine(main, sub, 2*x)
+		c1 := p.mathLine(main, sub, 2*x+1)
+		row[x] = avgExpand(tab[c0], tab[c1])
 	}
 }
 
@@ -854,4 +872,444 @@ func avgExpand(a, b uint32) uint32 {
 	g := (((a >> 8) & 0xFF) + ((b >> 8) & 0xFF)) / 2
 	bl := (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF)) / 2
 	return 0xFF000000 | bl<<16 | g<<8 | r
+}
+
+// --- fast line composition ----------------------------------
+//
+// The line buffers and per-line window precomputation used
+// by RenderLine. Background layers render tile by tile (a
+// tile row is decoded once for its 8 or 16 pixels) into
+// scratch buffers owned by the PPU, so composing a frame
+// allocates nothing. Sampling paths that are per-pixel by
+// nature (mosaic, offset-per-tile) fall back to bgSample,
+// which remains the reference implementation of the
+// sampling rules; both paths feed the same merge, window,
+// and color math code.
+
+// lineBuf is one layer or one screen worth of samples for
+// a scanline, in parallel arrays: the winning color, rank,
+// and layer index per pixel.
+type lineBuf struct {
+	color  [512]uint16
+	rank   [512]int8
+	layer  [512]int8
+	opaque [512]bool
+}
+
+// expandTable returns the table mapping every 15-bit
+// color to its expanded XRGB8888 pixel at the current
+// brightness, rebuilding it when the brightness register
+// has changed since the last build (in practice only
+// during fades). The table is built from expand itself,
+// so the fast path agrees with it by construction.
+func (p *PPU) expandTable() *[32768]uint32 {
+	if !p.expValid || p.expBright != p.brightness {
+		for c := 0; c < 32768; c++ {
+			p.expTab[c] = p.expand(uint16(c))
+		}
+		p.expBright = p.brightness
+		p.expValid = true
+	}
+	return &p.expTab
+}
+
+// regionAt evaluates one CGWSEL region selector against
+// the color window state at a pixel: 0 means nowhere, 1
+// outside the window, 2 inside it, 3 everywhere.
+func regionAt(sel uint8, cw bool) bool {
+	switch sel {
+	case 1:
+		return !cw
+	case 2:
+		return cw
+	case 3:
+		return true
+	}
+	return false
+}
+
+// winTrueRun is a pre-filled span of true values, so
+// window verdict runs fill with copy instead of a
+// per-pixel store loop.
+var winTrueRun [512]bool
+
+func init() {
+	for i := range winTrueRun {
+		winTrueRun[i] = true
+	}
+}
+
+// fillWindowRuns fills dst[0..w) with the layer window
+// verdict. The verdict can only change where x crosses a
+// window edge (edges sit at wh values, and just past them),
+// so it evaluates one point per run between consecutive
+// edges and fills the run. Windows are defined in
+// 256-space; hi-res sampling evaluates at x>>1, which maps
+// each verdict to an adjacent pixel pair.
+func fillWindowRuns(dst *[512]bool, inv1, en1, inv2, en2 bool, log int, wh *[4]uint8, w int, hires bool) {
+	var pts [7]int
+	pts[0] = 0
+	pts[1] = 256
+	pts[2] = int(wh[0])
+	pts[3] = int(wh[1]) + 1
+	pts[4] = int(wh[2])
+	pts[5] = int(wh[3]) + 1
+	pts[6] = 256
+	// Insertion sort of the few candidate edges.
+	for i := 1; i < len(pts); i++ {
+		for j := i; j > 0 && pts[j] < pts[j-1]; j-- {
+			pts[j], pts[j-1] = pts[j-1], pts[j]
+		}
+	}
+	prev := -1
+	for i := 0; i < len(pts); i++ {
+		a := pts[i]
+		if a < 0 {
+			a = 0
+		}
+		if a > 256 {
+			a = 256
+		}
+		if a == prev {
+			continue
+		}
+		prev = a
+		b := 256
+		for k := i + 1; k < len(pts); k++ {
+			c := pts[k]
+			if c < 0 {
+				c = 0
+			}
+			if c > 256 {
+				c = 256
+			}
+			if c > a {
+				b = c
+				break
+			}
+		}
+		v := windowEval(inv1, en1, inv2, en2, log, wh, a)
+		lo, hi := a, b
+		if hires {
+			lo, hi = a*2, b*2
+		}
+		if lo > w {
+			lo = w
+		}
+		if hi > w {
+			hi = w
+		}
+		if v {
+			copy(dst[lo:hi], winTrueRun[:hi-lo])
+		} else {
+			clear(dst[lo:hi])
+		}
+	}
+}
+
+// prepLineWindows decodes the layers window settings once
+// per line, evaluates the window regions into winIn, and
+// derives the two color window regions color math needs
+// (blackAt for the main screen, subRegAt for the sub
+// screen). Only layers whose verdict can be read are
+// evaluated: background and OBJ verdicts feed the winner
+// masks (gated by TMW/TSW), the color window always feeds
+// color math.
+func (p *PPU) prepLineWindows(w int, hires bool) {
+	for layer := 0; layer < 6; layer++ {
+		if layer < 5 && (p.tmw|p.tsw)&(1<<uint(layer)) == 0 {
+			continue // no mask reads this layer verdict
+		}
+		inv1, en1, inv2, en2 := p.layerWindowSel(layer)
+		dst := &p.winIn[layer]
+		if !en1 && !en2 {
+			// windowEval is false everywhere.
+			clear(dst[:w])
+			continue
+		}
+		fillWindowRuns(dst, inv1, en1, inv2, en2, p.layerWindowLog(layer), &p.wh, w, hires)
+	}
+	blackSel := uint8(p.cgwsel >> 6)
+	subSel := uint8(p.cgwsel >> 4 & 3)
+	cw := &p.winIn[5]
+	for x := 0; x < w; x++ {
+		p.blackAt[x] = regionAt(blackSel, cw[x])
+		p.subRegAt[x] = regionAt(subSel, cw[x])
+	}
+}
+
+// mergeLine folds src into dst with the composition rule:
+// an opaque sample replaces the current winner only when
+// its rank is strictly higher, so earlier layers keep ties.
+func mergeLine(dst, src *lineBuf, w int) {
+	for x := 0; x < w; x++ {
+		if src.opaque[x] && (!dst.opaque[x] || src.rank[x] > dst.rank[x]) {
+			dst.color[x] = src.color[x]
+			dst.rank[x] = src.rank[x]
+			dst.layer[x] = src.layer[x]
+			dst.opaque[x] = true
+		}
+	}
+}
+
+// tileRowEntry is one decoded tile row in the per-line
+// decode memo.
+type tileRowEntry struct {
+	key   uint32
+	stamp uint32
+	pix   [8]uint8
+}
+
+// tileRow returns the decoded 8-pixel row of a tile,
+// decoding on a memo miss. The memo lives for one
+// scanline (RenderLine bumps lineStamp per line): VRAM
+// cannot change while a line composes, and a tile row
+// repeats within a line whenever a flat area reuses the
+// tile or another layer samples the same tile, so repeat
+// lookups are free.
+func (p *PPU) tileRow(b *bgLayer, tile uint16, row, bpp int) *[8]uint8 {
+	key := uint32(b.chrBase)<<15 | uint32(tile)<<5 | uint32(row)<<2 | uint32(bpp>>2)
+	e := &p.rowMemo[(key^(key>>7))&127]
+	if e.stamp != p.lineStamp || e.key != key {
+		p.decodeRowU8(b, tile, row, bpp, &e.pix)
+		e.key = key
+		e.stamp = p.lineStamp
+	}
+	return &e.pix
+}
+
+// decodeRowU8 decodes one 8-pixel tile row (row 0..7) at
+// 2, 4 or 8 bits per pixel into dst. The planar layout
+// puts one word per plane pair per row, the pairs spaced
+// 8 words apart; a tile holds 4 words per bit of depth.
+func (p *PPU) decodeRowU8(b *bgLayer, tile uint16, row, bpp int, dst *[8]uint8) {
+	base := (b.chrBase + tile*uint16(4*bpp)) & 0x7FFF
+	w0 := p.vram[(base+uint16(row))&0x7FFF]
+	switch bpp {
+	case 2:
+		for i := 0; i < 8; i++ {
+			bit := uint(7 - i)
+			dst[i] = uint8((w0>>bit)&1 | ((w0>>(bit+8))&1)<<1)
+		}
+	case 4:
+		w1 := p.vram[(base+uint16(8+row))&0x7FFF]
+		for i := 0; i < 8; i++ {
+			bit := uint(7 - i)
+			dst[i] = uint8((w0>>bit)&1 | ((w0>>(bit+8))&1)<<1 |
+				((w1>>bit)&1)<<2 | ((w1>>(bit+8))&1)<<3)
+		}
+	default:
+		w1 := p.vram[(base+uint16(8+row))&0x7FFF]
+		w2 := p.vram[(base+uint16(16+row))&0x7FFF]
+		w3 := p.vram[(base+uint16(24+row))&0x7FFF]
+		for i := 0; i < 8; i++ {
+			bit := uint(7 - i)
+			dst[i] = uint8((w0>>bit)&1 | ((w0>>(bit+8))&1)<<1 |
+				((w1>>bit)&1)<<2 | ((w1>>(bit+8))&1)<<3 |
+				((w2>>bit)&1)<<4 | ((w2>>(bit+8))&1)<<5 |
+				((w3>>bit)&1)<<6 | ((w3>>(bit+8))&1)<<7)
+		}
+	}
+}
+
+// emitPx records one opaque background pixel in a line
+// buffer, resolving its color through CGRAM or the
+// direct-color packing.
+func (p *PPU) emitPx(out *lineBuf, x, idx int, rank int8, bg int, direct bool, ciBase int) {
+	out.rank[x] = rank
+	out.layer[x] = int8(bg)
+	out.opaque[x] = true
+	if direct {
+		// Direct color: the 8-bit index is the
+		// color, in the documented BBGGGRRR packing
+		// expanded to 15 bits (low bits zero).
+		out.color[x] = uint16(idx&0x07)<<2 | uint16((idx>>3)&0x07)<<7 | uint16((idx>>6)&0x03)<<13
+	} else {
+		out.color[x] = p.cgram[(ciBase+idx)&0xFF]
+	}
+}
+
+// bgLine renders background bg samples for display line y
+// into out, following bgSample exactly. The tile-walking
+// fast path serves any layer whose sampling has no
+// per-pixel variance this line; mosaic and offset-per-tile
+// layers take the per-pixel reference path.
+func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf) {
+	clear(out.opaque[:w])
+	if _, ok := p.optApplies(bg); ok || p.mosaicEnabled(bg) {
+		for x := 0; x < w; x++ {
+			s := p.bgSample(*mi, bg, x, y, w)
+			if s.opaque {
+				out.color[x] = s.color
+				out.rank[x] = int8(s.rank)
+				out.layer[x] = int8(s.layer)
+				out.opaque[x] = true
+			}
+		}
+		return
+	}
+	b := &p.bg[bg]
+	bpp := mi.bpp[bg]
+	hofs := int(b.hofs & 0x3FF)
+	vofs := int(b.vofs & 0x7FF)
+	tileW, tileH := 8, 8
+	if b.tile16 || mi.hires {
+		tileW = 16
+	}
+	if b.tile16 {
+		tileH = 16
+	}
+	gy := y + vofs + 1 // the documented vertical +1
+	ty := (gy / tileH) & (b.tilemapH - 1)
+	py := gy % tileH
+	direct := (p.bgMode == 3 || p.bgMode == 4) && bg == 0 && bpp == 8 && p.cgwsel&0x01 != 0
+	mode0 := p.bgMode == 0
+	x := 0
+	gx := hofs
+	for x < w {
+		tx := (gx / tileW) & (b.tilemapW - 1)
+		entry := p.tilemapEntry(b, tx, ty)
+		rowInTile := py
+		if entry&0x8000 != 0 { // flip Y
+			rowInTile = tileH - 1 - py
+		}
+		tile := entry & 0x3FF
+		row := rowInTile
+		if tileH == 16 {
+			tile += uint16(rowInTile/8) * 16
+			row = rowInTile % 8
+		}
+		ra := *p.tileRow(b, tile, row, bpp)
+		var rb [8]uint8
+		if tileW == 16 {
+			rb = *p.tileRow(b, tile+1, row, bpp)
+		}
+		pal := int((entry >> 10) & 0x07)
+		ciBase := pal * (1 << uint(bpp))
+		if mode0 {
+			// Mode 0 gives each background its own
+			// 32-color quarter of CGRAM.
+			ciBase = bg*32 + pal*4
+		}
+		rank := int8(mi.objBase[bg])
+		if entry&0x2000 != 0 { // priority bit
+			rank = int8(mi.objPrio[bg])
+		}
+		flipX := entry&0x4000 != 0
+		startPx := gx % tileW
+		n := tileW - startPx
+		if x+n > w {
+			n = w - x
+		}
+		// Emit the part of the tile on screen. The
+		// index walk is specialized by tile width and
+		// flip state, so the per-pixel path carries no
+		// branches but the transparency test.
+		switch {
+		case tileW == 8 && !flipX:
+			for i := 0; i < n; i++ {
+				if idx := int(ra[startPx+i]); idx != 0 {
+					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				}
+				x++
+			}
+		case tileW == 8:
+			base := 7 - startPx
+			for i := 0; i < n; i++ {
+				if idx := int(ra[base-i]); idx != 0 {
+					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				}
+				x++
+			}
+		case !flipX:
+			for i := 0; i < n; i++ {
+				pxv := startPx + i
+				var idx int
+				if pxv < 8 {
+					idx = int(ra[pxv])
+				} else {
+					idx = int(rb[pxv-8])
+				}
+				if idx != 0 {
+					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				}
+				x++
+			}
+		default:
+			base := 15 - startPx
+			for i := 0; i < n; i++ {
+				pxv := base - i
+				var idx int
+				if pxv < 8 {
+					idx = int(ra[pxv])
+				} else {
+					idx = int(rb[pxv-8])
+				}
+				if idx != 0 {
+					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				}
+				x++
+			}
+		}
+		gx += n
+	}
+}
+
+// m7Line renders the Mode 7 layer (or its EXTBG variant)
+// for display line y into out, sampling per pixel through
+// m7Sample.
+func (p *PPU) m7Line(y, w int, extbg bool, out *lineBuf) {
+	clear(out.opaque[:w])
+	for x := 0; x < w; x++ {
+		s := p.m7Sample(x, y, extbg)
+		if s.opaque {
+			out.color[x] = s.color
+			out.rank[x] = int8(s.rank)
+			out.layer[x] = int8(s.layer)
+			out.opaque[x] = true
+		}
+	}
+}
+
+// mathLine decides the color-math outcome at pixel x from
+// the composed main and sub winners. It is mathAt with the
+// window regions precomputed by prepLineWindows.
+func (p *PPU) mathLine(main, sub *lineBuf, x int) uint16 {
+	mainColor := main.color[x]
+	blacked := p.blackAt[x]
+	if blacked {
+		mainColor = 0
+	}
+	layer := main.layer[x]
+	if !main.opaque[x] {
+		// The backdrop: math applies per the backdrop bit.
+		layer = 5
+		if !blacked {
+			mainColor = p.cgram[0]
+		}
+	}
+	if p.cgadsb&(1<<uint(layer)) == 0 {
+		return mainColor
+	}
+	// The sub screen transparent region: where it applies
+	// (and where no sub layer produced a pixel) the sub
+	// screen counts as transparent, and a sub screen
+	// addend falls back to the fixed color.
+	subTransparent := !sub.opaque[x] || p.subRegAt[x]
+	var add uint16
+	if p.cgwsel&0x02 != 0 && !subTransparent {
+		add = sub.color[x]
+	} else {
+		add = uint16(p.fixedB)<<10 | uint16(p.fixedG)<<5 | uint16(p.fixedR)
+	}
+	// Halving divides the math result, not the addend, and
+	// is suppressed when the main pixel was forced black
+	// or when a sub screen addend fell back because the
+	// sub screen was transparent.
+	half := p.cgadsb&0x40 != 0 && !blacked && !(p.cgwsel&0x02 != 0 && subTransparent)
+	subMode := p.cgadsb&0x80 != 0
+	r := channelMath(int(mainColor&0x1F), int(add&0x1F), subMode, half)
+	g := channelMath(int((mainColor>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
+	b := channelMath(int((mainColor>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
+	return uint16(b<<10 | g<<5 | r)
 }
