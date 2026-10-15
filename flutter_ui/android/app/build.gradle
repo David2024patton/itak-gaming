@@ -24,7 +24,10 @@ android {
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        // Display versions drop a trailing .0 patch: David's scheme
+        // shows build 62 as 1.61 and the 64-bit launch as 2.0, while
+        // pubspec keeps the three-part form pub requires (1.61.0+62).
+        versionName = flutter.versionName.replaceAll(/\.0$/, "")
 
         // 32-bit build for Chromecast HD. The Go backend AAR and bundled
         // cores are armeabi-v7a only.
