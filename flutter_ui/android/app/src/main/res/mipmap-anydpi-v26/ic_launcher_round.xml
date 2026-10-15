@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Round form of the launcher icon (API 26+), referenced by
+     android:roundIcon in the manifest. Same adaptive definition
+     as ic_launcher: brand background plus the logo foreground
+     inset into the mask safe zone. On API 25 the per-density
+     ic_launcher_round.png bitmaps cover this resource name. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground>
+        <inset
+            android:drawable="@mipmap/ic_launcher_foreground"
+            android:inset="16%" />
+    </foreground>
+</adaptive-icon>
