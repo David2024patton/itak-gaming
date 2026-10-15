@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive launcher icon (API 26+).
+
+     The app used to ship only legacy density PNGs. The install
+     prompt draws that bitmap straight from the submitted APK and
+     looked right, but the "App installed" screen on Android TV
+     loads the installed app's icon through the adaptive icon
+     path; with no adaptive form declared it substituted the
+     system default Android head. This file (plus roundIcon in
+     the manifest) gives every icon surface a real form to load.
+
+     Foreground: the existing logo artwork, inset 16 percent.
+     The artwork has no padding of its own; measured on the
+     192px master, the logo occupies the center 74 percent of
+     the width and 51 percent of the height. At a 16 percent
+     inset the whole logo sits inside the 72dp keyline circle
+     that every launcher mask guarantees to keep visible, and
+     the flat #171E26 surround of the artwork meets the matching
+     background color with no seam. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground>
+        <inset
+            android:drawable="@mipmap/ic_launcher_foreground"
+            android:inset="16%" />
+    </foreground>
+</adaptive-icon>
