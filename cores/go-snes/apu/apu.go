@@ -184,6 +184,9 @@ func (a *APU) advanceTimer(i, cycles int) {
 		target = 256
 	}
 	t.div += cycles
+	if t.div < timerTickPeriod[i] {
+		return // below one tick period: nothing else changes
+	}
 	ticks := t.div / timerTickPeriod[i]
 	t.div %= timerTickPeriod[i]
 	if ticks == 0 {
