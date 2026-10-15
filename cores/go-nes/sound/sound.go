@@ -350,6 +350,18 @@ type APU struct {
 	mixCount int
 	mixPhase int
 	out      []int16
+
+	// Mixer memo: the mixed level is a pure function of the
+	// four channel levels (pulse sum, triangle, noise, DMC),
+	// and Tick asks for it on every CPU cycle, about 30
+	// thousand times per frame, while the levels only move
+	// when a channel timer or register write moves them. The
+	// last tuple and its level are kept here; because the key
+	// is the full live tuple, the memo can never go stale and
+	// needs no invalidation on writes, reset, or state loads.
+	mixP, mixT, mixN, mixD int
+	mixLevel               float64
+	mixValid               bool
 }
 
 // New returns a powered-on APU: all channels disabled, the
@@ -666,23 +678,51 @@ func (a *APU) dmcTick() {
 	}
 }
 
+// Mixer term tables: the per-channel terms of the DAC
+// formulas below, precomputed for every level a channel can
+// output, with exactly the divisions the direct formulas do.
+var pulseMixTable [31]float64
+var triMixTable [16]float64
+var noiMixTable [16]float64
+var dmcMixTable [128]float64
+
+func init() {
+	for p := 1; p < len(pulseMixTable); p++ {
+		pulseMixTable[p] = 95.88 / (8128/float64(p) + 100)
+	}
+	for i := 0; i < 16; i++ {
+		triMixTable[i] = float64(i) / 8227
+		noiMixTable[i] = float64(i) / 12241
+	}
+	for i := 0; i < len(dmcMixTable); i++ {
+		dmcMixTable[i] = float64(i) / 22638
+	}
+}
+
 // mix computes the current mixed output level (roughly 0..1)
 // from the channel values through the documented non-linear
-// DAC formulas.
+// DAC formulas. The level is memoized on the channel levels
+// (see the APU struct): recomputation happens only when one
+// of them moved, and it is bit-identical to the direct
+// formula, since the tables hold the same quotients and the
+// surviving division runs on the same operands in the same
+// order.
 func (a *APU) mix() float64 {
 	p := a.pulse1.out() + a.pulse2.out()
-	var pulseOut float64
-	if p > 0 {
-		pulseOut = 95.88 / (8128/float64(p) + 100)
+	t := a.tri.out()
+	n := a.noi.out()
+	d := a.dm.outLevel
+	if a.mixValid && p == a.mixP && t == a.mixT && n == a.mixN && d == a.mixD {
+		return a.mixLevel
 	}
-	t := float64(a.tri.out()) / 8227
-	n := float64(a.noi.out()) / 12241
-	d := float64(a.dm.outLevel) / 22638
-	var tndOut float64
-	if t+n+d > 0 {
-		tndOut = 159.79 / (1/(t+n+d) + 100)
+	a.mixP, a.mixT, a.mixN, a.mixD = p, t, n, d
+	lvl := pulseMixTable[p]
+	if s := triMixTable[t] + noiMixTable[n] + dmcMixTable[d]; s > 0 {
+		lvl += 159.79 / (1/s + 100)
 	}
-	return pulseOut + tndOut
+	a.mixLevel = lvl
+	a.mixValid = true
+	return lvl
 }
 
 // Tick advances the APU by one CPU cycle: the frame
