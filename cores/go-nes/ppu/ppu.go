@@ -92,9 +92,32 @@ type PPU struct {
 
 	readBuf uint8 // $2007 read buffer
 
-	// IO latch (open bus) with per-bit decay.
-	ioLatch uint8
-	ioDecay [8]uint32
+	// IO latch (open bus) with per-bit decay. Decay itself is
+	// accounted lazily: decayDebt counts the dots elapsed
+	// since the countdowns were last brought up to date, and
+	// applyDecay folds the bulk elapsed time into ioDecay and
+	// ioLatch whenever the latch is observed or refreshed.
+	// Counting down per dot cost an eight-step loop on every
+	// one of the 89 thousand dots in a frame for a value that
+	// only register reads can observe.
+	ioLatch   uint8
+	ioDecay   [8]uint32
+	decayDebt int
+
+	// sprLiveMask has a bit per sprite slot whose loaded
+	// shifters hold any pattern data for the line being drawn.
+	// outputPixel scans only those slots for the winning
+	// sprite pixel; slots outside the mask can never produce
+	// a pixel or a sprite 0 hit on this line, so the scan
+	// result is unchanged. The mask is rebuilt by loadSprite
+	// as each line's sprites are fetched.
+	sprLiveMask uint8
+
+	// a12Watched is false when the cartridge's mapper never
+	// clocks an IRQ counter from A12 edges (every mapper here
+	// except MMC3): the per-dot A12 sampling and its address
+	// reconstruction are then skipped whole.
+	a12Watched bool
 
 	// Status flags.
 	vblFlag    bool
@@ -171,7 +194,10 @@ const (
 // is documented to ignore it for roughly two vblanks, which
 // is what games and test ROMs do.
 func New(mem Memory) *PPU {
-	p := &PPU{mem: mem, SetInLastTick: -1, scanline: preLine, dot: dotsPerLine - 2, oddFrame: true}
+	p := &PPU{mem: mem, SetInLastTick: -1, scanline: preLine, dot: dotsPerLine - 2, oddFrame: true, a12Watched: true}
+	if w, ok := mem.(interface{ UsesA12IRQ() bool }); ok {
+		p.a12Watched = w.UsesA12IRQ()
+	}
 	for i := range p.secIndex {
 		p.secIndex[i] = -1
 		p.sprLineIx[i] = -1
@@ -287,13 +313,40 @@ func (p *PPU) PeekMem(addr uint16) uint8 { return p.readMem(addr) }
 
 // --- IO latch (open bus) ---
 
-// latchValue returns the IO latch with decay applied. Decay is
-// accounted incrementally in Tick; this reads the result.
-func (p *PPU) latchValue() uint8 { return p.ioLatch }
+// latchValue returns the IO latch with decay applied.
+func (p *PPU) latchValue() uint8 {
+	p.applyDecay()
+	return p.ioLatch
+}
+
+// applyDecay brings the per-bit decay countdowns up to date
+// for the dots accumulated in decayDebt. The countdowns are
+// linear (one per dot, clearing the bit on the dot the count
+// reaches zero), so folding a bulk elapsed count in gives
+// exactly the state the per-dot loop used to produce.
+func (p *PPU) applyDecay() {
+	d := p.decayDebt
+	if d == 0 {
+		return
+	}
+	p.decayDebt = 0
+	for i := 0; i < 8; i++ {
+		if p.ioLatch&(1<<uint(i)) == 0 {
+			continue
+		}
+		if uint32(d) >= p.ioDecay[i] {
+			p.ioLatch &^= 1 << uint(i)
+			p.ioDecay[i] = 0
+		} else {
+			p.ioDecay[i] -= uint32(d)
+		}
+	}
+}
 
 // setLatch drives the full latch (a write, or a read that
 // drives all eight bits), refreshing every set bit's decay.
 func (p *PPU) setLatch(v uint8) {
+	p.applyDecay()
 	p.ioLatch = v
 	for i := 0; i < 8; i++ {
 		if v&(1<<uint(i)) != 0 {
@@ -307,6 +360,7 @@ func (p *PPU) setLatch(v uint8) {
 // from the latch itself, and bits driven by the latch do not
 // refresh their own decay.
 func (p *PPU) setLatchLow(v uint8) {
+	p.applyDecay()
 	p.ioLatch = (p.ioLatch & 0xC0) | (v & 0x3F)
 	for i := 0; i < 6; i++ {
 		if v&(1<<uint(i)) != 0 {
@@ -315,16 +369,9 @@ func (p *PPU) setLatchLow(v uint8) {
 	}
 }
 
-// decayTick advances the latch decay by one dot.
+// decayTick records one more elapsed dot against the latch
+// decay. The countdowns themselves are folded in lazily by
+// applyDecay.
 func (p *PPU) decayTick() {
-	for i := 0; i < 8; i++ {
-		if p.ioLatch&(1<<uint(i)) != 0 {
-			if p.ioDecay[i] > 0 {
-				p.ioDecay[i]--
-			}
-			if p.ioDecay[i] == 0 {
-				p.ioLatch &^= 1 << uint(i)
-			}
-		}
-	}
+	p.decayDebt++
 }
