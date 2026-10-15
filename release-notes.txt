@@ -1,1 +1,1 @@
-Cleanup build: removes the two leftover emulator files (FCEUmm and Gambatte) that have not been used since the NES and Game Boy switches to our own cores. Nothing else changes; every system runs exactly as in build 55.
+Fixes games not launching. The game cores are now built into the app instead of loading as separate files, which was crashing the app every time a game started. All systems fixed: NES, Super NES, Genesis, Sega CD, Game Boy and Game Boy Color, Game Boy Advance, and PlayStation. Nothing else changes.
