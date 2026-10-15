@@ -85,7 +85,7 @@ func TestDMADecrement(t *testing.T) {
 		wram[0x1000+i] = uint8(1 + i)
 	}
 	setWMADD(s, 0x2000)
-	wrReg(s, 0x4300, 0x08) // mode 0, A address decrements
+	wrReg(s, 0x4300, 0x10) // mode 0, A address decrements (adjust field 2)
 	wrReg(s, 0x4301, 0x80)
 	wrReg(s, 0x4302, 0x03)
 	wrReg(s, 0x4303, 0x10) // A starts at $7E1003
