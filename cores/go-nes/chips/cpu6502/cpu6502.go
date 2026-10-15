@@ -50,6 +50,27 @@ type Bus interface {
 	Write(addr uint16, val uint8)
 }
 
+// lineSyncer is the optional bus extension a timing-exact
+// machine implements so the CPU can resolve its interrupt poll
+// at the end of each Step. The machine advances its devices
+// lazily and drives the interrupt lines through them; the CPU
+// calls SyncPoll just before latching the poll decision (the
+// driven point is the sync point of the access before the
+// Step's last access, which is the sample the hardware poll
+// semantics use), SyncFinal after latching (driving through
+// the last access's own sync point, where the next Step's
+// samples and edge latches pick the levels up), and SyncLatch
+// at the mid-sequence points where the CPU reads the NMI latch
+// directly (the BRK and interrupt vector hijack checks).
+// A bus that does not implement it (the unit tests' flat RAM)
+// leaves the lines exactly where the test drove them, and the
+// poll falls back to the levels as they stand.
+type lineSyncer interface {
+	SyncPoll()
+	SyncFinal()
+	SyncLatch()
+}
+
 // Status register bit masks. Bit 5 (the "unused" bit) has no
 // storage in the hardware: it reads as 1 in every byte pushed to
 // the stack, and the B flag (bit 4) exists only in those pushed
@@ -107,6 +128,7 @@ type CPU struct {
 	// takes are the decision latched at the end of each Step.
 	smpNMI  bool // NMI latch as sampled before the last access
 	smpIRQ  bool // IRQ recognizable as sampled before the last access
+	pollI   bool // I flag clear, as sampled before the last access
 	takeNMI bool // the next Step enters the NMI sequence
 	takeIRQ bool // the next Step enters the IRQ sequence
 }
@@ -203,12 +225,44 @@ func (c *CPU) Stall(n int) {
 // reset recovers.
 func (c *CPU) Jammed() bool { return c.jammed }
 
-// sampleInterrupts records the interrupt lines as they stand
-// before a bus access. The poll point for an instruction is
-// the sample taken before its last access.
+// sampleInterrupts records the I-flag half of the interrupt
+// poll as it stands before a bus access. The poll point for
+// an instruction is the sample taken before its last access,
+// and the flag half must be captured there because CLI, SEI,
+// PLP, and RTI change the flag after their last access, which
+// is exactly the one-instruction recognition delay the
+// hardware shows. The line half of the poll is resolved in
+// finishStep: the machine drives the lines through the point
+// this sample describes (see lineSyncer), so the levels the
+// decision uses are the levels at this same moment.
 func (c *CPU) sampleInterrupts() {
+	c.pollI = c.p&FlagI == 0
+}
+
+// finishStep resolves the interrupt poll at the end of a Step
+// unit and latches the decision the next Step acts on. It runs
+// at the end of every Step unit (instruction, interrupt
+// sequence, stall cycle, jammed cycle).
+func (c *CPU) finishStep() {
+	if s, ok := c.bus.(lineSyncer); ok {
+		s.SyncPoll()
+	}
 	c.smpNMI = c.nmiPending
-	c.smpIRQ = c.irqLine && c.p&FlagI == 0
+	c.smpIRQ = c.irqLine && c.pollI
+	c.latchPoll()
+	if s, ok := c.bus.(lineSyncer); ok {
+		s.SyncFinal()
+	}
+}
+
+// syncLatch asks the machine to drive the interrupt lines
+// through the last completed access's sync point, so a direct
+// read of the NMI latch mid-sequence (the vector hijack
+// checks) sees the level the per-access sync would have left.
+func (c *CPU) syncLatch() {
+	if s, ok := c.bus.(lineSyncer); ok {
+		s.SyncLatch()
+	}
 }
 
 // latchPoll moves the latest samples into the decision the
@@ -282,13 +336,13 @@ func (c *CPU) Step() int {
 	if c.jammed {
 		// The hardware jams reading the KIL opcode forever.
 		c.read(c.pc)
-		c.latchPoll()
+		c.finishStep()
 		return int(c.cycles - start)
 	}
 	if c.stall > 0 {
 		c.stall--
 		c.dummy(c.pc)
-		c.latchPoll()
+		c.finishStep()
 		return int(c.cycles - start)
 	}
 	// Interrupt decision latched at the previous Step's poll
@@ -297,18 +351,18 @@ func (c *CPU) Step() int {
 		c.takeNMI = false
 		c.nmiPending = false
 		c.interrupt(VectorNMI)
-		c.latchPoll()
+		c.finishStep()
 		return int(c.cycles - start)
 	}
 	if c.takeIRQ {
 		c.takeIRQ = false
 		c.interrupt(VectorIRQ)
-		c.latchPoll()
+		c.finishStep()
 		return int(c.cycles - start)
 	}
 	op := c.fetch()
 	c.exec(op)
-	c.latchPoll()
+	c.finishStep()
 	return int(c.cycles - start)
 }
 
@@ -325,6 +379,7 @@ func (c *CPU) interrupt(vector uint16) {
 	c.push(uint8(c.pc))
 	c.push(c.statusByte(false))
 	c.p |= FlagI
+	c.syncLatch()
 	if vector != VectorNMI && c.nmiPending {
 		c.nmiPending = false
 		vector = VectorNMI
