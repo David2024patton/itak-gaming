@@ -85,6 +85,29 @@ type Cart struct {
 
 	// a12Clocks counts ClockA12 calls (diagnostic).
 	a12Clocks int64
+
+	// Flat read fast paths for the unbanked NROM layout (the
+	// only mapper that is a plain baseMapper): ReadPRG and
+	// ReadCHR then index the ROM directly instead of paying
+	// an interface dispatch and a modulo per access. prgMask
+	// is len(prg)-1, valid because the flat path is armed
+	// only for power-of-two PRG sizes; flatCHR requires the
+	// fixed 8 KB CHR window.
+	flatPRG bool
+	prgMask int
+	flatCHR bool
+
+	// irqPossible is armed only for MMC3, the one mapper
+	// whose irqPending can ever return true. syncLines on
+	// the system polls IRQPending once per CPU cycle.
+	irqPossible bool
+
+	// Mirror mode memo: MirrorMode is polled by the PPU on
+	// every nametable access (tens of thousands per frame),
+	// and the answer changes only on a cartridge register
+	// write or a state load, both of which clear mirrorOK.
+	mirrorCache Mirror
+	mirrorOK    bool
 }
 
 // mapper is the bank controller interface. Read and write at the
@@ -176,6 +199,18 @@ func New(data []byte) (*Cart, error) {
 		return nil, err
 	}
 	c.mapper = m
+	if _, ok := m.(*mmc3); ok {
+		c.irqPossible = true
+	}
+	if _, ok := m.(baseMapper); ok {
+		if n := len(c.prg); n > 0 && n&(n-1) == 0 {
+			c.flatPRG = true
+			c.prgMask = n - 1
+		}
+		if len(c.chr) == 0x2000 {
+			c.flatCHR = true
+		}
+	}
 	return c, nil
 }
 
@@ -315,6 +350,9 @@ func (c *Cart) ReadPRG(addr uint16) uint8 {
 	if addr < 0x8000 {
 		return 0
 	}
+	if c.flatPRG {
+		return c.prg[int(addr-0x8000)&c.prgMask]
+	}
 	return c.mapper.readPRG(c, addr)
 }
 
@@ -329,11 +367,17 @@ func (c *Cart) WritePRG(addr uint16, val uint8) {
 	if addr < 0x8000 {
 		return
 	}
+	c.mirrorOK = false
 	c.mapper.writePRG(c, addr, val)
 }
 
 // ReadCHR reads the PPU-side pattern space, $0000-$1FFF.
-func (c *Cart) ReadCHR(addr uint16) uint8 { return c.mapper.readCHR(c, addr&0x1FFF) }
+func (c *Cart) ReadCHR(addr uint16) uint8 {
+	if c.flatCHR {
+		return c.chr[addr&0x1FFF]
+	}
+	return c.mapper.readCHR(c, addr&0x1FFF)
+}
 
 // WriteCHR writes the PPU-side pattern space. Writes land only
 // when the cartridge carries CHR RAM.
@@ -342,15 +386,25 @@ func (c *Cart) WriteCHR(addr uint16, val uint8) { c.mapper.writeCHR(c, addr&0x1F
 // MirrorMode reports the cartridge's current nametable
 // mirroring, honoring the mapper's dynamic override.
 func (c *Cart) MirrorMode() Mirror {
-	if m, ok := c.mapper.mirror(); ok {
-		return m
+	if c.mirrorOK {
+		return c.mirrorCache
 	}
-	return c.Header.Mirror
+	m := c.Header.Mirror
+	if mm, ok := c.mapper.mirror(); ok {
+		m = mm
+	}
+	c.mirrorCache, c.mirrorOK = m, true
+	return m
 }
 
 // IRQPending reports whether the mapper is asserting its IRQ
 // output (the MMC3 counter, in this slice).
-func (c *Cart) IRQPending() bool { return c.mapper.irqPending() }
+func (c *Cart) IRQPending() bool {
+	if !c.irqPossible {
+		return false
+	}
+	return c.mapper.irqPending()
+}
 
 // ClockA12 clocks the MMC3 IRQ counter the way a rising edge of
 // PPU address line A12 does. NES-1 tests drive it directly; NES-2
@@ -358,6 +412,15 @@ func (c *Cart) IRQPending() bool { return c.mapper.irqPending() }
 func (c *Cart) ClockA12() {
 	c.a12Clocks++
 	c.mapper.clockA12()
+}
+
+// UsesA12IRQ reports whether the loaded mapper clocks an IRQ
+// counter from PPU A12 edges. Among the implemented mappers
+// only MMC3 does; the PPU uses this to skip its per-dot A12
+// sampling entirely for cartridges that cannot observe it.
+func (c *Cart) UsesA12IRQ() bool {
+	_, ok := c.mapper.(*mmc3)
+	return ok
 }
 
 // A12Clocks returns how many filtered A12 rising edges the
@@ -397,5 +460,6 @@ func (c *Cart) Deserialize(in []byte) error {
 		return errors.New("cart: state truncated")
 	}
 	copy(c.prgRAM, rest[:len(c.prgRAM)])
+	c.mirrorOK = false
 	return c.mapper.setState(rest[len(c.prgRAM):])
 }
