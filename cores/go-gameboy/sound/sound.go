@@ -128,12 +128,21 @@ type APU struct {
 	sumR  float64
 	sumN  int
 	out   []int16 // pending samples (interleaved stereo)
+
+	// Cached mixed output. The mix only changes when a channel
+	// steps (duty, wave position, or LFSR clock), when an
+	// envelope, sweep, or length clock lands, or when a register
+	// is written; between those events the mix is reused from the cache
+	// values instead of re-evaluating all four channels per dot.
+	mixL     float64
+	mixR     float64
+	mixStale bool
 }
 
 // New returns an APU in its power-on state: powered, all channels
 // off, frame sequencer at step 0.
 func New() *APU {
-	s := &APU{power: true}
+	s := &APU{power: true, mixStale: true}
 	s.ch4.lfsr = 0x7FFF
 	return s
 }
@@ -163,6 +172,7 @@ func (s *APU) nextStepClocksLength() bool {
 // While powered off, writes to NR10-NR51 are ignored (wave RAM
 // stays writable); NR52 is the power switch itself.
 func (s *APU) Write(addr uint16, val uint8) {
+	s.mixStale = true
 	if addr >= regWave && addr < regWave+16 {
 		// DMG wave RAM quirk: while the wave channel is playing,
 		// writes are ignored (reads return 0xFF; see Read).
@@ -467,6 +477,7 @@ func (s *APU) Read(addr uint16) uint8 {
 // counters on steps 0/2/4/6, sweep on 2/6, envelopes on step 7. The
 // system calls it on each falling edge of divider bit 12.
 func (s *APU) StepFrameSequencer() {
+	s.mixStale = true
 	if !s.power {
 		return
 	}
@@ -551,47 +562,106 @@ func (s *APU) clockEnvelopes() {
 
 // Tick advances the channel timers by the given number of dots and
 // generates output samples into the pending buffer.
+// phaseInc is the sample phase accumulator step per dot: one
+// output sample period spans clockHz/SampleRate dots.
+const phaseInc = float64(SampleRate) / float64(clockHz)
+
+// Tick advances the APU by the given number of dots. The span
+// is split at the nearest channel step: before that dot every
+// channel output is constant, on the step dot the stepped
+// channel state applies. Each part is accumulated in bulk
+// instead of dot by dot.
 func (s *APU) Tick(dots int) {
-	for i := 0; i < dots; i++ {
-		s.tickChannels()
-		s.mixDot()
+	for dots > 0 {
+		seg := dots
+		expiring := false
+		if s.ch1.enabled && s.ch1.timer <= seg {
+			seg = s.ch1.timer
+			expiring = true
+		}
+		if s.ch2.enabled && s.ch2.timer <= seg {
+			seg = s.ch2.timer
+			expiring = true
+		}
+		if s.ch3.enabled && s.ch3.timer <= seg {
+			seg = s.ch3.timer
+			expiring = true
+		}
+		if s.ch4.enabled && s.ch4.timer <= seg {
+			seg = s.ch4.timer
+			expiring = true
+		}
+		if seg < 1 {
+			seg = 1
+		}
+		if expiring {
+			s.mixSpan(seg - 1)
+			s.advanceChannels(seg)
+			s.mixSpan(1)
+		} else {
+			s.advanceChannels(seg)
+			s.mixSpan(seg)
+		}
+		dots -= seg
 	}
 }
 
-func (s *APU) tickChannels() {
+// advanceChannels runs the four channel timers forward by d
+// dots in closed form: a channel whose timer expires steps its
+// duty position, wave position, or LFSR exactly as the per-dot
+// countdown would.
+func (s *APU) advanceChannels(d int) {
 	if s.ch1.enabled {
-		s.ch1.timer--
-		if s.ch1.timer <= 0 {
-			s.ch1.timer += (2048 - int(s.ch1.freq)) * 4
-			s.ch1.dutyPos = (s.ch1.dutyPos + 1) & 7
+		if d < s.ch1.timer {
+			s.ch1.timer -= d
+		} else {
+			period := (2048 - int(s.ch1.freq)) * 4
+			exp := 1 + (d-s.ch1.timer)/period
+			s.ch1.timer += exp*period - d
+			s.ch1.dutyPos = (s.ch1.dutyPos + exp) & 7
+			s.mixStale = true
 		}
 	}
 	if s.ch2.enabled {
-		s.ch2.timer--
-		if s.ch2.timer <= 0 {
-			s.ch2.timer += (2048 - int(s.ch2.freq)) * 4
-			s.ch2.dutyPos = (s.ch2.dutyPos + 1) & 7
+		if d < s.ch2.timer {
+			s.ch2.timer -= d
+		} else {
+			period := (2048 - int(s.ch2.freq)) * 4
+			exp := 1 + (d-s.ch2.timer)/period
+			s.ch2.timer += exp*period - d
+			s.ch2.dutyPos = (s.ch2.dutyPos + exp) & 7
+			s.mixStale = true
 		}
 	}
 	if s.ch3.enabled {
-		s.ch3.timer--
-		if s.ch3.timer <= 0 {
-			s.ch3.timer += (2048 - int(s.ch3.freq)) * 2
-			s.ch3.pos = (s.ch3.pos + 1) & 31
+		if d < s.ch3.timer {
+			s.ch3.timer -= d
+		} else {
+			period := (2048 - int(s.ch3.freq)) * 2
+			exp := 1 + (d-s.ch3.timer)/period
+			s.ch3.timer += exp*period - d
+			s.ch3.pos = (s.ch3.pos + exp) & 31
+			s.mixStale = true
 		}
 	}
 	if s.ch4.enabled {
-		s.ch4.timer--
-		if s.ch4.timer <= 0 {
-			s.ch4.timer += noisePeriod(s.nr43)
+		if d < s.ch4.timer {
+			s.ch4.timer -= d
+		} else {
+			period := noisePeriod(s.nr43)
+			exp := 1 + (d-s.ch4.timer)/period
+			s.ch4.timer += exp*period - d
 			// Clock the LFSR: the new bit is the XOR of bits 0
 			// and 1, entering at bit 14 (and bit 6 in the
 			// 7-bit width mode).
-			nb := (s.ch4.lfsr ^ (s.ch4.lfsr >> 1)) & 1
-			s.ch4.lfsr = s.ch4.lfsr>>1 | nb<<14
-			if s.nr43&0x08 != 0 {
-				s.ch4.lfsr = s.ch4.lfsr&^(1<<6) | nb<<6
+			for i := 0; i < exp; i++ {
+				nb := (s.ch4.lfsr ^ (s.ch4.lfsr >> 1)) & 1
+				s.ch4.lfsr = s.ch4.lfsr>>1 | nb<<14
+				if s.nr43&0x08 != 0 {
+					s.ch4.lfsr = s.ch4.lfsr&^(1<<6) | nb<<6
+				}
 			}
+			s.mixStale = true
 		}
 	}
 }
@@ -697,11 +767,9 @@ func (s *APU) DebugEnabled(ch int) bool {
 	return false
 }
 
-// mixDot accumulates one dot of mixed stereo output and emits a
-// finished sample whenever the phase accumulator crosses a whole
-// output sample period.
-func (s *APU) mixDot() {
-	var l, r float64
+// computeMix evaluates the current mixed stereo output from the
+// four channels, panning, and side volumes.
+func (s *APU) computeMix() (l, r float64) {
 	if s.power {
 		volL := float64(((s.nr50>>4)&7)+1) / 8
 		volR := float64((s.nr50&7)+1) / 8
@@ -720,16 +788,48 @@ func (s *APU) mixDot() {
 		l *= volL / 4
 		r *= volR / 4
 	}
-	s.sumL += l
-	s.sumR += r
-	s.sumN++
-	s.phase += float64(SampleRate) / clockHz
-	if s.phase >= 1 {
-		s.phase -= 1
-		n := float64(s.sumN)
-		s.out = append(s.out,
-			clamp16(s.sumL/n*32767), clamp16(s.sumR/n*32767))
-		s.sumL, s.sumR, s.sumN = 0, 0, 0
+	return l, r
+}
+
+// mixSpan accumulates n dots of the cached mixed output and
+// emits a finished sample whenever the phase accumulator
+// crosses a whole output sample period. The box filter sums
+// may span several calls; a sample is the mean of the dots
+// accumulated since the previous emission.
+func (s *APU) mixSpan(n int) {
+	if s.mixStale {
+		s.mixL, s.mixR = s.computeMix()
+		s.mixStale = false
+	}
+	// Fast path: the span ends before the next sample
+	// boundary, so the sums just grow by the span length.
+	if s.phase+phaseInc*float64(n) < 1 {
+		s.sumL += s.mixL * float64(n)
+		s.sumR += s.mixR * float64(n)
+		s.sumN += n
+		s.phase += phaseInc * float64(n)
+		return
+	}
+	for n > 0 {
+		k := int(math.Ceil((1 - s.phase) / phaseInc))
+		if k < 1 {
+			k = 1
+		}
+		if k > n {
+			k = n
+		}
+		s.sumL += s.mixL * float64(k)
+		s.sumR += s.mixR * float64(k)
+		s.sumN += k
+		s.phase += phaseInc * float64(k)
+		n -= k
+		if s.phase >= 1 {
+			s.phase -= 1
+			m := float64(s.sumN)
+			s.out = append(s.out,
+				clamp16(s.sumL/m*32767), clamp16(s.sumR/m*32767))
+			s.sumL, s.sumR, s.sumN = 0, 0, 0
+		}
 	}
 }
 
@@ -982,5 +1082,6 @@ func (s *APU) Deserialize(buf []byte) error {
 	s.sumL = math.Float64frombits(binary.LittleEndian.Uint64(buf[off+8:]))
 	s.sumR = math.Float64frombits(binary.LittleEndian.Uint64(buf[off+16:]))
 	s.sumN = int(binary.LittleEndian.Uint32(buf[off+24:]))
+	s.mixStale = true
 	return nil
 }
