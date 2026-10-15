@@ -1,1 +1,1 @@
-Fixes games not launching. The game cores are now built into the app instead of loading as separate files, which was crashing the app every time a game started. All systems fixed: NES, Super NES, Genesis, Sega CD, Game Boy and Game Boy Color, Game Boy Advance, and PlayStation. Nothing else changes.
+Fixes games closing after a short time or right away in build 57. The game and sound threads could reach into the emulator at the same moment and crash it; they are now kept apart. Picture tearing during play is fixed by the same change. Nothing else changes.
