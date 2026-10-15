@@ -59,6 +59,15 @@ type Sound struct {
 	ymStatus uint8 // YM2612 timer flags: bit0 = timer A, bit1 = timer B (busy is never set)
 	ym       ymState
 
+	// ymRegGen counts YM2612 register data writes; ymPrep holds
+	// per-channel render constants derived from the register file
+	// (see ym2612.go), rebuilt lazily whenever the generation has
+	// moved since the channel was last prepared. Register changes
+	// only ever arrive between render spans, so constants derived
+	// at a generation stay valid for a whole span.
+	ymRegGen uint64
+	ymPrep   [6]ymChanPrep
+
 	psgCarry float64 // fractional PSG clocks owed to the next Produce call
 	out      []int16 // reusable mix buffer
 
@@ -159,6 +168,7 @@ func (s *Sound) WriteYM(addr uint32, val uint8) {
 		s.ymAddrA = val
 	case 1: // bank A data
 		s.ymRegsA[s.ymAddrA] = val
+		s.ymRegGen++
 		switch s.ymAddrA {
 		case 0x27:
 			// Timer mode: bit4 (0x10) resets the timer A flag,
@@ -184,6 +194,7 @@ func (s *Sound) WriteYM(addr uint32, val uint8) {
 		s.ymAddrB = val
 	case 3: // bank B data
 		s.ymRegsB[s.ymAddrB] = val
+		s.ymRegGen++
 	}
 }
 
@@ -472,5 +483,8 @@ func (s *Sound) Deserialize(buf []byte) error {
 	// here too so a mid-stream restore cannot resurrect stale
 	// pending samples.
 	s.preRendered = 0
+	// The register file was replaced wholesale: force every
+	// channel's prepared render constants to rebuild.
+	s.ymRegGen++
 	return nil
 }
