@@ -142,6 +142,25 @@ type PPU struct {
 	// to gate CGRAM writes the way the hardware drops them
 	// mid-display).
 	displayActive bool
+
+	// Scanline composition scratch, owned by the renderer
+	// and rewritten on every RenderLine: it is derived
+	// state, never saved, and exists so a frame of
+	// composition allocates nothing.
+	lbBG      [4]lineBuf
+	lbObj     lineBuf
+	lbMain    lineBuf
+	lbSub     lineBuf
+	winIn     [6][512]bool
+	blackAt   [512]bool
+	subRegAt  [512]bool
+	objOnLine [33]objSpr
+	objDraw   [33]objSpr
+	rowMemo   [128]tileRowEntry
+	lineStamp uint32
+	expTab    [32768]uint32
+	expBright uint8
+	expValid  bool
 }
 
 // New returns a PPU in its power-on state.
