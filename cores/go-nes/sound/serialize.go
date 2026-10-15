@@ -118,6 +118,7 @@ func (a *APU) Deserialize(buf []byte) error {
 	if len(buf) != SerializeSize || buf[0] != serializeVersion {
 		return ErrStateSize
 	}
+	defer a.resetLazy()
 	fetch := a.FetchDMC
 	o := 1
 	get8 := func() uint8 { v := buf[o]; o++; return v }
