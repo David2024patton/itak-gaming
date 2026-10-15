@@ -13,6 +13,7 @@
         android:label="iTaK Gaming"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:banner="@drawable/banner"
         android:usesCleartextTraffic="true"
         android:requestLegacyExternalStorage="true">
