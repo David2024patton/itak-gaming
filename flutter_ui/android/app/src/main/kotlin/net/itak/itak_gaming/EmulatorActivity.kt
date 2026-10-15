@@ -2010,7 +2010,7 @@ class EmulatorActivity : Activity(), TextureListener {
         grid.verticalSpacing = 24
         grid.setPadding(0, 24, 0, 0)
         grid.isFocusable = true
-        grid.drawSelectorOnTop = true
+        grid.setDrawSelectorOnTop(true)
         val sel = android.graphics.drawable.GradientDrawable()
         sel.setStroke(6, Color.WHITE)
         sel.cornerRadius = 18f
