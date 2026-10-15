@@ -43,6 +43,7 @@ func get64(b []byte) uint64 {
 // Serialize writes the PPU state into a fresh slice of
 // SerializeSize bytes.
 func (p *PPU) Serialize() []byte {
+	p.applyDecay()
 	out := make([]byte, SerializeSize)
 	out[0] = serializeVersion
 	copy(out[1:], p.ciram[:])
@@ -249,5 +250,12 @@ func (p *PPU) Deserialize(in []byte) error {
 	p.evalByte = r[i]
 	i++
 	p.a12Low = int(int32(get32(r[i:])))
+	p.decayDebt = 0
+	p.sprLiveMask = 0
+	for s := 0; s < 8; s++ {
+		if p.sprShLo[s]|p.sprShHi[s] != 0 {
+			p.sprLiveMask |= 1 << uint(s)
+		}
+	}
 	return nil
 }
