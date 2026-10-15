@@ -11,7 +11,30 @@ import (
 	"github.com/davidpatton/itak-gaming/go_backend/internal/core"
 )
 
-var emu *core.Bridge
+// emuFace is the core handle the app drives. Two
+// implementations satisfy it: the native bridge (bundled Go
+// cores linked into this binary, the app path) and the cgo .so
+// bridge (desktop harness path).
+type emuFace interface {
+	LoadGame(path string) error
+	RunFrame()
+	GetFrame() (width, height, pitch int, data []byte)
+	FrameToRGBA() (width, height int, rgba []byte, err error)
+	AspectRatio() float64
+	FPS() float64
+	SampleRate() float64
+	SetButton(player, button int, pressed bool)
+	ClearButtons()
+	DrainAudio(maxFrames int) []int16
+	SaveState() ([]byte, error)
+	LoadState(data []byte) error
+	CheatsSupported() bool
+	ApplyCheats(codes []string) int
+	ClearCheats()
+	Close()
+}
+
+var emu emuFace
 
 // SetSystemDir points the bridge's system directory at a folder
 // the user controls. CD cores (PlayStation, Sega CD) look there
@@ -38,8 +61,16 @@ const (
 	ButtonR      = core.ButtonR
 )
 
-// LoadCore loads a libretro core .so from an absolute path.
+// LoadCore selects the core for the given core path. Bundled
+// cores resolve to their native adapter (linked into this
+// binary, one Go runtime in the process); anything else falls
+// back to loading the libretro .so at the path.
 func LoadCore(path string) error {
+	if nb, ok := core.LoadNative(path); ok {
+		emu = nb
+		noteLoadedCore(path)
+		return nil
+	}
 	b, err := core.LoadCore(path)
 	if err != nil {
 		return err
