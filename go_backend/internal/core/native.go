@@ -2,9 +2,13 @@ package core
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // This file is the native core path: the bundled Go cores linked
@@ -20,12 +24,25 @@ import (
 // Linking the engines into the backend keeps exactly one
 // runtime in the process. The .so bridge remains for desktop
 // harness use (cmd/enginetest, cmd/coretest).
+//
+// Threading contract (learned on device, build 57): the app
+// calls the backend from several threads at once (game loop,
+// audio, UI). The engines are single-threaded state machines,
+// so every engine touch is serialized under the bridge mutex,
+// and the audio path never touches the engine at all: RunFrame
+// moves each frame's samples into the bridge's pending buffer,
+// and DrainAudio only slices that buffer. Build 57 let the
+// audio thread drain the engine directly, racing the game
+// loop inside the APU and panicking both goroutines
+// (nil pointer dereference, captured 2026-10-15 10:50/10:51).
 
 // NativeCore is the uniform contract each bundled core adapter
 // implements. Adapters wrap a core engine's system package the
 // same way that core's libretro shell does; the shell stays the
 // reference for every mapping (input bit order, timing
-// constants, memory exposure).
+// constants, memory exposure). All methods are called with the
+// bridge mutex held, except where an adapter only reads values
+// it fixed at load.
 type NativeCore interface {
 	// LoadGame starts the machine on a game. Cartridge cores
 	// use data; disc cores use path (data then holds the small
@@ -50,7 +67,8 @@ type NativeCore interface {
 	// The adapter translates to the engine's own bit order.
 	SetInput(player int, libretroMask uint16)
 	// AudioDrain returns every pending stereo int16 sample
-	// (interleaved L, R) and clears the engine's buffer.
+	// (interleaved L, R) and clears the engine's buffer. It is
+	// called from RunFrame only, never from the audio thread.
 	AudioDrain() []int16
 	SaveState() ([]byte, error)
 	LoadState(data []byte) error
@@ -75,32 +93,41 @@ var nativeCores = map[string]func() NativeCore{
 // the given core path, or false when the path names no bundled
 // core (the caller then falls back to the .so bridge).
 func LoadNative(corePath string) (*NativeBridge, bool) {
-	ctor, ok := nativeCores[filepath.Base(corePath)]
+	base := filepath.Base(corePath)
+	ctor, ok := nativeCores[base]
 	if !ok {
 		return nil, false
 	}
-	return &NativeBridge{core: ctor()}, true
+	return &NativeBridge{core: ctor(), name: base}, true
 }
 
 // NativeBridge serves the same method set as Bridge (bridge.go)
 // over a NativeCore, so the mobile package drives either
 // without knowing which is underneath.
 type NativeBridge struct {
-	core    NativeCore
-	buttons [2]uint16 // libretro-order masks
-	pending []int16   // drained audio waiting for the caller
+	mu   sync.Mutex // serializes every engine touch
+	core NativeCore
+	name string
+
+	buttons [2]atomic.Uint32 // libretro-order masks
+
+	pendMu  sync.Mutex // guards pending only; never the engine
+	pending []int16    // samples RunFrame produced, awaiting DrainAudio
 
 	frames      uint64
 	audioTotal  uint64
 	inputCalls  uint64
 	everNonzero bool
+
+	// Frame timing diagnostics: average RunFrame duration is
+	// logged every 600 frames so the app log shows what each
+	// core costs on the real device.
+	ftAcc   time.Duration
+	ftCount int
 }
 
 // LoadGame loads a ROM file into the core.
 func (b *NativeBridge) LoadGame(romPath string) error {
-	if b.core == nil {
-		return fmt.Errorf("no core loaded")
-	}
 	data, err := os.ReadFile(romPath)
 	if err != nil {
 		return err
@@ -108,26 +135,52 @@ func (b *NativeBridge) LoadGame(romPath string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("empty ROM file")
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.core == nil {
+		return fmt.Errorf("no core loaded")
+	}
 	return b.core.LoadGame(data, romPath)
 }
 
-// RunFrame runs one emulation frame.
+// RunFrame runs one emulation frame, then moves the frame's
+// audio into the pending buffer for the audio thread.
 func (b *NativeBridge) RunFrame() {
+	start := time.Now()
+	b.mu.Lock()
 	if b.core == nil {
+		b.mu.Unlock()
 		return
 	}
-	b.core.SetInput(0, b.buttons[0])
-	b.core.SetInput(1, b.buttons[1])
+	b.core.SetInput(0, uint16(b.buttons[0].Load()))
+	b.core.SetInput(1, uint16(b.buttons[1].Load()))
 	b.core.RunFrame()
+	if samples := b.core.AudioDrain(); len(samples) > 0 {
+		b.pendMu.Lock()
+		b.pending = append(b.pending, samples...)
+		b.pendMu.Unlock()
+	}
 	b.frames++
 	if !b.everNonzero && firstNonzero(b.core.Frame()) >= 0 {
 		b.everNonzero = true
 	}
+	b.mu.Unlock()
+
+	b.ftAcc += time.Since(start)
+	b.ftCount++
+	if b.ftCount >= 600 {
+		log.Printf("native timing: %s avg frame %v over %d frames",
+			b.name, b.ftAcc/time.Duration(b.ftCount), b.ftCount)
+		b.ftAcc, b.ftCount = 0, 0
+	}
 }
 
-// GetFrame returns the latest video frame as bytes. The data is
-// a copy: the engine rewrites its own buffer on the next frame.
+// GetFrame returns the latest video frame as bytes. The data
+// is a copy taken under the engine lock, so it never mixes two
+// frames and never races the renderer.
 func (b *NativeBridge) GetFrame() (width, height, pitch int, data []byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return 0, 0, 0, nil
 	}
@@ -145,6 +198,8 @@ func (b *NativeBridge) GetFrame() (width, height, pitch int, data []byte) {
 // PixelFormat returns the libretro pixel format the core
 // produces (0=0RGB1555, 1=XRGB8888, 2=RGB565).
 func (b *NativeBridge) PixelFormat() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return 1
 	}
@@ -154,6 +209,8 @@ func (b *NativeBridge) PixelFormat() int {
 // AspectRatio returns the display aspect ratio reported by the
 // core, falling back to 4:3.
 func (b *NativeBridge) AspectRatio() float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return 4.0 / 3.0
 	}
@@ -165,6 +222,8 @@ func (b *NativeBridge) AspectRatio() float64 {
 
 // FPS returns the core's target frame rate.
 func (b *NativeBridge) FPS() float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return 60
 	}
@@ -173,6 +232,8 @@ func (b *NativeBridge) FPS() float64 {
 
 // SampleRate returns the core's audio sample rate.
 func (b *NativeBridge) SampleRate() float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return 44100
 	}
@@ -186,7 +247,8 @@ func (b *NativeBridge) FrameToRGBA() (width, height int, rgba []byte, err error)
 	if len(data) == 0 {
 		return 0, 0, nil, fmt.Errorf("no frame available")
 	}
-	rgba, err = convertToRGBA(w, h, pitch, data, b.PixelFormat())
+	format := b.PixelFormat()
+	rgba, err = convertToRGBA(w, h, pitch, data, format)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -233,6 +295,8 @@ func convertToRGBA(w, h, pitch int, data []byte, format int) ([]byte, error) {
 
 // SaveState captures the current emulation state.
 func (b *NativeBridge) SaveState() ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return nil, fmt.Errorf("no core loaded")
 	}
@@ -241,17 +305,21 @@ func (b *NativeBridge) SaveState() ([]byte, error) {
 
 // LoadState restores an emulation state.
 func (b *NativeBridge) LoadState(data []byte) error {
-	if b.core == nil {
-		return fmt.Errorf("no core loaded")
-	}
 	if len(data) == 0 {
 		return fmt.Errorf("empty save data")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.core == nil {
+		return fmt.Errorf("no core loaded")
 	}
 	return b.core.LoadState(data)
 }
 
 // CheatsSupported reports whether the core accepts cheat codes.
 func (b *NativeBridge) CheatsSupported() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.core != nil && b.core.CheatSupported()
 }
 
@@ -259,6 +327,8 @@ func (b *NativeBridge) CheatsSupported() bool {
 // many entries were set; multi-part codes joined with '+' are
 // registered as separate entries, as in the .so bridge.
 func (b *NativeBridge) ApplyCheats(codes []string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core == nil {
 		return 0
 	}
@@ -282,35 +352,48 @@ func (b *NativeBridge) ApplyCheats(codes []string) int {
 
 // ClearCheats removes every cheat from the core.
 func (b *NativeBridge) ClearCheats() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core != nil {
 		b.core.CheatReset()
 	}
 }
 
 // SetButton sets a joypad button state for a player (0 or 1).
+// It only updates the bridge mask; the engine receives it at
+// the next RunFrame, so input never touches the engine off the
+// game thread's schedule.
 func (b *NativeBridge) SetButton(player int, button int, pressed bool) {
 	if player < 0 || player > 1 || button < 0 || button > 15 {
 		return
 	}
-	b.inputCalls++
-	if pressed {
-		b.buttons[player] |= 1 << uint(button)
-	} else {
-		b.buttons[player] &^= 1 << uint(button)
+	atomic.AddUint64(&b.inputCalls, 1)
+	for {
+		old := b.buttons[player].Load()
+		next := old
+		if pressed {
+			next = old | (1 << uint(button))
+		} else {
+			next = old &^ (1 << uint(button))
+		}
+		if b.buttons[player].CompareAndSwap(old, next) {
+			return
+		}
 	}
 }
 
 // ClearButtons releases all buttons.
 func (b *NativeBridge) ClearButtons() {
-	b.buttons = [2]uint16{}
+	b.buttons[0].Store(0)
+	b.buttons[1].Store(0)
 }
 
 // DrainAudio returns up to maxFrames stereo frames of int16
-// samples, buffering any excess for the next call.
+// samples from the pending buffer. It never touches the
+// engine, so the audio thread can call it at any rate.
 func (b *NativeBridge) DrainAudio(maxFrames int) []int16 {
-	if b.core != nil {
-		b.pending = append(b.pending, b.core.AudioDrain()...)
-	}
+	b.pendMu.Lock()
+	defer b.pendMu.Unlock()
 	n := len(b.pending) / 2
 	if n > maxFrames {
 		n = maxFrames
@@ -321,12 +404,16 @@ func (b *NativeBridge) DrainAudio(maxFrames int) []int16 {
 	out := make([]int16, n*2)
 	copy(out, b.pending[:n*2])
 	b.pending = append(b.pending[:0], b.pending[n*2:]...)
-	b.audioTotal += uint64(n)
+	atomic.AddUint64(&b.audioTotal, uint64(n))
 	return out
 }
 
 // VideoFrameCount returns how many frames have run.
-func (b *NativeBridge) VideoFrameCount() uint64 { return b.frames }
+func (b *NativeBridge) VideoFrameCount() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.frames
+}
 
 // VideoNullCount returns 0: native cores always produce a
 // frame, there are no dupe frames.
@@ -341,18 +428,28 @@ func (b *NativeBridge) VideoFirstNonzero() int64 {
 
 // VideoEverNonzero reports whether any frame had visible
 // content.
-func (b *NativeBridge) VideoEverNonzero() bool { return b.everNonzero }
+func (b *NativeBridge) VideoEverNonzero() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.everNonzero
+}
 
 // InputStateCalls returns how many button updates arrived
 // (diagnostics).
-func (b *NativeBridge) InputStateCalls() uint64 { return b.inputCalls }
+func (b *NativeBridge) InputStateCalls() uint64 {
+	return atomic.LoadUint64(&b.inputCalls)
+}
 
 // AudioSamplesTotal returns total audio frames handed out
 // (diagnostics).
-func (b *NativeBridge) AudioSamplesTotal() uint64 { return b.audioTotal }
+func (b *NativeBridge) AudioSamplesTotal() uint64 {
+	return atomic.LoadUint64(&b.audioTotal)
+}
 
 // Close unloads the core.
 func (b *NativeBridge) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.core != nil {
 		b.core.Close()
 		b.core = nil
