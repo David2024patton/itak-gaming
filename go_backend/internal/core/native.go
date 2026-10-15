@@ -115,9 +115,14 @@ type NativeBridge struct {
 	pending []int16    // samples RunFrame produced, awaiting DrainAudio
 
 	frames      uint64
-	audioTotal  uint64
-	inputCalls  uint64
 	everNonzero bool
+	// The diagnostic counters are typed atomics: the free
+	// atomic functions panic on unaligned 64-bit values, and
+	// on 32-bit ARM a struct field after a slice header lands
+	// on a 4-byte boundary. atomic.Uint64 aligns itself.
+	// (Build 58 died on exactly this, on device, 2026-10-15.)
+	audioTotal atomic.Uint64
+	inputCalls atomic.Uint64
 
 	// Frame timing diagnostics: average RunFrame duration is
 	// logged every 600 frames so the app log shows what each
@@ -367,7 +372,7 @@ func (b *NativeBridge) SetButton(player int, button int, pressed bool) {
 	if player < 0 || player > 1 || button < 0 || button > 15 {
 		return
 	}
-	atomic.AddUint64(&b.inputCalls, 1)
+	b.inputCalls.Add(1)
 	for {
 		old := b.buttons[player].Load()
 		next := old
@@ -404,7 +409,7 @@ func (b *NativeBridge) DrainAudio(maxFrames int) []int16 {
 	out := make([]int16, n*2)
 	copy(out, b.pending[:n*2])
 	b.pending = append(b.pending[:0], b.pending[n*2:]...)
-	atomic.AddUint64(&b.audioTotal, uint64(n))
+	b.audioTotal.Add(uint64(n))
 	return out
 }
 
@@ -437,13 +442,13 @@ func (b *NativeBridge) VideoEverNonzero() bool {
 // InputStateCalls returns how many button updates arrived
 // (diagnostics).
 func (b *NativeBridge) InputStateCalls() uint64 {
-	return atomic.LoadUint64(&b.inputCalls)
+	return b.inputCalls.Load()
 }
 
 // AudioSamplesTotal returns total audio frames handed out
 // (diagnostics).
 func (b *NativeBridge) AudioSamplesTotal() uint64 {
-	return atomic.LoadUint64(&b.audioTotal)
+	return b.audioTotal.Load()
 }
 
 // Close unloads the core.
