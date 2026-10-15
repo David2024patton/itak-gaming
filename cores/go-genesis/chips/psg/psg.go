@@ -229,9 +229,22 @@ func (p *PSG) writeRegister(reg int, data uint8, latch bool) {
 // this call.
 func (p *PSG) GenerateSamples(clocks int) int {
 	stored := 0
-	for i := 0; i < clocks; i++ {
-		p.stepClock()
-		p.samplePhase += int64(p.sampleRate)
+	remaining := clocks
+	for remaining > 0 {
+		// Clocks until the next output sample: the phase
+		// accumulator advances sampleRate per clock and emits
+		// when it reaches clockFreq, so the next emission is
+		// ceil((clockFreq - phase) / sampleRate) clocks away.
+		// Chip state between sample points only matters through
+		// the noise channel's edge counting, which advanceClocks
+		// handles in bulk, so the span can be crossed at once.
+		step := int((int64(p.clockFreq) - p.samplePhase + int64(p.sampleRate) - 1) / int64(p.sampleRate))
+		if step > remaining {
+			step = remaining
+		}
+		p.advanceClocks(step)
+		remaining -= step
+		p.samplePhase += int64(step) * int64(p.sampleRate)
 		if p.samplePhase >= int64(p.clockFreq) {
 			p.samplePhase -= int64(p.clockFreq)
 			if p.count < len(p.buffer) {
@@ -276,36 +289,105 @@ func (p *PSG) output() float32 {
 	return sum * 0.25
 }
 
-// stepClock advances the chip by one input clock.
-func (p *PSG) stepClock() {
-	// Tone counters decrement once per 16 input clocks.
-	p.clockDiv++
-	if p.clockDiv >= 16 {
-		p.clockDiv = 0
+// advanceClocks advances the chip by n input clocks, exactly as n
+// stepClock calls would, but computed in bulk: the tone counters
+// move by whole ticks with arithmetic flip counts, and the noise
+// register shifts once per falling edge of its clock source inside
+// the span. (The chip used to be stepped one clock at a time,
+// some 60,000 calls per emulated frame, almost all of which only
+// decremented counters.)
+func (p *PSG) advanceClocks(n int) {
+	if n <= 0 {
+		return
+	}
+	// Tone ticks land once per 16 input clocks, phased by
+	// clockDiv: tick boundaries in the span are the clocks where
+	// clockDiv wraps.
+	total := p.clockDiv + n
+	ticks := total / 16
+	p.clockDiv = total % 16
+	pol3Before := p.polarity[2]
+	flips3 := 0
+	if ticks > 0 {
 		for ch := 0; ch < 3; ch++ {
-			p.counters[ch]--
-			if p.counters[ch] <= 0 {
-				p.counters[ch] += p.effectivePeriod(ch)
-				p.polarity[ch] = !p.polarity[ch]
+			if f := p.advanceTone(ch, ticks); ch == 2 {
+				flips3 = f
 			}
 		}
 	}
+	p.advanceNoise(n, pol3Before, flips3)
+}
 
-	// The noise register shifts on the falling edge of its clock
-	// source (a fixed-rate square wave, or tone channel 3's
-	// output when the rate bits are 3).
-	if p.noiseCtl&0x03 != 0x03 {
-		rate := noiseRates[p.noiseCtl&0x03]
-		p.noisePhase++
-		if p.noisePhase >= rate {
-			p.noisePhase = 0
+// advanceTone moves one tone channel forward by the given number
+// of tone ticks and returns how many times its output flipped.
+// The per-tick rule is: decrement, and on reaching zero reload
+// with the effective period and flip. A counter in [1, period]
+// first flips after exactly counter ticks, then every period
+// ticks. A counter outside that range (only reachable through a
+// hand-crafted state) falls back to the literal per-tick walk.
+func (p *PSG) advanceTone(ch, ticks int) int {
+	c := p.counters[ch]
+	per := p.effectivePeriod(ch)
+	if c < 1 || c > per {
+		flips := 0
+		for i := 0; i < ticks; i++ {
+			c--
+			if c <= 0 {
+				c += per
+				p.polarity[ch] = !p.polarity[ch]
+				flips++
+			}
+		}
+		p.counters[ch] = c
+		return flips
+	}
+	if ticks < c {
+		p.counters[ch] = c - ticks
+		return 0
+	}
+	flips := 1 + (ticks-c)/per
+	p.counters[ch] = per - (ticks-c)%per
+	if flips&1 != 0 {
+		p.polarity[ch] = !p.polarity[ch]
+	}
+	return flips
+}
+
+// advanceNoise advances the noise channel over n input clocks.
+// Tone channel 3's flip count inside the span is supplied because
+// in slaved mode (rate bits 3) that channel's output is the noise
+// clock source: each of its high-to-low flips shifts the register
+// once. In the fixed-rate modes the source is the phase square
+// wave, high while noisePhase*2 < rate after each clock's
+// increment; the falling edge is the clock whose increment lands
+// the phase on rate/2, which the span crosses a computable number
+// of times.
+func (p *PSG) advanceNoise(n int, pol3Before bool, flips3 int) {
+	if p.noiseCtl&0x03 == 0x03 {
+		edges := flips3 / 2
+		if pol3Before && flips3&1 != 0 {
+			edges++
+		}
+		for i := 0; i < edges; i++ {
+			p.shiftNoise()
+		}
+		p.noisePrevLevel = p.polarity[2]
+		return
+	}
+	rate := noiseRates[p.noiseCtl&0x03]
+	target := rate / 2 // first low phase; rates are even (see noiseRates)
+	first := (target - p.noisePhase) % rate
+	if first <= 0 {
+		first += rate
+	}
+	if first <= n {
+		edges := 1 + (n-first)/rate
+		for i := 0; i < edges; i++ {
+			p.shiftNoise()
 		}
 	}
-	level := p.noiseSourceLevel()
-	if p.noisePrevLevel && !level {
-		p.shiftNoise()
-	}
-	p.noisePrevLevel = level
+	p.noisePhase = (p.noisePhase + n) % rate
+	p.noisePrevLevel = p.noisePhase*2 < rate
 }
 
 // noiseSourceLevel reports the current level of the noise clock
