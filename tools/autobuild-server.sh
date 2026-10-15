@@ -55,7 +55,7 @@ fail() {
 
 # Version gate: only a pubspec version bump ships an update.
 VERLINE=$(grep '^version:' "$CLONE/flutter_ui/pubspec.yaml")
-VNAME=$(echo "$VERLINE" | sed 's/^version: //; s/+.*$//')
+VNAME=$(echo "$VERLINE" | sed 's/^version: //; s/+.*$//; s/\.0$//')
 VCODE=$(echo "$VERLINE" | sed 's/^.*+//')
 PUBCODE=$(python3 -c "import json; print(json.load(open('$APPDIR/version.json'))['versionCode'])" 2>/dev/null || echo 0)
 echo "repo version $VNAME+$VCODE, published code $PUBCODE"
