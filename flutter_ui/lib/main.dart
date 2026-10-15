@@ -3475,6 +3475,135 @@ class AppUpdate {
   }
 }
 
+/// One button of the update offer dialog. The focused button is
+/// impossible to miss: it grows and turns white with black
+/// text, while the others stay dark with light text. David
+/// asked for this on 2026-10-15 after nearly hitting the wrong
+/// choice on the TV: the old dialog's focus highlight was dim
+/// and focus started on a live button, so one stray OK press
+/// could install or dismiss by accident.
+class _UpdateChoiceButton extends StatefulWidget {
+  final String label;
+  final VoidCallback onPressed;
+  final bool autofocus;
+  final bool small;
+
+  const _UpdateChoiceButton({
+    required this.label,
+    required this.onPressed,
+    this.autofocus = false,
+    this.small = false,
+  });
+
+  @override
+  State<_UpdateChoiceButton> createState() => _UpdateChoiceButtonState();
+}
+
+class _UpdateChoiceButtonState extends State<_UpdateChoiceButton> {
+  final FocusNode _node = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _node.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _node.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final focused = _node.hasFocus;
+    return Transform.scale(
+      scale: focused ? 1.12 : 1.0,
+      child: TextButton(
+        focusNode: _node,
+        autofocus: widget.autofocus,
+        onPressed: widget.onPressed,
+        style: TextButton.styleFrom(
+          backgroundColor: focused ? Colors.white : const Color(0xFF17172A),
+          foregroundColor: focused ? Colors.black : Colors.white70,
+          shape: const StadiumBorder(),
+          padding: EdgeInsets.symmetric(
+              horizontal: widget.small ? 16 : 26, vertical: 12),
+          textStyle: TextStyle(
+              fontSize: widget.small ? 15 : 17,
+              fontWeight: focused ? FontWeight.bold : FontWeight.normal),
+        ),
+        child: Text(widget.label),
+      ),
+    );
+  }
+}
+
+/// The update offer (and retry) dialog. Three buttons, and
+/// focus starts on the small middle one, which does nothing
+/// but show a hint line. Installing or dismissing takes a
+/// deliberate move left or right first.
+class _UpdateOfferDialog extends StatefulWidget {
+  final String title;
+  final String body;
+  final String leftLabel;
+  final String rightLabel;
+
+  const _UpdateOfferDialog({
+    required this.title,
+    required this.body,
+    required this.leftLabel,
+    required this.rightLabel,
+  });
+
+  @override
+  State<_UpdateOfferDialog> createState() => _UpdateOfferDialogState();
+}
+
+class _UpdateOfferDialogState extends State<_UpdateOfferDialog> {
+  bool _showHint = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF262640),
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.body),
+          if (_showHint)
+            const Padding(
+              padding: EdgeInsets.only(top: 16),
+              child: Text(
+                'Use the left and right buttons on your remote to move to your choice, then press OK.',
+                style: TextStyle(color: Color(0xFFFFD54F)),
+              ),
+            ),
+        ],
+      ),
+      actionsAlignment: MainAxisAlignment.spaceBetween,
+      actions: [
+        _UpdateChoiceButton(
+          label: widget.leftLabel,
+          onPressed: () => Navigator.pop(context, false),
+        ),
+        _UpdateChoiceButton(
+          label: '?',
+          small: true,
+          autofocus: true,
+          onPressed: () => setState(() => _showHint = true),
+        ),
+        _UpdateChoiceButton(
+          label: widget.rightLabel,
+          onPressed: () => Navigator.pop(context, true),
+        ),
+      ],
+    );
+  }
+}
+
 Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
     {required bool manual}) async {
   const bg = Color(0xFF262640);
@@ -3501,23 +3630,12 @@ Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
   final go = await showDialog<bool>(
     context: context,
     barrierColor: Colors.black.withOpacity(0.8),
-    builder: (ctx) => AlertDialog(
-      backgroundColor: bg,
-      title: const Text('Update available'),
-      content: Text(
-          'iTaK Gaming ${avail.versionName} is ready to install.${avail.notes.isEmpty ? '' : '\n\n${avail.notes}'}'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
-          child: const Text('Later', style: TextStyle(color: Colors.white70)),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, true),
-          child: const Text('Update now',
-              style: TextStyle(
-                  color: Color(0xFF00E676), fontWeight: FontWeight.bold)),
-        ),
-      ],
+    builder: (ctx) => _UpdateOfferDialog(
+      title: 'Update available',
+      body:
+          'iTaK Gaming ${avail.versionName} is ready to install.${avail.notes.isEmpty ? '' : '\n\n${avail.notes}'}',
+      leftLabel: 'Later',
+      rightLabel: 'Update now',
     ),
   );
   if (go != true || !context.mounted) return;
@@ -3549,23 +3667,11 @@ Future<void> showAppUpdateDialog(BuildContext context, UpdateCheck check,
     final retry = await showDialog<bool>(
       context: context,
       barrierColor: Colors.black.withOpacity(0.8),
-      builder: (ctx) => AlertDialog(
-        backgroundColor: bg,
-        title: const Text('Update failed'),
-        content: Text(result),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child:
-                const Text('Later', style: TextStyle(color: Colors.white70)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Try again',
-                style: TextStyle(
-                    color: Color(0xFF00E676), fontWeight: FontWeight.bold)),
-          ),
-        ],
+      builder: (ctx) => _UpdateOfferDialog(
+        title: 'Update failed',
+        body: result,
+        leftLabel: 'Later',
+        rightLabel: 'Try again',
       ),
     );
     if (retry != true || !context.mounted) return;
