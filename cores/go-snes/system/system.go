@@ -885,11 +885,13 @@ func (s *System) runDMA(mask uint8) {
 		toB := c.dmap&0x80 == 0
 		adj := int32(0)
 		switch (c.dmap >> 3) & 3 {
-		case 0:
+		case 0: // increment
 			adj = 1
-		case 1:
+		case 2: // decrement
 			adj = -1
 		}
+		// Adjust modes 1 and 3 are fixed: the A-bus
+		// address does not move.
 		a := uint32(c.a1b)<<16 | uint32(c.a1th)<<8 | uint32(c.a1tl)
 		cost += 8
 		for i := 0; i < count; i++ {
@@ -957,6 +959,7 @@ func (s *System) hdmaLine() {
 // hdmaChannel performs one line of one channel's HDMA:
 // reloading the table entry when the line counter empties,
 // then transferring one unit of bytes.
+
 func (s *System) hdmaChannel(c *dmaChannel) int64 {
 	if c.hdmaLeft == 0 {
 		table := uint32(c.a1b)<<16 | uint32(c.a2ah)<<8 | uint32(c.a2al)
