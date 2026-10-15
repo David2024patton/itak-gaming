@@ -159,6 +159,7 @@ func (p *PPU) Deserialize(in []byte) error {
 	if len(in) != SerializeSize {
 		return errors.New("ppu: bad state size")
 	}
+	defer p.resetLazy()
 	if in[0] != serializeVersion {
 		return errors.New("ppu: bad state version")
 	}
