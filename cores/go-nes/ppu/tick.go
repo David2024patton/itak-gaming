@@ -1,5 +1,7 @@
 package ppu
 
+import "math/bits"
+
 // This file is the dot machine: Tick advances the PPU, and
 // each dot runs the pixel output, the fetch pipeline, sprite
 // evaluation and fetches, the timing events (vblank set, flag
@@ -49,8 +51,12 @@ func (p *PPU) step() {
 		if (dot >= 1 && dot <= 256) || (dot >= 321 && dot <= 336) {
 			p.shiftBG()
 		}
-		p.fetchDot(line, dot)
-		p.evalDot(line, dot)
+		if dot >= 1 && dot <= 340 {
+			p.fetchDot(line, dot)
+		}
+		if dot == 1 || (dot >= 65 && dot <= 256) {
+			p.evalDot(line, dot)
+		}
 		// Scroll reloads.
 		if dot == 257 {
 			p.v = (p.v & 0x7BE0) | (p.t & 0x041F)
@@ -74,7 +80,9 @@ func (p *PPU) step() {
 		p.sprOvrFlag = false
 	}
 
-	p.trackA12()
+	if p.a12Watched {
+		p.trackA12()
+	}
 	p.decayTick()
 
 	// Advance the position. On odd frames with rendering
@@ -106,9 +114,9 @@ func (p *PPU) fetchDot(line, dot int) {
 		case 3: // attribute byte latched
 			p.atLatch = p.readMem(p.atAddress())
 		case 5: // pattern low byte latched
-			p.patLoLatch = p.readMem(p.bgPatternAddress())
+			p.patLoLatch = p.mem.ReadCHR(p.bgPatternAddress())
 		case 7: // pattern high byte latched; reload shifters
-			p.patHiLatch = p.readMem(p.bgPatternAddress() + 8)
+			p.patHiLatch = p.mem.ReadCHR(p.bgPatternAddress() + 8)
 			p.loadBGShifters()
 			if dot == 256 {
 				p.incY()
@@ -125,9 +133,9 @@ func (p *PPU) fetchDot(line, dot int) {
 		slot := (dot - 257) / 8
 		switch (dot - 257) % 8 {
 		case 5:
-			p.patLoLatch = p.readMem(p.sprPatternAddress(slot))
+			p.patLoLatch = p.mem.ReadCHR(p.sprPatternAddress(slot))
 		case 7:
-			p.patHiLatch = p.readMem(p.sprPatternAddress(slot) + 8)
+			p.patHiLatch = p.mem.ReadCHR(p.sprPatternAddress(slot) + 8)
 			p.loadSprite(slot)
 		}
 	}
@@ -236,6 +244,9 @@ func (p *PPU) sprPatternAddress(slot int) uint16 {
 // is flipped horizontally, so output is always MSB first), and
 // the X counter and attributes are latched.
 func (p *PPU) loadSprite(slot int) {
+	if slot == 0 {
+		p.sprLiveMask = 0
+	}
 	if slot >= p.evalCount {
 		p.sprShLo[slot] = 0
 		p.sprShHi[slot] = 0
@@ -255,6 +266,9 @@ func (p *PPU) loadSprite(slot int) {
 	p.sprAttr[slot] = attr
 	p.sprXCnt[slot] = p.secOAM[slot*4+3]
 	p.sprLineIx[slot] = p.secIndex[slot]
+	if lo|hi != 0 {
+		p.sprLiveMask |= 1 << uint(slot)
+	}
 }
 
 func reverseBits(b uint8) uint8 {
@@ -393,7 +407,8 @@ func (p *PPU) outputPixel(line, x int) {
 	sprBehind := false
 	sprIsZero := false
 	if p.sprEnabled() {
-		for i := 0; i < 8; i++ {
+		for m := p.sprLiveMask; m != 0; m &= m - 1 {
+			i := bits.TrailingZeros8(m)
 			if p.sprXCnt[i] != 0 {
 				continue
 			}
