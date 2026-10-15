@@ -215,11 +215,11 @@ func (p *PPU) WriteReg(addr uint16, val uint8) {
 		p.writeOAM(val)
 	case addr == 0x2105: // BGMODE
 		p.bgMode = val & 0x07
-		p.bg[0].tile16 = val&0x08 != 0
-		p.bg[1].tile16 = val&0x10 != 0
-		p.bg[2].tile16 = val&0x20 != 0
-		p.bg[3].tile16 = val&0x40 != 0
-		p.bg3PrioBit = val&0x80 != 0
+		p.bg3PrioBit = val&0x08 != 0
+		p.bg[0].tile16 = val&0x10 != 0
+		p.bg[1].tile16 = val&0x20 != 0
+		p.bg[2].tile16 = val&0x40 != 0
+		p.bg[3].tile16 = val&0x80 != 0
 	case addr == 0x2106: // MOSAIC: size in the high nibble,
 		// per-layer enables (BG1 is bit 0) in the low
 		p.mosaicSize = int(val>>4) + 1
