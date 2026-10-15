@@ -79,6 +79,15 @@ type VDP struct {
 	dmaSource func(addr uint32) uint16
 
 	fb []uint16 // framebuffer, MaxWidth*MaxHeight RGB565
+
+	// Palette cache: the 64 CRAM entries converted to RGB565.
+	// Rendering used to run the conversion (with its multiplies
+	// and divides) once per pixel; the cache is rebuilt only when
+	// the CRAM bytes actually change, detected by comparing
+	// against palShadow at the start of each rendered line.
+	palCache  [64]uint16
+	palShadow [128]uint8
+	palValid  bool
 }
 
 // New returns a VDP in power-on state.
@@ -472,11 +481,26 @@ func (v *VDP) cramColor(index int) uint16 {
 	return uint16(r*31/7)<<11 | uint16(g*63/7)<<5 | uint16(b*31/7)
 }
 
+// refreshPalette rebuilds the RGB565 palette cache when the CRAM
+// contents differ from the shadow copy taken at the last rebuild.
+// It runs once per rendered line; CRAM writes are rare compared to
+// the hundreds of thousands of pixel lookups the cache serves.
+func (v *VDP) refreshPalette() {
+	if v.palValid && v.palShadow == v.CRAM {
+		return
+	}
+	v.palShadow = v.CRAM
+	for i := 0; i < 64; i++ {
+		v.palCache[i] = v.cramColor(i)
+	}
+	v.palValid = true
+}
+
 // backdropColor returns the color behind every layer, selected by
 // register 7 (palette in bits 5-4, color in bits 3-0).
 func (v *VDP) backdropColor() uint16 {
 	index := int((v.Regs[7]>>4)&0x03)*16 + int(v.Regs[7]&0x0F)
-	return v.cramColor(index)
+	return v.palCache[index]
 }
 
 // vramWord reads a 16-bit word from VRAM in CPU order: because data
@@ -487,28 +511,12 @@ func (v *VDP) vramWord(addr int) uint16 {
 	return uint16(v.VRAM[a]) | uint16(v.VRAM[(a+1)&0xFFFF])<<8
 }
 
-// vsramWord reads a big-endian 16-bit word from VSRAM.
-func (v *VDP) vsramWord(entry int) uint16 {
-	a := (entry * 2) % 80
-	return uint16(v.VSRAM[a])<<8 | uint16(v.VSRAM[(a+1)%80])
-}
-
 // planeCells decodes register 16 into the plane size in cells. The
 // encoding is 0=32, 1=64, 2=invalid (treated as 128), 3=128 for both
 // the width (bits 1-0) and the height (bits 5-4).
 func (v *VDP) planeCells() (wCells, hCells int) {
 	sizes := [4]int{32, 64, 128, 128}
 	return sizes[v.Regs[16]&0x03], sizes[(v.Regs[16]>>4)&0x03]
-}
-
-// mod returns a mod m in the mathematical (always non-negative) sense,
-// for wrapping scrolled plane coordinates.
-func mod(a, m int) int {
-	r := a % m
-	if r < 0 {
-		r += m
-	}
-	return r
 }
 
 // hScroll returns the horizontal scroll offset for a plane on line y.
@@ -537,7 +545,10 @@ func (v *VDP) hScroll(planeB bool, y int) int {
 // vScroll returns the vertical scroll offset for a plane at screen
 // column x. Register 11 bit 2 selects full-screen scrolling (VSRAM
 // entries 0 and 1) or per-16-pixel-column scrolling (entry pairs per
-// column). Only the low 10 bits of each entry are significant.
+// column). Only the low 10 bits of each entry are significant. The
+// entry index is at most 39 (20 columns times 2, plus the plane B
+// offset), so its byte offset is at most 78 and the big-endian word
+// read never wraps the 80-byte VSRAM.
 func (v *VDP) vScroll(planeB bool, x int) int {
 	entry := 0
 	if v.Regs[11]&0x04 != 0 {
@@ -546,47 +557,45 @@ func (v *VDP) vScroll(planeB bool, x int) int {
 	if planeB {
 		entry++
 	}
-	return int(v.vsramWord(entry) & 0x3FF)
+	a := entry * 2
+	return int((uint16(v.VSRAM[a])<<8 | uint16(v.VSRAM[a+1])) & 0x3FF)
 }
 
-// windowAt reports whether screen pixel (x, y) falls inside the window
-// plane's rectangle. Register 17 sets the horizontal edge in 16-pixel
-// units (bit 7: window extends rightward from the edge instead of
-// leftward from 0); register 18 sets the vertical edge in 8-line units
-// (bit 7: window extends downward from the edge).
-func (v *VDP) windowAt(x, y int) bool {
-	hEdge := int(v.Regs[17]&0x1F) * 16
-	vEdge := int(v.Regs[18]&0x1F) * 8
-	inX := x < hEdge
-	if v.Regs[17]&0x80 != 0 {
-		inX = x >= hEdge
+// tileRowIndices decodes one 8-pixel row of a tile into palette
+// indices (0-15). The entry's vertical flip selects the mirrored
+// row; its horizontal flip reverses the decoded order. Pattern
+// bytes are read through the byte-swapped VRAM storage (see
+// writeTargetWord): the byte holding pixel pair p of a row lives
+// at the pair's address XOR 1, with the even pixel in the high
+// nibble.
+func (v *VDP) tileRowIndices(entry uint16, ty int, out *[8]uint8) {
+	if entry&0x1000 != 0 { // vertical flip
+		ty = 7 - ty
 	}
-	inY := y < vEdge
-	if v.Regs[18]&0x80 != 0 {
-		inY = y >= vEdge
+	rowAddr := int(entry&0x07FF)*32 + ty*4
+	for p := 0; p < 4; p++ {
+		b := v.VRAM[((rowAddr+p)^1)&0xFFFF]
+		out[2*p] = b >> 4
+		out[2*p+1] = b & 0x0F
 	}
-	return inX && inY
+	if entry&0x0800 != 0 { // horizontal flip
+		for i := 0; i < 4; i++ {
+			out[i], out[7-i] = out[7-i], out[i]
+		}
+	}
 }
 
 // tilePixel resolves one pixel of a tile given its name table entry and
 // the pixel's position (0-7) inside the tile, applying the entry's flip
 // bits. It returns the RGB565 color, the priority bit, and whether the
 // pixel is opaque (palette index 0 of any palette is transparent).
+// The scanline renderer works a tile row at a time through
+// tileRowIndices; this per-pixel form stays as the reference for the
+// same semantics.
 func (v *VDP) tilePixel(entry uint16, tx, ty int) (uint16, bool, bool) {
-	if entry&0x0800 != 0 { // horizontal flip
-		tx = 7 - tx
-	}
-	if entry&0x1000 != 0 { // vertical flip
-		ty = 7 - ty
-	}
-	patternAddr := int(entry&0x07FF)*32 + ty*4 + tx/2
-	// VRAM words are stored byte-swapped (see writeTargetWord), so the
-	// byte holding this pixel pair lives at the neighboring address.
-	b := v.VRAM[(patternAddr^1)&0xFFFF]
-	nibble := b >> 4
-	if tx&1 != 0 {
-		nibble = b & 0x0F
-	}
+	var row [8]uint8
+	v.tileRowIndices(entry, ty, &row)
+	nibble := row[tx]
 	if nibble == 0 {
 		return 0, false, false
 	}
@@ -594,36 +603,123 @@ func (v *VDP) tilePixel(entry uint16, tx, ty int) (uint16, bool, bool) {
 	return v.cramColor(int(palette)*16 + int(nibble)), entry&0x8000 != 0, true
 }
 
-// planePixel resolves one screen pixel of a background plane, applying
-// scrolling and, for plane A, replacement by the window plane inside
-// the window rectangle.
-func (v *VDP) planePixel(planeB bool, x, y int) (uint16, bool, bool) {
-	if !planeB && v.windowAt(x, y) {
-		// The window plane is not scrolled. Its name table has a
-		// fixed row stride: 64 cells in H40, 32 cells in H32.
-		mask := uint8(0x7C)
-		stride := 64
-		if v.DisplayWidth() == 256 {
-			mask = 0x78
-			stride = 32
-		}
-		base := int(v.Regs[3]&mask) << 10
-		entry := v.vramWord(base + ((y/8)*stride+(x/8))*2)
-		return v.tilePixel(entry, x&7, y&7)
-	}
-
+// renderPlaneLine resolves one scanline of a background plane into
+// the color, priority and opacity arrays. It walks the line in
+// segments that never cross a tile boundary or a 16-pixel vertical
+// scroll column boundary, so within a segment the name table entry,
+// the decoded tile row and the vertical scroll are all constant and
+// are resolved once instead of once per pixel. For plane A the
+// window overlay is applied afterwards by renderWindowLine.
+func (v *VDP) renderPlaneLine(planeB bool, y, width int, col *[MaxWidth]uint16, pri, ok *[MaxWidth]bool) {
 	wCells, hCells := v.planeCells()
-	srcX := mod(x+v.hScroll(planeB, y), wCells*8)
-	srcY := mod(y+v.vScroll(planeB, x), hCells*8)
-
+	planeW, planeH := wCells*8, hCells*8
 	var base int
 	if planeB {
 		base = int(v.Regs[4]&0x07) << 13
 	} else {
 		base = int(v.Regs[2]&0x38) << 10
 	}
-	entry := v.vramWord(base + ((srcY/8)*wCells+(srcX/8))*2)
-	return v.tilePixel(entry, srcX&7, srcY&7)
+	// The horizontal scroll is a function of the line only, in
+	// every scroll mode, so it is read once here. Screen pixel x
+	// shows plane pixel x + scroll (see hScroll). The plane
+	// dimensions are always powers of two (32, 64 or 128 cells),
+	// so wrapping a coordinate is a mask, not a modulo; for the
+	// possibly negative scroll the two's complement mask gives
+	// the same result as the mathematical mod.
+	sx := v.hScroll(planeB, y) & (planeW - 1)
+	colMode := v.Regs[11]&0x04 != 0 // per-column vertical scrolling
+	var row [8]uint8
+	for x := 0; x < width; {
+		srcY := (y + v.vScroll(planeB, x)) & (planeH - 1)
+		entry := v.vramWord(base + ((srcY/8)*wCells+(sx/8))*2)
+		v.tileRowIndices(entry, srcY&7, &row)
+		palBase := int((entry>>13)&0x03) * 16
+		prio := entry&0x8000 != 0
+		tx := sx & 7
+		n := 8 - tx
+		if colMode {
+			// A segment must not cross a vertical scroll
+			// column boundary: the scroll can change there,
+			// giving the rest of the tile a different row.
+			if rem := 16 - (x & 15); n > rem {
+				n = rem
+			}
+		}
+		if n > width-x {
+			n = width - x
+		}
+		for i := 0; i < n; i++ {
+			if nib := row[tx+i]; nib != 0 {
+				col[x+i] = v.palCache[palBase+int(nib)]
+				pri[x+i] = prio
+				ok[x+i] = true
+			}
+		}
+		x += n
+		sx += n
+		if sx >= planeW {
+			sx -= planeW
+		}
+	}
+	if !planeB {
+		v.renderWindowLine(y, width, col, pri, ok)
+	}
+}
+
+// renderWindowLine overlays the window plane onto plane A's arrays
+// for one scanline. Register 17 sets the horizontal edge in
+// 16-pixel units (bit 7: the window extends rightward from the edge
+// instead of leftward from 0); register 18 sets the vertical edge
+// in 8-line units (bit 7: downward instead of upward). For a given
+// line the window therefore covers one contiguous x range aligned
+// to whole tile cells. The window plane is not scrolled; its name
+// table has a fixed row stride: 64 cells in H40, 32 in H32. A
+// transparent window pixel clears plane A's pixel, matching the
+// old per-pixel rule that the window result replaced plane A's
+// whenever the pixel fell inside the window rectangle.
+func (v *VDP) renderWindowLine(y, width int, col *[MaxWidth]uint16, pri, ok *[MaxWidth]bool) {
+	hEdge := int(v.Regs[17]&0x1F) * 16
+	vEdge := int(v.Regs[18]&0x1F) * 8
+	inY := y < vEdge
+	if v.Regs[18]&0x80 != 0 {
+		inY = y >= vEdge
+	}
+	if !inY {
+		return
+	}
+	x0, x1 := 0, hEdge
+	if v.Regs[17]&0x80 != 0 {
+		x0, x1 = hEdge, width
+	}
+	if x1 > width {
+		x1 = width
+	}
+	if x0 >= x1 {
+		return
+	}
+	mask := uint8(0x7C)
+	stride := 64
+	if width == 256 {
+		mask = 0x78
+		stride = 32
+	}
+	base := int(v.Regs[3]&mask) << 10
+	var row [8]uint8
+	for x := x0; x < x1; x += 8 {
+		entry := v.vramWord(base + ((y/8)*stride+(x/8))*2)
+		v.tileRowIndices(entry, y&7, &row)
+		palBase := int((entry>>13)&0x03) * 16
+		prio := entry&0x8000 != 0
+		for i := 0; i < 8 && x+i < x1; i++ {
+			if nib := row[i]; nib != 0 {
+				col[x+i] = v.palCache[palBase+int(nib)]
+				pri[x+i] = prio
+				ok[x+i] = true
+			} else {
+				ok[x+i] = false
+			}
+		}
+	}
 }
 
 // renderSprites draws one scanline of sprites into the low and high
@@ -682,35 +778,43 @@ func (v *VDP) renderSprites(y int, low, high *[MaxWidth]uint16, lowOK, highOK *[
 				layer, layerOK = high, highOK
 			}
 			sy := y - top
+			// Work in unflipped sprite space so flips move
+			// both the tile order and the pixels inside a
+			// tile, as the hardware does. The row's pixels
+			// are decoded once into unflipped order (tiles
+			// inside a sprite are column-major: the tile
+			// index increases down a column first); the loop
+			// below then only mirrors the lookup coordinate.
+			srcY := sy
+			if attr&0x1000 != 0 { // vertical flip
+				srcY = sprH - 1 - sy
+			}
+			var rowPix [32]uint8
+			for tc := 0; tc < hCells; tc++ {
+				tile := int(attr&0x07FF) + tc*vCells + srcY/8
+				rowAddr := tile*32 + (srcY&7)*4
+				for p := 0; p < 4; p++ {
+					b := v.VRAM[((rowAddr+p)^1)&0xFFFF] // byte-swapped storage, as in tileRowIndices
+					rowPix[tc*8+2*p] = b >> 4
+					rowPix[tc*8+2*p+1] = b & 0x0F
+				}
+			}
+			palBase := int((attr>>13)&0x03) * 16
 			for sx := 0; sx < sprW && pixelBudget > 0; sx++ {
 				pixelBudget--
 				screenX := left + sx
 				if screenX < 0 || screenX >= width {
 					continue
 				}
-				// Work in unflipped sprite space so flips move
-				// both the tile order and the pixels inside a
-				// tile, as the hardware does.
-				srcX, srcY := sx, sy
+				srcX := sx
 				if attr&0x0800 != 0 { // horizontal flip
 					srcX = sprW - 1 - sx
 				}
-				if attr&0x1000 != 0 { // vertical flip
-					srcY = sprH - 1 - sy
-				}
-				tile := int(attr&0x07FF) + (srcX/8)*vCells + srcY/8
-				tx, ty := srcX&7, srcY&7
-				patternAddr := tile*32 + ty*4 + tx/2
-				b := v.VRAM[(patternAddr^1)&0xFFFF] // byte-swapped storage, as in tilePixel
-				nibble := b >> 4
-				if tx&1 != 0 {
-					nibble = b & 0x0F
-				}
+				nibble := rowPix[srcX]
 				if nibble == 0 || layerOK[screenX] {
 					continue
 				}
-				palette := (attr >> 13) & 0x03
-				layer[screenX] = v.cramColor(int(palette)*16 + int(nibble))
+				layer[screenX] = v.palCache[palBase+int(nibble)]
 				layerOK[screenX] = true
 			}
 			if pixelBudget <= 0 {
@@ -734,6 +838,7 @@ func (v *VDP) RenderLine(y int) {
 		return
 	}
 	v.currentLn = y
+	v.refreshPalette()
 	width := v.DisplayWidth()
 	line := v.fb[y*MaxWidth : y*MaxWidth+MaxWidth]
 	backdrop := v.backdropColor()
@@ -749,14 +854,8 @@ func (v *VDP) RenderLine(y int) {
 	var aOK, bOK, sLowOK, sHighOK [MaxWidth]bool
 	var aPri, bPri [MaxWidth]bool
 
-	for x := 0; x < width; x++ {
-		if c, pri, ok := v.planePixel(true, x, y); ok {
-			bCol[x], bPri[x], bOK[x] = c, pri, ok
-		}
-		if c, pri, ok := v.planePixel(false, x, y); ok {
-			aCol[x], aPri[x], aOK[x] = c, pri, ok
-		}
-	}
+	v.renderPlaneLine(true, y, width, &bCol, &bPri, &bOK)
+	v.renderPlaneLine(false, y, width, &aCol, &aPri, &aOK)
 	v.renderSprites(y, &sLow, &sHigh, &sLowOK, &sHighOK)
 
 	for x := 0; x < width; x++ {
