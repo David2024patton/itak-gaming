@@ -121,11 +121,16 @@ func (m *Map) hiROMOffset(bank uint8, addr uint16) (int, bool) {
 }
 
 // wrapROM folds an offset into the ROM image. Images are
-// power-of-two sized in practice; the modulo form works
-// for any size and never reads out of range.
+// power-of-two sized in practice, where the fold is a
+// mask; the modulo form covers any other size and never
+// reads out of range. Offsets are never negative, so the
+// two forms agree.
 func wrapROM(off, size int) int {
 	if size == 0 {
 		return 0
+	}
+	if size&(size-1) == 0 {
+		return off & (size - 1)
 	}
 	return off % size
 }
@@ -141,13 +146,13 @@ func (m *Map) sramAt(bank uint8, addr uint16) (int, bool) {
 	case LayoutLoROM, LayoutExLoROM:
 		if (bank >= 0x70 && bank <= 0x73) || (bank >= 0xF0 && bank <= 0xF3) {
 			off := int(bank&0x03)*0x10000 + int(addr)
-			return off % len(m.sram), true
+			return wrapROM(off, len(m.sram)), true
 		}
 	case LayoutHiROM, LayoutExHiROM:
 		if addr >= 0x6000 && addr < 0x8000 &&
 			((bank >= 0x20 && bank < 0x40) || (bank >= 0xA0 && bank < 0xC0)) {
 			off := int(bank&0x1F)*0x2000 + int(addr-0x6000)
-			return off % len(m.sram), true
+			return wrapROM(off, len(m.sram)), true
 		}
 	}
 	return 0, false
@@ -202,11 +207,41 @@ func (m *Map) Speed(bank uint8, addr uint16) w65c816.Speed {
 		return w65c816.SpeedXSlow // the IO region
 	}
 	if m.cart.Header.FastROM && bank >= 0x80 {
-		if _, ok := m.romAt(bank, addr); ok {
+		if m.isROM(bank, addr) {
 			return w65c816.SpeedFast
 		}
 	}
 	return w65c816.SpeedSlow
+}
+
+// isROM reports whether the address is ROM space: the
+// ok half of romAt without the offset math, for the speed
+// path, which runs on every byte access.
+func (m *Map) isROM(bank uint8, addr uint16) bool {
+	switch m.cart.Header.Layout {
+	case LayoutLoROM:
+		return loROMIsROM(bank, addr)
+	case LayoutExLoROM:
+		return loROMIsROM(bank^0x40, addr)
+	case LayoutHiROM:
+		return hiROMIsROM(bank, addr)
+	case LayoutExHiROM:
+		return hiROMIsROM(bank^0x40, addr)
+	}
+	return false
+}
+
+// loROMIsROM mirrors loROMOffsets ok result: every
+// address is ROM except the low half of the system banks.
+func loROMIsROM(bank uint8, addr uint16) bool {
+	inSystemBanks := bank < 0x40 || (bank >= 0x80 && bank < 0xC0)
+	return !(addr < 0x8000 && inSystemBanks)
+}
+
+// hiROMIsROM mirrors hiROMOffsets ok result: the ROM
+// banks in full, plus the high half of any other bank.
+func hiROMIsROM(bank uint8, addr uint16) bool {
+	return (bank >= 0x40 && bank < 0x80) || bank >= 0xC0 || addr >= 0x8000
 }
 
 // compile-time check: Map is a CPU bus.
