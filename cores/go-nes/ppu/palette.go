@@ -45,13 +45,29 @@ func emphasisScale(emphasis uint8, channel int) int {
 	return 192 // 0.75
 }
 
+// rgbTable resolves (emphasis, color index) to a packed
+// XRGB8888 pixel. The output stage asks for one pixel per dot
+// (about 61 thousand per frame), and the answer depends only
+// on the 6-bit color index and the three emphasis bits, so the
+// full 512-entry table is built once at startup with exactly
+// the arithmetic colorRGB used to do per pixel.
+var rgbTable [8][64]uint32
+
+func init() {
+	for e := 0; e < 8; e++ {
+		for i := 0; i < 64; i++ {
+			c := ntscPalette[i]
+			r := int(c[0]) * emphasisScale(uint8(e), 0) >> 8
+			g := int(c[1]) * emphasisScale(uint8(e), 1) >> 8
+			b := int(c[2]) * emphasisScale(uint8(e), 2) >> 8
+			rgbTable[e][i] = 0xFF000000 | uint32(r)<<16 | uint32(g)<<8 | uint32(b)
+		}
+	}
+}
+
 // colorRGB resolves a 6-bit PPU palette index under the current
 // emphasis bits to a packed XRGB8888 pixel.
 func (p *PPU) colorRGB(index uint8) uint32 {
-	c := ntscPalette[index&0x3F]
 	emph := (p.mask >> 5) & 7 // $2001 bits 5,6,7: red, green, blue
-	r := int(c[0]) * emphasisScale(emph, 0) >> 8
-	g := int(c[1]) * emphasisScale(emph, 1) >> 8
-	b := int(c[2]) * emphasisScale(emph, 2) >> 8
-	return 0xFF000000 | uint32(r)<<16 | uint32(g)<<8 | uint32(b)
+	return rgbTable[emph][index&0x3F]
 }
