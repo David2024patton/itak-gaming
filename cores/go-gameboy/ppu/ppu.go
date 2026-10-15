@@ -873,12 +873,29 @@ func (p *PPU) Tick(dots int, irq func(bit int)) {
 	if !p.lcdOn {
 		return
 	}
-	for i := 0; i < dots; i++ {
+	// Advance in jumps to the next event dot (warmup expiry, a
+	// mode boundary, or the end of the line) instead of stepping
+	// dot by dot: nothing observable changes between event dots,
+	// and callers only sample PPU state at tick boundaries. The
+	// transitions below are the per-dot ones, fired in the same
+	// order at the same dots.
+	for dots > 0 {
 		if p.warm > 0 {
-			// Warmup dots still advance the line's dot count,
+			// Warmup dots still advance the line dot count,
 			// so the first line totals 456 dots like any other.
-			p.dot++
-			p.warm--
+			step := dots
+			if p.warm < step {
+				step = p.warm
+			}
+			if rem := DotsPerLine - p.dot; rem < step {
+				step = rem
+			}
+			if step < 1 {
+				step = 1
+			}
+			p.dot += step
+			p.warm -= step
+			dots -= step
 			if p.warm == 0 {
 				p.mode = modeOAM
 				p.evalSTAT(irq)
@@ -888,7 +905,24 @@ func (p *PPU) Tick(dots int, irq func(bit int)) {
 			}
 			continue
 		}
-		p.dot++
+		var boundary int
+		switch p.mode {
+		case modeOAM:
+			boundary = 80 + p.shorten
+		case modeDraw:
+			boundary = 80 + p.shorten + p.mode3Len
+		default: // modeHBlank, modeVBlank
+			boundary = DotsPerLine
+		}
+		step := dots
+		if rem := boundary - p.dot; rem < step {
+			step = rem
+		}
+		if step < 1 {
+			step = 1
+		}
+		p.dot += step
+		dots -= step
 		switch p.mode {
 		case modeOAM:
 			if p.dot == 80+p.shorten {
@@ -905,11 +939,7 @@ func (p *PPU) Tick(dots int, irq func(bit int)) {
 				}
 				p.evalSTAT(irq)
 			}
-		case modeHBlank:
-			if p.dot == DotsPerLine {
-				p.endLine(irq)
-			}
-		case modeVBlank:
+		case modeHBlank, modeVBlank:
 			if p.dot == DotsPerLine {
 				p.endLine(irq)
 			}
