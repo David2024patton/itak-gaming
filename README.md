@@ -1,3 +1,24 @@
+<!--
+INSTRUCTIONS FOR THIS FILE (user and AI: read before editing. Keep this header.)
+
+WHAT THIS FILE IS: the project's front door on GitHub. A stranger decides
+in ten seconds whether this project is real. Everything here must be true
+today: badges only when true, status only with proof, quickstart commands
+copied from the working build.
+
+EXACT STRUCTURE: centered title in exact brand casing, one-line promise,
+true badges, the standard-files link row, What it is, Quickstart, the
+module map (the grid), Status, License. Full art direction lives in the
+github-repo-standard skill (README standard + README-PATTERNS.md).
+
+RULES:
+- Brand casing is exact: AlphaVision, AlphaFlux, iTaK, Mimir,
+  Patriot Pest Control in full.
+- David's taste: black background with a bright color on top so things
+  pop is his preferred look; black and red are his favorite scheme, not
+  a law. Each project picks its own palette.
+- No secrets, passwords, or tokens in this file, ever.
+-->
 <div align="center">
 
 # iTaK Gaming
