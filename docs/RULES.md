@@ -1,3 +1,17 @@
+<!--
+INSTRUCTIONS FOR THIS FILE (user and AI: read before editing. Keep this header.)
+
+WHAT THIS FILE IS: the build law for this repo in one page, at docs/RULES.md.
+It states how every module in this project gets built, gated, and proven.
+Project-specific numbers and additions go in a "Project specifics" section
+at the end; the law sections above it come from the github-repo-standard
+skill template and change only when the skill changes.
+
+RULES:
+- If a project practice conflicts with this page, this page wins until
+  David changes it.
+- No secrets, passwords, or tokens in this file, ever.
+-->
 # RULES: how this project gets built
 
 The build law for this repo, in one page. These rules come from David
