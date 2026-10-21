@@ -56,6 +56,16 @@ type Map struct {
 	// any other bank skip the SRAM decode entirely.
 	sramBank [256]bool
 
+	// romTab is the per bank, per address half ROM read
+	// fast path: where an entry is valid, every address
+	// in the half reads m.cart.rom at (base + addr&mask)
+	// wrapped by romMask, which is exactly what romAt
+	// computes the slow way (the wrap is a power-of-two
+	// mask, and masking distributes over the addition).
+	// Built once in NewMap; entries stay invalid for
+	// non-power-of-two images, which keep the slow path.
+	romTab [256][2]romEntry
+
 	// Precomputed ROM and SRAM wrap values: images are
 	// power-of-two sized in practice, where the wrap is
 	// a mask; the flags record that so the per access
@@ -72,6 +82,14 @@ type Map struct {
 	OpenBus uint8
 }
 
+// romEntry is one bank half of the ROM read fast path
+// (see Map.romTab).
+type romEntry struct {
+	base int    // wrapped ROM offset of the half's first byte, minus the address bits
+	mask uint16 // the address bits that vary inside the half
+	ok   bool
+}
+
 // NewMap builds the bus for a loaded cartridge. SRAM is
 // sized from the header (zero when the header declares
 // none, in which case the SRAM windows read open bus).
@@ -86,6 +104,13 @@ func NewMap(c *Cart) *Map {
 	if n := len(m.sram); n > 0 && n&(n-1) == 0 {
 		m.sramMask, m.sramPow2 = n-1, true
 	}
+	// The address bits that vary inside one half of a
+	// bank under each layout: LoROM folds the address to
+	// 15 bits, HiROM uses all 16.
+	addrMask := uint16(0x7FFF)
+	if c.Header.Layout == LayoutHiROM || c.Header.Layout == LayoutExHiROM {
+		addrMask = 0xFFFF
+	}
 	for bank := 0; bank < 256; bank++ {
 		b := uint8(bank)
 		if _, ok := m.sramAt(b, 0x0000); ok {
@@ -96,6 +121,22 @@ func NewMap(c *Cart) *Map {
 		}
 		for band := 0; band < 8; band++ {
 			m.speedTab[bank][band] = m.speedClass(b, uint16(band<<13))
+		}
+		if m.romPow2 {
+			// ROM decode validity is uniform inside a
+			// bank half under every layout (the decode
+			// splits only on address bit 15), so one
+			// probe per half settles the whole half.
+			for half := 0; half < 2; half++ {
+				rep := uint16(half << 15)
+				if off, ok := m.romAt(b, rep); ok {
+					m.romTab[bank][half] = romEntry{
+						base: (off - int(rep&addrMask)) & m.romMask,
+						mask: addrMask,
+						ok:   true,
+					}
+				}
+			}
 		}
 	}
 	return m
@@ -233,6 +274,9 @@ func (m *Map) Read(bank uint8, addr uint16) uint8 {
 		if off, ok := m.sramAt(bank, addr); ok {
 			return m.sram[off]
 		}
+	}
+	if e := &m.romTab[bank][addr>>15]; e.ok {
+		return m.cart.rom[(e.base+int(addr&e.mask))&m.romMask]
 	}
 	if off, ok := m.romAt(bank, addr); ok {
 		return m.cart.rom[off]
