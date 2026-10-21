@@ -1,1 +1,1 @@
-Speed pass. All four game engines were rebuilt for speed: Game Boy about 2.7 times faster, Genesis about 3 times, Super Nintendo about 4.4 times, NES about 2 times. Games run much closer to full speed now. Also, the pause menu highlight is a solid white bar with bold text, so you can always see which row you are on.
+Speed pass 2 for Nintendo and Super Nintendo. A hidden NES slowdown that got worse the longer a game ran is fixed, and both engines were tuned to do less work every frame, so games play closer to full speed.
