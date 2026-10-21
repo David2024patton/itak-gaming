@@ -47,10 +47,21 @@ func (p *PPU) step() {
 		if (dot >= 1 && dot <= 256) || (dot >= 321 && dot <= 336) {
 			p.shiftBG()
 		}
-		if dot >= 1 && dot <= 340 {
+		// fetchDot acts only on the latch dots: the even
+		// dots of the background windows (phases 1, 3, 5,
+		// 7 of each tile group) and phases 5 and 7 of the
+		// sprite slots. Every other dot's call would run
+		// its window and phase checks and do nothing, so
+		// the call itself is gated on the same conditions
+		// fetchDot switches on.
+		if dot >= 2 && dot <= 336 && dot%2 == 0 &&
+			(dot <= 256 || dot >= 321 || (dot-257)%8 == 5 || (dot-257)%8 == 7) {
 			p.fetchDot(line, dot)
 		}
-		if dot == 1 || (dot >= 65 && dot <= 256) {
+		// evalDot likewise: its dot 1 clear, and one read
+		// at each even dot from 66 to 256 while the
+		// evaluation machine is still running.
+		if dot == 1 || (dot >= 66 && dot <= 256 && dot%2 == 0 && p.evalState != evalDone) {
 			p.evalDot(line, dot)
 		}
 		// Scroll reloads.
@@ -98,6 +109,231 @@ func (p *PPU) step() {
 		if p.scanline == vblSetLine {
 			p.frames++
 		}
+	}
+}
+
+// step8 executes the eight dots of one tile group,
+// starting at a group boundary (see groupOK in ppu.go),
+// and reproduces step() dot for dot:
+//
+//   - On a visible line the group's eight pixels compose
+//     from the shift registers as the group starts, and
+//     the sprite counters and shifters advance eight dots.
+//   - The background shifters advance eight dots.
+//   - The group's four fetches latch in their dot order
+//     (nametable, attribute, pattern low, pattern high),
+//     the shifters load, and the scroll increments, with
+//     the increment at the phase 7 dot exactly as fetchDot
+//     runs it (incY when the group ends at dot 256,
+//     incCoarseX otherwise). The fetches read the same
+//     addresses per-dot stepping computes: no state the
+//     pixel stage reads changes inside a group (the tile
+//     being fetched is only loaded at the group's end, and
+//     the output pixels come from the previous loads), so
+//     batching the reads after the pixels is unobservable.
+//   - Sprite evaluation runs its dot 1 clear in the first
+//     group and one read at each even dot from 66 to 256
+//     (four reads in each group that contains any). The
+//     evaluation machine's state after the group is the
+//     per-dot state; nothing else in the group reads it.
+//   - The pre-render line's flag clear rides its dot 1.
+//   - A12 tracking folds to closed form (trackA12Group).
+//   - The position advances eight dots. A group never
+//     crosses a line boundary, a flag edge, or the sprite
+//     fetch window, so no line-end or edge handling is
+//     owed here.
+func (p *PPU) step8() {
+	line, dot := p.scanline, p.dot
+	if line < 240 && dot <= 249 {
+		// An output group. The prefetch groups (dots 321
+		// and 329) compose nothing: outputPixel runs on
+		// dots 1-256 only, and the sprite counters and
+		// shifters it advances are done for the line.
+		p.outputGroup(line)
+	}
+	p.bgShiftLo <<= 8
+	p.bgShiftHi <<= 8
+	p.atShiftLo <<= 8
+	p.atShiftHi <<= 8
+	p.ntLatch = p.readMem(p.ntAddress())
+	p.atLatch = p.readMem(p.atAddress())
+	p.patLoLatch = p.mem.ReadCHR(p.bgPatternAddress())
+	p.patHiLatch = p.mem.ReadCHR(p.bgPatternAddress() + 8)
+	p.loadBGShifters()
+	if dot+7 == 256 {
+		p.incY()
+	} else {
+		p.incCoarseX()
+	}
+	if dot == 1 {
+		p.evalDot(line, 1)
+	} else if dot >= 65 && dot <= 249 && p.evalState != evalDone {
+		target := line + 1
+		if line == preLine {
+			target = 0
+		}
+		for i := 0; i < 4 && p.evalState != evalDone; i++ {
+			p.evalRead(target)
+		}
+	}
+	if line == preLine && dot == 1 {
+		p.vblFlag = false
+		p.spr0Hit = false
+		p.sprOvrFlag = false
+	}
+	if p.a12Watched {
+		p.trackA12Group()
+	}
+	p.decayDebt += 8
+	p.dot += 8
+}
+
+// outputGroup composes the eight pixels of one tile group
+// on a visible line and advances the sprite counters and
+// shifters by the group's eight dots. It reproduces
+// outputPixel dot for dot. The background planes are
+// extracted once for the group: pixel i of the group reads
+// the shifter bit that per-dot shifting would present at
+// that dot (bit 15-fineX-i of the shifters as the group
+// starts), and each live sprite slot's pattern is aligned
+// to the group once (a slot whose X counter is c presents
+// its pattern bit j at group position c+j, and its aligned
+// byte is empty before that position, exactly matching the
+// per-dot scan's skip of slots still counting). The
+// per-pixel merge is then outputPixel's own logic: the
+// first live slot with an opaque pixel wins, the sprite 0
+// hit test runs per pixel, and the palette resolution is
+// unchanged.
+func (p *PPU) outputGroup(line int) {
+	x0 := p.dot - 1
+	sx := uint(8 - p.x)
+	bgLo := uint8(p.bgShiftLo >> sx)
+	bgHi := uint8(p.bgShiftHi >> sx)
+	atLo := uint8(p.atShiftLo >> sx)
+	atHi := uint8(p.atShiftHi >> sx)
+
+	bgOn := p.bgEnabled()
+	sprOn := p.sprEnabled()
+	leftBG := p.mask&0x02 != 0
+	leftSpr := p.mask&0x04 != 0
+
+	var slo, shi, scnt [8]uint8
+	for m := p.sprLiveMask; m != 0; m &= m - 1 {
+		i := bits.TrailingZeros8(m)
+		c := p.sprXCnt[i]
+		scnt[i] = c
+		if c < 8 {
+			slo[i] = p.sprShLo[i] >> uint(c)
+			shi[i] = p.sprShHi[i] >> uint(c)
+		}
+	}
+
+	row := p.framebuffer[line*Width+x0 : line*Width+x0+8]
+	emph := (p.mask >> 5) & 7
+	gray := p.mask&0x01 != 0
+	for pos := 0; pos < 8; pos++ {
+		x := x0 + pos
+		bit := uint(7 - pos)
+		bgBits := uint8(0)
+		bgPal := uint8(0)
+		if bgOn {
+			bgBits = (bgLo>>bit)&1 | ((bgHi>>bit)&1)<<1
+			attr := (atLo>>bit)&1 | ((atHi>>bit)&1)<<1
+			bgPal = attr<<2 | bgBits
+			if x < 8 && !leftBG {
+				bgBits = 0
+			}
+		}
+		sprBits := uint8(0)
+		sprPal := uint8(0)
+		sprBehind := false
+		sprIsZero := false
+		if sprOn {
+			for m := p.sprLiveMask; m != 0; m &= m - 1 {
+				i := bits.TrailingZeros8(m)
+				b := (slo[i]>>bit)&1 | ((shi[i]>>bit)&1)<<1
+				if b != 0 {
+					sprBits = b
+					sprPal = (p.sprAttr[i]&3)<<2 | b
+					sprBehind = p.sprAttr[i]&0x20 != 0
+					sprIsZero = p.sprLineIx[i] == 0
+					break
+				}
+			}
+			if x < 8 && !leftSpr {
+				sprBits = 0
+			}
+		}
+		if sprIsZero && sprBits != 0 && bgBits != 0 &&
+			!(x < 8 && (!leftBG || !leftSpr)) && x != 255 {
+			p.spr0Hit = true
+		}
+		var palIdx int
+		switch {
+		case bgBits != 0 && sprBits != 0:
+			if sprBehind {
+				palIdx = int(bgPal)
+			} else {
+				palIdx = 0x10 + int(sprPal)
+			}
+		case sprBits != 0:
+			palIdx = 0x10 + int(sprPal)
+		case bgBits != 0:
+			palIdx = int(bgPal)
+		default:
+			palIdx = 0
+		}
+		idx := p.palette[palIdx]
+		if palIdx&3 == 0 {
+			idx = p.palette[0]
+		}
+		if gray {
+			idx &= 0x30
+		}
+		row[pos] = rgbTable[emph][idx&0x3F]
+	}
+
+	// Sprite counters and shifters advance by the eight
+	// dots, the per-dot rule (decrement while the counter
+	// is nonzero, shift once it has run out) folded: a
+	// counter of c < 8 at the group start reaches zero
+	// after c dots and leaves 8-c shifts; a counter of 8
+	// or more only counts down.
+	for m := p.sprLiveMask; m != 0; m &= m - 1 {
+		i := bits.TrailingZeros8(m)
+		c := scnt[i]
+		if c >= 8 {
+			p.sprXCnt[i] = c - 8
+		} else {
+			p.sprShLo[i] <<= uint(8 - c)
+			p.sprShHi[i] <<= uint(8 - c)
+			p.sprXCnt[i] = 0
+		}
+	}
+}
+
+// trackA12Group applies one tile group's A12 bookkeeping
+// in closed form. Within a background fetch group the bus
+// drives a nametable or attribute address (bit 12 clear)
+// for the first four dots and the tile's pattern address
+// for the last four, and the pattern address's bit 12 is
+// the background pattern table select. trackA12 over the
+// eight dots therefore folds to: four low dots accrue to
+// the low run, then a single edge check at the first
+// pattern dot (the low run there is the accrued run plus
+// the group's four, and the line is low by then whatever
+// it was at the group start), or eight more low dots when
+// the pattern table is the low half.
+func (p *PPU) trackA12Group() {
+	if p.ctrl&0x10 != 0 {
+		if p.a12Low+4 >= a12MinLowDots {
+			p.mem.ClockA12()
+		}
+		p.a12Low = 0
+		p.prevA12 = true
+	} else {
+		p.a12Low += 8
+		p.prevA12 = false
 	}
 }
 
@@ -432,45 +668,39 @@ func (p *PPU) outputPixel(line, x int) {
 
 	// Sprite pixel: the first slot (lowest index has
 	// priority) with an opaque pixel whose X counter has
-	// run out.
+	// run out. The scan and the per-dot advance of the
+	// counters and shifters run as one pass over the live
+	// slots: the pixel is read from the shifters as they
+	// stand, then the slot advances, exactly the order the
+	// two passes used (scan the standing shifters first,
+	// then shift or count down every live slot, whether or
+	// not a pixel was found).
 	sprBits := uint8(0)
 	sprPal := uint8(0)
 	sprBehind := false
 	sprIsZero := false
-	if p.sprEnabled() {
-		for m := p.sprLiveMask; m != 0; m &= m - 1 {
-			i := bits.TrailingZeros8(m)
-			if p.sprXCnt[i] != 0 {
-				continue
-			}
-			b := (p.sprShLo[i] >> 7) & 1
-			b |= ((p.sprShHi[i] >> 7) & 1) << 1
-			if b != 0 {
-				sprBits = b
-				sprPal = (p.sprAttr[i]&3)<<2 | b
-				sprBehind = p.sprAttr[i]&0x20 != 0
-				sprIsZero = p.sprLineIx[i] == 0
-				break
-			}
-		}
-		if x < 8 && p.mask&0x04 == 0 {
-			sprBits = 0
-		}
-	}
-	// Sprite shift registers and X counters run on every
-	// output dot, whether or not a pixel was found. Only
-	// the live slots run: a dead slot's shifters hold zero
-	// pattern (that is what the live mask records), so
-	// shifting them is a no-op and their counters gate a
-	// pixel that can never be opaque.
+	sprOn := p.sprEnabled()
 	for m := p.sprLiveMask; m != 0; m &= m - 1 {
 		i := bits.TrailingZeros8(m)
 		if p.sprXCnt[i] == 0 {
+			if sprOn && sprBits == 0 {
+				b := (p.sprShLo[i] >> 7) & 1
+				b |= ((p.sprShHi[i] >> 7) & 1) << 1
+				if b != 0 {
+					sprBits = b
+					sprPal = (p.sprAttr[i]&3)<<2 | b
+					sprBehind = p.sprAttr[i]&0x20 != 0
+					sprIsZero = p.sprLineIx[i] == 0
+				}
+			}
 			p.sprShLo[i] <<= 1
 			p.sprShHi[i] <<= 1
 		} else {
 			p.sprXCnt[i]--
 		}
+	}
+	if sprOn && x < 8 && p.mask&0x04 == 0 {
+		sprBits = 0
 	}
 
 	// Sprite 0 hit: sprite 0's opaque pixel overlaps an
@@ -536,7 +766,15 @@ func (p *PPU) a12Level() bool {
 		switch {
 		case (dot >= 1 && dot <= 256) || (dot >= 321 && dot <= 336):
 			if (dot-1)%8 >= 4 {
-				return p.bgPatternAddress()&0x1000 != 0
+				// The pattern address's bit 12 is
+				// its table select alone (the tile
+				// and row bits all sit below bit
+				// 12), so the level is the control
+				// register's bit directly; asking
+				// bgPatternAddress here would only
+				// rebuild its cache key to learn
+				// the same bit.
+				return p.ctrl&0x10 != 0
 			}
 		case dot >= 257 && dot <= 320:
 			if (dot-257)%8 >= 4 {
