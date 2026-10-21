@@ -1,1 +1,1 @@
-Super Nintendo colors are fixed: red and blue were swapped in every SNES game, which is why Zelda looked wrong. European games like Zelda also run at their true 50 Hz speed now, music at the right tempo included.
+Speed pass 3 for Nintendo and Super Nintendo: both engines rebuilt to do less work every frame, with every picture verified identical to the last build.
