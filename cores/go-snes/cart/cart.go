@@ -152,6 +152,26 @@ type Header struct {
 	headerOff int
 }
 
+// PAL reports whether the header destination code (the
+// Country byte) names a PAL territory, in which case the
+// machine runs at PAL timing: 312 lines per frame and the
+// 21.28137 MHz master clock. The destination codes follow
+// the layout Nintendo documents for licensees: 0x00 Japan,
+// 0x01 USA, 0x0D Korea, and 0x0E Canada are NTSC markets,
+// as is 0x0F Brazil (PAL-M color on NTSC timing). Codes
+// 0x02 through 0x0C are the European and other PAL
+// markets (Europe, Sweden, Finland, Denmark, France,
+// Holland, Spain, Germany, Italy, China, Indonesia), and
+// 0x10 Australia and the 0x11 catch-all are PAL as well.
+func (h Header) PAL() bool {
+	switch h.Country {
+	case 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x10, 0x11:
+		return true
+	}
+	return false
+}
+
 // candidate header locations, in the order they are tried.
 var headerCandidates = []struct {
 	off    int
