@@ -7,27 +7,32 @@
 // them together.
 //
 // The APU runs on its own 1.024 MHz oscillator, independent
-// of the 21.477272 MHz NTSC master clock. The machine
-// advances it by exact ratio accumulation: every master
-// clock delta is multiplied by 1024000 and divided by
-// 21477272, with the remainder carried in apuRem, so the
-// long-term SPC rate is exact and save states resume the
-// phase bit-exactly (apuRem is part of the system block).
+// of the master clock (21.477272 MHz on NTSC, 21.28137 MHz
+// on PAL). The machine advances it by exact ratio
+// accumulation: every master clock delta is multiplied by
+// 1024000 and divided by the region's master clock rate,
+// with the remainder carried in apuRem, so the long-term
+// SPC rate is exact and save states resume the phase
+// bit-exactly (apuRem is part of the system block).
 //
 // Timing model: the CPU reports consumed master clocks
-// (21477272 per second on NTSC). The machine advances in
-// whole instructions; after each instruction the elapsed
-// clocks are pushed through the line machine. One line is
-// 1364 master clocks (341 dots of 4 clocks); a frame is
-// 262 lines numbered 0 to 261, where line 0 is the
-// pre-render line (the last line of vertical blank), lines
-// 1 to 224 (or 239 in overscan mode) are the picture, and
-// vertical blank starts on entering line 225 (240). On odd
-// frames while the display is enabled, line 0 is four
-// clocks shorter, the documented dot-340 quirk. Interlace
-// (SETINI bit 0) alternates the frame between 263 and 262
-// lines with the extra line in vblank, and the field flag
-// toggles per frame.
+// (21477272 per second on NTSC, 21281370 on PAL; the
+// region comes from the cartridge header destination
+// code). The machine advances in whole instructions;
+// after each instruction the elapsed clocks are pushed
+// through the line machine. One line is 1364 master
+// clocks (341 dots of 4 clocks); a frame is 262 lines
+// numbered 0 to 261 on NTSC, or 312 lines on PAL, where
+// line 0 is the pre-render line (the last line of
+// vertical blank), lines 1 to 224 (or 239 in overscan
+// mode) are the picture, and vertical blank starts on
+// entering line 225 (240) in both regions, so a PAL frame
+// simply carries a longer vertical blank. On odd frames
+// while the display is enabled, line 0 is four clocks
+// shorter, the documented NTSC dot-340 quirk. Interlace
+// (SETINI bit 0) alternates the frame between 263 and
+// 262 lines on NTSC (313 and 312 on PAL) with the extra
+// line in vblank, and the field flag toggles per frame.
 //
 // Events are processed at line granularity: when the clock
 // crosses into a new line, the machine renders the display
@@ -77,6 +82,26 @@ const (
 
 const (
 	clocksPerLine = 1364
+
+	// Master clock rates in clocks per second, by region.
+	// The CPU, the line machine, and the APU ratio all
+	// count time in master clocks; the region decides how
+	// many of them make a second (and how many lines make
+	// a frame).
+	masterClockNTSC = 21477272
+	masterClockPAL  = 21281370
+
+	// Nominal lines per frame by region, non-interlaced.
+	// Interlace adds one line on the long field, in both
+	// regions.
+	linesNTSC = 262
+	linesPAL  = 312
+
+	// spcClock is the APU oscillator rate in cycles per
+	// second. The SPC700 runs on its own oscillator, so
+	// this is the same in both regions; only the master
+	// clock it is ratioed against changes.
+	spcClock = 1024000
 )
 
 // dmaChannel holds one DMA/HDMA channel's register file
@@ -115,6 +140,14 @@ type System struct {
 	// apuRem is the carried remainder of the master to
 	// SPC clock ratio accumulation (see pumpAPU).
 	apuRem int64
+
+	// pal is the loaded cartridge's region, decided by
+	// the header destination code at LoadGame: false is
+	// an NTSC game (262 lines, 21.477272 MHz master
+	// clock), true is a PAL game (312 lines, 21.28137
+	// MHz master clock). It never changes while a
+	// cartridge is loaded, and Reset does not clear it.
+	pal bool
 
 	// Clock and position.
 	now        int64
@@ -200,6 +233,7 @@ func (s *System) LoadGame(rom []byte) error {
 	}
 	s.Cart = c
 	s.Map = cart.NewMap(c)
+	s.pal = c.Header.PAL()
 	s.CPU.Attach(s)
 	s.Reset()
 	return nil
@@ -242,8 +276,9 @@ func (s *System) PPU() *ppu.PPU { return s.ppu }
 func (s *System) APU() *apu.APU { return s.apu }
 
 // AudioBuffer drains the APU's pending stereo samples:
-// interleaved L, R int16 at 32000 Hz. A frame of NTSC
-// runtime produces about 534 samples (1068 values). The
+// interleaved L, R int16 at 32000 Hz. A frame of runtime
+// produces about 534 samples (1068 values) on NTSC and
+// about 640 on PAL, matching the longer PAL frame. The
 // buffer is empty until the machine has run.
 func (s *System) AudioBuffer() []int16 { return s.apu.DrainAudio() }
 
@@ -283,20 +318,57 @@ func (s *System) displayLines() int {
 	return 224
 }
 
+// PAL reports whether the loaded cartridge is a PAL
+// game, running at PAL timing (see the pal field).
+func (s *System) PAL() bool { return s.pal }
+
+// masterClock returns the region's master clock rate in
+// clocks per second.
+func (s *System) masterClock() int64 {
+	if s.pal {
+		return masterClockPAL
+	}
+	return masterClockNTSC
+}
+
+// FPS returns the region's nominal frame rate: the master
+// clock divided by the clocks in a frame. About 60.0988
+// for NTSC games and about 50.007 for PAL games. Shells
+// pace presentation on this value.
+func (s *System) FPS() float64 {
+	clocks := int64(clocksPerLine * linesNTSC)
+	if s.pal {
+		clocks = int64(clocksPerLine * linesPAL)
+	} else {
+		// The quoted NTSC rate counts the short line:
+		// the four clocks it removes on alternating
+		// frames average to two clocks per frame.
+		clocks -= 2
+	}
+	return float64(s.masterClock()) / float64(clocks)
+}
+
 func (s *System) totalLines() int {
+	base := linesNTSC
+	if s.pal {
+		base = linesPAL
+	}
 	if s.ppu.Interlace() {
 		if s.ppu.Field() {
-			return 263
+			return base + 1
 		}
-		return 262
+		return base
 	}
-	return 262
+	return base
 }
 
 func (s *System) lineLength() int {
-	// The short line: line 0 is four clocks shorter on
-	// alternating frames while the display is enabled.
-	if s.line == 0 && (s.frame%2 == 1) && !s.ppu.ForcedBlank() {
+	// The short line is an NTSC behavior: line 0 is four
+	// clocks shorter on alternating frames while the
+	// display is enabled. PAL lines are modeled uniform;
+	// the hardware's corresponding PAL quirk touches a
+	// vertical blank line and changes nothing visible.
+	if !s.pal && s.line == 0 && (s.frame%2 == 1) && !s.ppu.ForcedBlank() {
 		return clocksPerLine - 4
 	}
 	return clocksPerLine
@@ -347,18 +419,19 @@ func (s *System) syncTime() {
 
 // pumpAPU advances the APU by the SPC cycles that the
 // given number of master clocks corresponds to, at the
-// exact 1024000/21477272 ratio with the remainder
-// carried in apuRem. DMA and HDMA costs arrive through
-// advance; CPU instruction clocks arrive through
-// syncTime. The two never double count: instruction
-// clocks are reported only by the CPU counter, transfer
-// costs only by the advance argument.
+// exact spcClock/masterClock ratio for the cartridge's
+// region with the remainder carried in apuRem. DMA and
+// HDMA costs arrive through advance; CPU instruction
+// clocks arrive through syncTime. The two never double
+// count: instruction clocks are reported only by the CPU
+// counter, transfer costs only by the advance argument.
 func (s *System) pumpAPU(masterDelta int64) {
 	if masterDelta <= 0 {
 		return
 	}
-	total := masterDelta*1024000 + s.apuRem
-	if total < 21477272 {
+	mc := s.masterClock()
+	total := masterDelta*spcClock + s.apuRem
+	if total < mc {
 		// The common case (a single CPU instruction):
 		// the accumulated ratio has not reached one
 		// whole SPC cycle, so there is nothing to step
@@ -366,8 +439,8 @@ func (s *System) pumpAPU(masterDelta int64) {
 		s.apuRem = total
 		return
 	}
-	steps := total / 21477272
-	s.apuRem = total % 21477272
+	steps := total / mc
+	s.apuRem = total % mc
 	s.apu.Step(int(steps))
 }
 
