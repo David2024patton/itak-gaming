@@ -54,8 +54,17 @@ func (c *snesCore) PixelFormat() int { return 1 }
 // AspectRatio mirrors the shell's declared 1.33333.
 func (c *snesCore) AspectRatio() float64 { return 1.33333 }
 
-// FPS mirrors the shell's NTSC frame rate.
-func (c *snesCore) FPS() float64 { return 60.0988 }
+// FPS reports the loaded game's real frame rate: the
+// core derives it from the cartridge region (about
+// 60.0988 for an NTSC game, about 50.007 for a PAL game),
+// so a PAL game is presented at PAL speed. With no game
+// loaded it reports the NTSC rate, as it always has.
+func (c *snesCore) FPS() float64 {
+	if c.sys == nil {
+		return 60.0988
+	}
+	return c.sys.FPS()
+}
 
 // SampleRate mirrors the shell's DSP output rate.
 func (c *snesCore) SampleRate() float64 { return 32000 }
