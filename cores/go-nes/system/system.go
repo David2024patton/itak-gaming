@@ -227,6 +227,15 @@ func (s *System) RunFrame() {
 // replays run at least once a Step, so eviction cannot
 // happen in practice.
 func (s *System) driveTo(seq int) {
+	// Render once to the newest mark being replayed: the
+	// render fills every mark it crosses in order, so the
+	// replay below is pure reads and the pin still takes
+	// each level (and every edge between them) in order.
+	if seq > s.driveSeq {
+		if dot, ok := s.ppu.MarkDot(seq); ok {
+			s.ppu.CatchUpTo(dot)
+		}
+	}
 	for s.driveSeq < seq {
 		next := s.driveSeq + 1
 		if lvl, ok := s.ppu.MarkNMI(next); ok {
