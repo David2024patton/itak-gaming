@@ -108,6 +108,19 @@ type Bus interface {
 	Speed(bank uint8, addr uint16) Speed
 }
 
+// speedBus is the optional bus extension for fused access:
+// the speed query and the transfer in one call. The speed
+// a fused call reports is the one the separate Speed call
+// would have returned before the access, so cycle
+// accounting is identical; the fusion only removes one
+// interface call from the hottest path in the machine.
+// Attach detects the extension once, so buses that do not
+// implement it pay nothing.
+type speedBus interface {
+	ReadSpeed(bank uint8, addr uint16) (uint8, Speed)
+	WriteSpeed(bank uint8, addr uint16, val uint8) Speed
+}
+
 // Status register bit masks. Unlike the 6502, every bit of
 // the 65816 status register is real storage: bit 5 is the M
 // flag (accumulator and memory width) and bit 4 is the X flag
@@ -163,6 +176,11 @@ type Registers struct {
 type CPU struct {
 	bus Bus
 
+	// fastBus is bus viewed through the optional speedBus
+	// extension, captured at Attach; nil when the bus does
+	// not implement it.
+	fastBus speedBus
+
 	a, x, y, s, d uint16
 	pc            uint16
 	dbr, pbr      uint8
@@ -215,7 +233,10 @@ func New() *CPU {
 }
 
 // Attach wires the CPU to a bus.
-func (c *CPU) Attach(bus Bus) { c.bus = bus }
+func (c *CPU) Attach(bus Bus) {
+	c.bus = bus
+	c.fastBus, _ = bus.(speedBus)
+}
 
 // Reset runs the hardware reset sequence: emulation mode is
 // forced, the M, X, I, and D flags take their reset values,
@@ -384,6 +405,11 @@ func (c *CPU) charge(master uint64) {
 // speed the bus reports for the address.
 func (c *CPU) read(bank uint8, addr uint16) uint8 {
 	c.sampleInterrupts()
+	if c.fastBus != nil {
+		v, sp := c.fastBus.ReadSpeed(bank, addr)
+		c.charge(sp.MasterCycles())
+		return v
+	}
 	sp := c.bus.Speed(bank, addr)
 	v := c.bus.Read(bank, addr)
 	c.charge(sp.MasterCycles())
@@ -393,6 +419,11 @@ func (c *CPU) read(bank uint8, addr uint16) uint8 {
 // write performs one bus write and charges one cycle.
 func (c *CPU) write(bank uint8, addr uint16, val uint8) {
 	c.sampleInterrupts()
+	if c.fastBus != nil {
+		sp := c.fastBus.WriteSpeed(bank, addr, val)
+		c.charge(sp.MasterCycles())
+		return
+	}
 	sp := c.bus.Speed(bank, addr)
 	c.bus.Write(bank, addr, val)
 	c.charge(sp.MasterCycles())
