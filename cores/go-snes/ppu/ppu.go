@@ -152,15 +152,23 @@ type PPU struct {
 	lbMain    lineBuf
 	lbSub     lineBuf
 	winIn     [6][512]bool
+	winMask   [512]uint8 // per pixel window verdicts for layers 0..4, one bit each
 	blackAt   [512]bool
 	subRegAt  [512]bool
 	objOnLine [33]objSpr
 	objDraw   [33]objSpr
 	rowMemo   [128]tileRowEntry
 	lineStamp uint32
-	expTab    [32768]uint32
-	expBright uint8
-	expValid  bool
+	// The last tile row tileRow returned, keyed and
+	// stamped exactly like a memo entry: consecutive
+	// spans of a line repeat the same tile row often
+	// enough that the shortcut pays for its compare.
+	lastRowKey   uint32
+	lastRowStamp uint32
+	lastRowPix   [8]uint8
+	expTab       [32768]uint32
+	expBright    uint8
+	expValid     bool
 }
 
 // New returns a PPU in its power-on state.
