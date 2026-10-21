@@ -358,11 +358,17 @@ func (s *System) pumpAPU(masterDelta int64) {
 		return
 	}
 	total := masterDelta*1024000 + s.apuRem
+	if total < 21477272 {
+		// The common case (a single CPU instruction):
+		// the accumulated ratio has not reached one
+		// whole SPC cycle, so there is nothing to step
+		// and the division can wait for a crossing.
+		s.apuRem = total
+		return
+	}
 	steps := total / 21477272
 	s.apuRem = total % 21477272
-	if steps > 0 {
-		s.apu.Step(int(steps))
-	}
+	s.apu.Step(int(steps))
 }
 
 // advance moves machine time forward by the given master
@@ -375,8 +381,9 @@ func (s *System) advance(clocks int64) {
 		s.lineStart += int64(s.lineLength())
 		s.enterLine(s.line + 1)
 	}
-	s.checkIRQ()
-	s.syncLines()
+	dt := s.dot()
+	s.checkIRQ(dt)
+	s.syncLines(dt)
 }
 
 func (s *System) enterLine(n int) {
@@ -425,22 +432,23 @@ func (s *System) enterLine(n int) {
 	}
 }
 
-func (s *System) syncLines() {
+func (s *System) syncLines(dt int) {
 	s.CPU.SetNMILine(s.nmiFlag && s.nmitimen&0x80 != 0)
 	s.CPU.SetIRQLine(s.timeup)
 	// The PPU drops CGRAM writes that land during active
 	// display outside hblank; tell it where the beam is.
 	d := s.displayLines()
-	active := s.line >= 1 && s.line <= d && s.dot() < 274
+	active := s.line >= 1 && s.line <= d && dt < 274
 	s.ppu.SetDisplayActive(active && !s.ppu.ForcedBlank())
 }
 
 // checkIRQ evaluates the H/V timer against the position
 // movement since the last check, at instruction
-// granularity.
-func (s *System) checkIRQ() {
+// granularity. dt is the current dot, computed once by
+// advance for both position consumers.
+func (s *System) checkIRQ(dt int) {
 	mode := (s.nmitimen >> 4) & 3
-	line, dot := s.line, s.dot()
+	line, dot := s.line, dt
 	prevLine, prevDot := s.irqLine, s.irqDot
 	s.irqLine, s.irqDot = line, dot
 	if s.timeup || mode == 0 {
@@ -573,7 +581,7 @@ func (s *System) readIO(addr uint16) uint8 {
 			v |= 0x80
 		}
 		s.nmiFlag = false
-		s.syncLines()
+		s.syncLines(s.dot())
 		return v
 	case addr == 0x4211: // TIMEUP
 		v := uint8(0)
@@ -581,7 +589,7 @@ func (s *System) readIO(addr uint16) uint8 {
 			v = 0x80
 		}
 		s.timeup = false
-		s.syncLines()
+		s.syncLines(s.dot())
 		return v
 	case addr == 0x4212: // HVBJOY
 		var v uint8
@@ -651,7 +659,7 @@ func (s *System) writeIO(addr uint16, val uint8) {
 		// Unmapped.
 	case addr == 0x4200:
 		s.nmitimen = val
-		s.syncLines()
+		s.syncLines(s.dot())
 	case addr == 0x4201:
 		s.wrio = val
 	case addr == 0x4202:
@@ -1197,7 +1205,7 @@ func (s *System) Deserialize(in []byte) error {
 	s.mulReady += s.now
 	s.divReady += s.now
 	s.prevMaster = s.CPU.MasterCycles()
-	s.syncLines()
+	s.syncLines(s.dot())
 	return nil
 }
 
