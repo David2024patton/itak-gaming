@@ -366,11 +366,12 @@ type objSpr struct {
 }
 
 // objLineB composes the OBJ layer per-pixel samples for
-// one display line into out: the first sprite (in
-// evaluation order, with priority rotation applied) to
-// cover a pixel wins it. The sprite structs live in PPU
-// scratch arrays, so composing a line allocates nothing.
-func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) {
+// one display line into out and returns how many opaque
+// pixels it wrote: the first sprite (in evaluation
+// order, with priority rotation applied) to cover a
+// pixel wins it. The sprite structs live in PPU scratch
+// arrays, so composing a line allocates nothing.
+func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) int {
 	clear(out.opaque[:w])
 	start := 0
 	if p.oamPrioRot {
@@ -380,12 +381,14 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) {
 	for i := 0; i < 128; i++ {
 		n := (start + i) & 0x7F
 		o := n * 4
-		x0 := int(p.oam[o]) | int(p.oam[512+n/4]>>uint((n%4)*2)&1)<<8
+		hi := p.oam[512+n/4]
+		sh := uint((n % 4) * 2)
+		x0 := int(p.oam[o]) | int(hi>>sh&1)<<8
 		if x0 >= 256 {
 			x0 -= 512
 		}
 		y0 := int(p.oam[o+1])
-		sizeBit := (p.oam[512+n/4] >> uint((n%4)*2+1)) & 1
+		sizeBit := (hi >> (sh + 1)) & 1
 		sz := objSizes[p.objSize][sizeBit]
 		sy := y - y0
 		if sy < 0 {
@@ -439,6 +442,7 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) {
 	// first sprite to cover a pixel keeps it. Each 8-pixel
 	// tile row is fetched once; px runs in tile space and
 	// sx maps it to the screen (mirrored under flipX).
+	written := 0
 	for i := nDraw - 1; i >= 0; i-- {
 		s := &p.objDraw[i]
 		ry := y - s.y
@@ -478,9 +482,11 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) {
 				out.rank[dx] = rank
 				out.layer[dx] = 4
 				out.opaque[dx] = true
+				written++
 			}
 		}
 	}
+	return written
 }
 
 // --- Mode 7 --------------------------------------------------------------
@@ -787,21 +793,23 @@ func (p *PPU) RenderLine(y int) {
 	extbg := p.bgMode == 7 && p.setINI&0x40 != 0
 	if p.bgMode == 7 {
 		if (p.tm|p.ts)&0x01 != 0 {
-			p.m7Line(y, w, false, &p.lbBG[0])
-			if p.tm&0x01 != 0 {
-				mergeLine(main, &p.lbBG[0], w)
-			}
-			if p.ts&0x01 != 0 {
-				mergeLine(sub, &p.lbBG[0], w)
+			if n := p.m7Line(y, w, false, &p.lbBG[0]); n > 0 {
+				if p.tm&0x01 != 0 {
+					mergeLine(main, &p.lbBG[0], w)
+				}
+				if p.ts&0x01 != 0 {
+					mergeLine(sub, &p.lbBG[0], w)
+				}
 			}
 		}
 		if extbg && (p.tm|p.ts)&0x02 != 0 {
-			p.m7Line(y, w, true, &p.lbBG[1])
-			if p.tm&0x02 != 0 {
-				mergeLine(main, &p.lbBG[1], w)
-			}
-			if p.ts&0x02 != 0 {
-				mergeLine(sub, &p.lbBG[1], w)
+			if n := p.m7Line(y, w, true, &p.lbBG[1]); n > 0 {
+				if p.tm&0x02 != 0 {
+					mergeLine(main, &p.lbBG[1], w)
+				}
+				if p.ts&0x02 != 0 {
+					mergeLine(sub, &p.lbBG[1], w)
+				}
 			}
 		}
 	} else {
@@ -809,22 +817,33 @@ func (p *PPU) RenderLine(y int) {
 			if mi.bpp[bg] == 0 || (p.tm|p.ts)&(1<<uint(bg)) == 0 {
 				continue
 			}
-			p.bgLine(&mi, bg, y, w, &p.lbBG[bg])
-			if p.tm&(1<<uint(bg)) != 0 {
-				mergeLine(main, &p.lbBG[bg], w)
-			}
-			if p.ts&(1<<uint(bg)) != 0 {
-				mergeLine(sub, &p.lbBG[bg], w)
+			onMain := p.tm&(1<<uint(bg)) != 0
+			onSub := p.ts&(1<<uint(bg)) != 0
+			switch {
+			case onMain && onSub:
+				if n := p.bgLine(&mi, bg, y, w, &p.lbBG[bg], false); n > 0 {
+					mergeLine(main, &p.lbBG[bg], w)
+					mergeLine(sub, &p.lbBG[bg], w)
+				}
+			case onMain:
+				// One screen only: compose straight
+				// into it, testing each pixel against
+				// the current winner, and skip the
+				// scratch buffer and merge pass.
+				p.bgLine(&mi, bg, y, w, main, true)
+			default:
+				p.bgLine(&mi, bg, y, w, sub, true)
 			}
 		}
 	}
 	if (p.tm|p.ts)&0x10 != 0 {
-		p.objLineB(&mi, y, w, &p.lbObj)
-		if p.tm&0x10 != 0 {
-			mergeLine(main, &p.lbObj, w)
-		}
-		if p.ts&0x10 != 0 {
-			mergeLine(sub, &p.lbObj, w)
+		if n := p.objLineB(&mi, y, w, &p.lbObj); n > 0 {
+			if p.tm&0x10 != 0 {
+				mergeLine(main, &p.lbObj, w)
+			}
+			if p.ts&0x10 != 0 {
+				mergeLine(sub, &p.lbObj, w)
+			}
 		}
 	}
 	// Window masks, per screen: where the winning layer
@@ -852,8 +871,96 @@ func (p *PPU) RenderLine(y int) {
 	}
 	tab := p.expandTable()
 	if !hires {
+		if p.cgadsb == 0 {
+			// Color math is off for every layer, so
+			// mathLine reduces to the black region
+			// test and the backdrop substitution.
+			backdrop := p.cgram[0]
+			for x := 0; x < w; x++ {
+				c := main.color[x]
+				if p.blackAt[x] {
+					c = 0
+				} else if !main.opaque[x] {
+					c = backdrop
+				}
+				row[x] = tab[c]
+			}
+			return
+		}
+		if p.cgwsel&0x02 == 0 || p.ts == 0 {
+			// The math addend is one fixed color for
+			// the whole line: either CGWSEL selects
+			// the fixed color outright, or no layer
+			// is enabled on the sub screen, which
+			// makes the sub screen transparent at
+			// every pixel and the addend fall back
+			// to the fixed color (halving is then
+			// suppressed whenever the sub screen was
+			// the selected addend).
+			add := uint16(p.fixedB)<<10 | uint16(p.fixedG)<<5 | uint16(p.fixedR)
+			halfOK := p.cgadsb&0x40 != 0 && p.cgwsel&0x02 == 0
+			subMode := p.cgadsb&0x80 != 0
+			backdrop := p.cgram[0]
+			for x := 0; x < w; x++ {
+				c := main.color[x]
+				blacked := p.blackAt[x]
+				if blacked {
+					c = 0
+				}
+				layer := main.layer[x]
+				if !main.opaque[x] {
+					layer = 5
+					if !blacked {
+						c = backdrop
+					}
+				}
+				if p.cgadsb&(1<<uint(layer)) != 0 {
+					half := halfOK && !blacked
+					r := channelMath(int(c&0x1F), int(add&0x1F), subMode, half)
+					g := channelMath(int((c>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
+					b := channelMath(int((c>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
+					c = uint16(b<<10 | g<<5 | r)
+				}
+				row[x] = tab[c]
+			}
+			return
+		}
+		// General case: the sub screen supplies the
+		// addend where it is opaque and outside its
+		// transparent region. This is mathLine's body
+		// inlined into the line loop, with the fixed
+		// color packed once, so the per pixel cost
+		// carries no function call.
+		fixed := uint16(p.fixedB)<<10 | uint16(p.fixedG)<<5 | uint16(p.fixedR)
+		backdrop := p.cgram[0]
+		subMode := p.cgadsb&0x80 != 0
+		halfBit := p.cgadsb&0x40 != 0
 		for x := 0; x < w; x++ {
-			row[x] = tab[p.mathLine(main, sub, x)]
+			c := main.color[x]
+			blacked := p.blackAt[x]
+			if blacked {
+				c = 0
+			}
+			layer := main.layer[x]
+			if !main.opaque[x] {
+				layer = 5
+				if !blacked {
+					c = backdrop
+				}
+			}
+			if p.cgadsb&(1<<uint(layer)) != 0 {
+				subTransparent := !sub.opaque[x] || p.subRegAt[x]
+				add := fixed
+				if !subTransparent {
+					add = sub.color[x]
+				}
+				half := halfBit && !blacked && !subTransparent
+				r := channelMath(int(c&0x1F), int(add&0x1F), subMode, half)
+				g := channelMath(int((c>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
+				b := channelMath(int((c>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
+				c = uint16(b<<10 | g<<5 | r)
+			}
+			row[x] = tab[c]
 		}
 		return
 	}
@@ -933,9 +1040,25 @@ func regionAt(sel uint8, cw bool) bool {
 // per-pixel store loop.
 var winTrueRun [512]bool
 
+// planeBits expands one byte into the 8 per pixel bit
+// contributions of one bitplane: planeBits[plane][v][i]
+// is bit (7-i) of v, shifted into plane's position in
+// the pixel index (or zero). decodeRowU8 combines one
+// table per plane instead of shifting bit by bit.
+var planeBits [8][256][8]uint8
+
 func init() {
 	for i := range winTrueRun {
 		winTrueRun[i] = true
+	}
+	for plane := 0; plane < 8; plane++ {
+		for v := 0; v < 256; v++ {
+			for i := 0; i < 8; i++ {
+				if v>>(7-i)&1 != 0 {
+					planeBits[plane][v][i] = 1 << uint(plane)
+				}
+			}
+		}
 	}
 }
 
@@ -1032,9 +1155,29 @@ func (p *PPU) prepLineWindows(w int, hires bool) {
 	blackSel := uint8(p.cgwsel >> 6)
 	subSel := uint8(p.cgwsel >> 4 & 3)
 	cw := &p.winIn[5]
-	for x := 0; x < w; x++ {
-		p.blackAt[x] = regionAt(blackSel, cw[x])
-		p.subRegAt[x] = regionAt(subSel, cw[x])
+	// Each region is filled by its selector: nowhere
+	// clears, everywhere fills, inside copies the color
+	// window verdicts, outside inverts them.
+	fillRegion(p.blackAt[:w], blackSel, cw, w)
+	fillRegion(p.subRegAt[:w], subSel, cw, w)
+}
+
+// fillRegion fills dst[0..w) with one CGWSEL region
+// selector evaluated against the color window verdicts
+// in cw: 0 means nowhere, 1 outside the window, 2 inside
+// it, 3 everywhere.
+func fillRegion(dst []bool, sel uint8, cw *[512]bool, w int) {
+	switch sel {
+	case 0:
+		clear(dst)
+	case 3:
+		copy(dst, winTrueRun[:w])
+	case 2:
+		copy(dst, cw[:w])
+	default:
+		for x := 0; x < w; x++ {
+			dst[x] = !cw[x]
+		}
 	}
 }
 
@@ -1082,33 +1225,36 @@ func (p *PPU) tileRow(b *bgLayer, tile uint16, row, bpp int) *[8]uint8 {
 // 2, 4 or 8 bits per pixel into dst. The planar layout
 // puts one word per plane pair per row, the pairs spaced
 // 8 words apart; a tile holds 4 words per bit of depth.
+// Each plane's byte expands through planeBits, and the
+// per pixel index is the OR of the plane contributions.
 func (p *PPU) decodeRowU8(b *bgLayer, tile uint16, row, bpp int, dst *[8]uint8) {
 	base := (b.chrBase + tile*uint16(4*bpp)) & 0x7FFF
 	w0 := p.vram[(base+uint16(row))&0x7FFF]
-	switch bpp {
-	case 2:
-		for i := 0; i < 8; i++ {
-			bit := uint(7 - i)
-			dst[i] = uint8((w0>>bit)&1 | ((w0>>(bit+8))&1)<<1)
-		}
-	case 4:
-		w1 := p.vram[(base+uint16(8+row))&0x7FFF]
-		for i := 0; i < 8; i++ {
-			bit := uint(7 - i)
-			dst[i] = uint8((w0>>bit)&1 | ((w0>>(bit+8))&1)<<1 |
-				((w1>>bit)&1)<<2 | ((w1>>(bit+8))&1)<<3)
-		}
-	default:
-		w1 := p.vram[(base+uint16(8+row))&0x7FFF]
-		w2 := p.vram[(base+uint16(16+row))&0x7FFF]
-		w3 := p.vram[(base+uint16(24+row))&0x7FFF]
-		for i := 0; i < 8; i++ {
-			bit := uint(7 - i)
-			dst[i] = uint8((w0>>bit)&1 | ((w0>>(bit+8))&1)<<1 |
-				((w1>>bit)&1)<<2 | ((w1>>(bit+8))&1)<<3 |
-				((w2>>bit)&1)<<4 | ((w2>>(bit+8))&1)<<5 |
-				((w3>>bit)&1)<<6 | ((w3>>(bit+8))&1)<<7)
-		}
+	lo := &planeBits[0][w0&0xFF]
+	hi := &planeBits[1][w0>>8]
+	for i := 0; i < 8; i++ {
+		dst[i] = lo[i] | hi[i]
+	}
+	if bpp < 4 {
+		return
+	}
+	w1 := p.vram[(base+uint16(8+row))&0x7FFF]
+	lo = &planeBits[2][w1&0xFF]
+	hi = &planeBits[3][w1>>8]
+	for i := 0; i < 8; i++ {
+		dst[i] |= lo[i] | hi[i]
+	}
+	if bpp < 8 {
+		return
+	}
+	w2 := p.vram[(base+uint16(16+row))&0x7FFF]
+	w3 := p.vram[(base+uint16(24+row))&0x7FFF]
+	lo2 := &planeBits[4][w2&0xFF]
+	hi2 := &planeBits[5][w2>>8]
+	lo3 := &planeBits[6][w3&0xFF]
+	hi3 := &planeBits[7][w3>>8]
+	for i := 0; i < 8; i++ {
+		dst[i] |= lo2[i] | hi2[i] | lo3[i] | hi3[i]
 	}
 }
 
@@ -1130,23 +1276,37 @@ func (p *PPU) emitPx(out *lineBuf, x, idx int, rank int8, bg int, direct bool, c
 }
 
 // bgLine renders background bg samples for display line y
-// into out, following bgSample exactly. The tile-walking
-// fast path serves any layer whose sampling has no
-// per-pixel variance this line; mosaic and offset-per-tile
-// layers take the per-pixel reference path.
-func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf) {
-	clear(out.opaque[:w])
+// into out and returns how many opaque pixels it wrote,
+// following bgSample exactly. The tile-walking fast path
+// serves any layer whose sampling has no per-pixel
+// variance this line; mosaic and offset-per-tile layers
+// take the per-pixel reference path.
+//
+// In fused mode out is a screen buffer that already
+// holds earlier layers' winners: the buffer is not
+// cleared, and a pixel is written only when it beats
+// the current winner, which is exactly the merge rule
+// (strictly higher rank wins, ties keep the earlier
+// layer). Layers render in the same order either way,
+// so fused and merged composition agree pixel for
+// pixel.
+func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf, fused bool) int {
+	if !fused {
+		clear(out.opaque[:w])
+	}
 	if _, ok := p.optApplies(bg); ok || p.mosaicEnabled(bg) {
+		cnt := 0
 		for x := 0; x < w; x++ {
 			s := p.bgSample(*mi, bg, x, y, w)
-			if s.opaque {
+			if s.opaque && (!fused || !out.opaque[x] || int8(s.rank) > out.rank[x]) {
 				out.color[x] = s.color
 				out.rank[x] = int8(s.rank)
 				out.layer[x] = int8(s.layer)
 				out.opaque[x] = true
+				cnt++
 			}
 		}
-		return
+		return cnt
 	}
 	b := &p.bg[bg]
 	bpp := mi.bpp[bg]
@@ -1162,13 +1322,35 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf) {
 	gy := y + vofs + 1 // the documented vertical +1
 	ty := (gy / tileH) & (b.tilemapH - 1)
 	py := gy % tileH
+	// The tilemap row address for this line, split the
+	// way tilemapEntry splits it: the row part is fixed
+	// for the whole line, so per tile only the in-screen
+	// column offset is added.
+	tmTy := ty
+	tmSy := 0
+	if tmTy >= 32 {
+		tmSy = 1
+		tmTy -= 32
+	}
+	tmStride := 1
+	if b.tilemapW == 64 {
+		tmStride = 2
+	}
+	tmRowBase := b.tilemapBase + uint16(tmSy*tmStride*0x400+tmTy*32)
+	tmWMask := b.tilemapW - 1
 	direct := (p.bgMode == 3 || p.bgMode == 4) && bg == 0 && bpp == 8 && p.cgwsel&0x01 != 0
 	mode0 := p.bgMode == 0
+	cnt := 0
 	x := 0
 	gx := hofs
 	for x < w {
-		tx := (gx / tileW) & (b.tilemapW - 1)
-		entry := p.tilemapEntry(b, tx, ty)
+		tx := (gx / tileW) & tmWMask
+		sx := 0
+		if tx >= 32 {
+			sx = 1
+			tx -= 32
+		}
+		entry := p.vram[(tmRowBase+uint16(sx*0x400+tx))&0x7FFF]
 		rowInTile := py
 		if entry&0x8000 != 0 { // flip Y
 			rowInTile = tileH - 1 - py
@@ -1208,16 +1390,18 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf) {
 		switch {
 		case tileW == 8 && !flipX:
 			for i := 0; i < n; i++ {
-				if idx := int(ra[startPx+i]); idx != 0 {
+				if idx := int(ra[startPx+i]); idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
 					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+					cnt++
 				}
 				x++
 			}
 		case tileW == 8:
 			base := 7 - startPx
 			for i := 0; i < n; i++ {
-				if idx := int(ra[base-i]); idx != 0 {
+				if idx := int(ra[base-i]); idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
 					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+					cnt++
 				}
 				x++
 			}
@@ -1230,8 +1414,9 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf) {
 				} else {
 					idx = int(rb[pxv-8])
 				}
-				if idx != 0 {
+				if idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
 					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+					cnt++
 				}
 				x++
 			}
@@ -1245,21 +1430,25 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf) {
 				} else {
 					idx = int(rb[pxv-8])
 				}
-				if idx != 0 {
+				if idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
 					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+					cnt++
 				}
 				x++
 			}
 		}
 		gx += n
 	}
+	return cnt
 }
 
 // m7Line renders the Mode 7 layer (or its EXTBG variant)
-// for display line y into out, sampling per pixel through
+// for display line y into out and returns how many
+// opaque pixels it wrote, sampling per pixel through
 // m7Sample.
-func (p *PPU) m7Line(y, w int, extbg bool, out *lineBuf) {
+func (p *PPU) m7Line(y, w int, extbg bool, out *lineBuf) int {
 	clear(out.opaque[:w])
+	cnt := 0
 	for x := 0; x < w; x++ {
 		s := p.m7Sample(x, y, extbg)
 		if s.opaque {
@@ -1267,8 +1456,10 @@ func (p *PPU) m7Line(y, w int, extbg bool, out *lineBuf) {
 			out.rank[x] = int8(s.rank)
 			out.layer[x] = int8(s.layer)
 			out.opaque[x] = true
+			cnt++
 		}
 	}
+	return cnt
 }
 
 // mathLine decides the color-math outcome at pixel x from
