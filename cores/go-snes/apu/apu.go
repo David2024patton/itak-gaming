@@ -125,7 +125,7 @@ func (a *APU) Reset() {
 	a.timers = [3]timerState{}
 	a.dspPhase = 0
 	a.pendingCPU = 0
-	a.audio = nil
+	a.audio = a.audio[:0]
 	a.cpu.Reset()
 }
 
@@ -199,9 +199,15 @@ func (a *APU) advanceTimer(i, cycles int) {
 
 // DrainAudio returns the pending stereo samples
 // (interleaved L, R at 32000 Hz) and clears the buffer.
+// The backing array stays with the APU and later Steps
+// overwrite it, so a caller that keeps the samples past
+// the next Step must copy them; the shells all consume
+// them synchronously. Keeping the array ends the per
+// frame allocate and grow cycle the append in Step
+// otherwise pays.
 func (a *APU) DrainAudio() []int16 {
 	out := a.audio
-	a.audio = nil
+	a.audio = a.audio[:0]
 	return out
 }
 
@@ -366,7 +372,7 @@ func (a *APU) Deserialize(b []byte) error {
 		return err
 	}
 	a.dsp.deserialize(b[off : off+dspSerializeSize])
-	a.audio = nil
+	a.audio = a.audio[:0]
 	return nil
 }
 
