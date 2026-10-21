@@ -181,6 +181,17 @@ type PPU struct {
 	patLoLatch           uint8
 	patHiLatch           uint8
 
+	// Pattern address caches (see bgPatternAddress and
+	// sprPatternAddress in tick.go): the last background
+	// pattern address with the inputs it was computed from,
+	// and the eight sprite pattern addresses of one line
+	// with the inputs they were computed from. A key of -1
+	// means no valid entry.
+	bgPatKey   int32
+	bgPatAddr  uint16
+	sprPatKey  int64
+	sprPatAddr [8]uint16
+
 	// Sprite pipeline for the line being rendered: shift
 	// registers and counters loaded during the previous line's
 	// fetch window.
@@ -223,7 +234,7 @@ const (
 // is documented to ignore it for roughly two vblanks, which
 // is what games and test ROMs do.
 func New(mem Memory) *PPU {
-	p := &PPU{mem: mem, SetInLastTick: -1, scanline: preLine, dot: dotsPerLine - 2, oddFrame: true, a12Watched: true, lastSet: -1, markFill: -1}
+	p := &PPU{mem: mem, SetInLastTick: -1, scanline: preLine, dot: dotsPerLine - 2, oddFrame: true, a12Watched: true, lastSet: -1, markFill: -1, bgPatKey: -1, sprPatKey: -1}
 	for i := range p.marks {
 		p.marks[i].seq = -1
 	}
@@ -429,6 +440,21 @@ func (p *PPU) Advance(n int) {
 		return
 	}
 	p.pending += n
+	// The segment queue is consumed from segHead while new
+	// ends append at the tail, and the two interleave: in
+	// continuous play the queue rarely drains fully (the
+	// render frontier trails the newest segment by at least
+	// the in-flight access), so without compaction the
+	// backing array grows by every segment ever recorded
+	// and is recopied at each doubling for the whole
+	// session. Dropping the consumed prefix once it passes
+	// a threshold keeps the array at the size of the
+	// genuine render lag instead.
+	if p.segHead >= 1024 || (p.segHead > 0 && p.segHead == len(p.segEnds)) {
+		copy(p.segEnds, p.segEnds[p.segHead:])
+		p.segEnds = p.segEnds[:len(p.segEnds)-p.segHead]
+		p.segHead = 0
+	}
 	p.segEnds = append(p.segEnds, p.executed+int64(p.pending))
 }
 
@@ -462,9 +488,39 @@ func (p *PPU) renderTo(d int64) {
 		}
 		line := p.scanline
 		for p.executed < d && p.scanline == line {
-			p.step()
-			p.executed++
-			p.pending--
+			// Burst to the next bookkeeping stop: the
+			// next segment end or the oldest unfilled
+			// mark, whichever comes first. Between stops
+			// no bookkeeping can come due, so the checks
+			// below run once per burst instead of once
+			// per dot. The stops are the same dots the
+			// per-dot checks used to fire on, so the
+			// accounting lands identically.
+			stop := d
+			if p.segHead < len(p.segEnds) && p.segEnds[p.segHead] < stop {
+				stop = p.segEnds[p.segHead]
+			}
+			for mf := p.markFill; mf >= 0; {
+				m := &p.marks[mf&31]
+				if m.seq != mf {
+					break
+				}
+				if !m.filled {
+					if m.dot < stop {
+						stop = m.dot
+					}
+					break
+				}
+				mf++
+				if mf > p.markSeq {
+					break
+				}
+			}
+			for p.executed < stop && p.scanline == line {
+				p.step()
+				p.executed++
+				p.pending--
+			}
 			// A segment end completes the SetInLastTick
 			// accounting for the segment that just
 			// finished: the value counts the dots of
@@ -720,6 +776,18 @@ func (p *PPU) Mark(seq int) {
 	p.markSeq = seq
 }
 
+// MarkDot returns the absolute dot recorded under seq, for
+// a caller that wants to render to a run of marks once and
+// then read the marks back without rendering per mark. ok
+// is false when the mark is no longer on record.
+func (p *PPU) MarkDot(seq int) (int64, bool) {
+	m := &p.marks[seq&31]
+	if m.seq != seq {
+		return 0, false
+	}
+	return m.dot, true
+}
+
 // MarkNMI returns the NMI output level (vblank flag AND $2000
 // enable) as it stood at the sync point recorded under seq,
 // rendering up to that dot first if rendering has not reached
@@ -743,6 +811,7 @@ func (p *PPU) MarkNMI(seq int) (level bool, ok bool) {
 // up by definition.
 func (p *PPU) resetLazy() {
 	p.pending = 0
+	p.sprPatKey = -1 // a load can replace secondary OAM under a matching key
 	p.executed = 0
 	p.segEnds = p.segEnds[:0]
 	p.segHead = 0
