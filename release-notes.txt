@@ -1,1 +1,1 @@
-Speed pass 2 for Nintendo and Super Nintendo. A hidden NES slowdown that got worse the longer a game ran is fixed, and both engines were tuned to do less work every frame, so games play closer to full speed.
+Super Nintendo colors are fixed: red and blue were swapped in every SNES game, which is why Zelda looked wrong. European games like Zelda also run at their true 50 Hz speed now, music at the right tempo included.
