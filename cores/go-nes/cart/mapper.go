@@ -170,6 +170,14 @@ type mmc1 struct {
 
 	lastWriteCycle int64
 	haveLastWrite  bool
+
+	// Resolved window bases, as in the MMC3: the byte
+	// offset of each 16 KB PRG window and each 4 KB CHR
+	// window under the current banking, recomputed lazily
+	// after any write or state load dirties them.
+	prgWin [2]int
+	chrWin [2]int
+	winOK  bool
 }
 
 func newMMC1() *mmc1 {
@@ -177,6 +185,7 @@ func newMMC1() *mmc1 {
 }
 
 func (m *mmc1) writePRG(c *Cart, addr uint16, val uint8) {
+	m.winOK = false
 	if m.haveLastWrite && c.cycle == m.lastWriteCycle+1 {
 		return // consecutive-cycle write: ignored
 	}
@@ -208,49 +217,54 @@ func (m *mmc1) writePRG(c *Cart, addr uint16, val uint8) {
 	}
 }
 
-func (m *mmc1) readPRG(c *Cart, addr uint16) uint8 {
-	banks16 := len(c.prg) / 16384
-	last := banks16 - 1
+// resolveWins recomputes the MMC1 window bases from the
+// control and bank registers.
+func (m *mmc1) resolveWins(c *Cart) {
+	last := len(c.prg)/16384 - 1
 	switch (m.control >> 2) & 3 {
 	case 0, 1: // 32 KB switch at $8000
 		bank := int(m.prgReg&0x0F) >> 1
-		return c.prg[c.prgOff(bank, 32768)+int(addr-0x8000)]
+		m.prgWin[0] = c.prgOff(bank*2, 16384)
+		m.prgWin[1] = c.prgOff(bank*2+1, 16384)
 	case 2: // $8000 fixed to bank 0, $C000 switches
-		if addr < 0xC000 {
-			return c.prg[int(addr-0x8000)]
-		}
-		return c.prg[c.prgOff(int(m.prgReg&0x0F), 16384)+int(addr-0xC000)]
+		m.prgWin[0] = c.prgOff(0, 16384)
+		m.prgWin[1] = c.prgOff(int(m.prgReg&0x0F), 16384)
 	default: // $8000 switches, $C000 fixed to the last bank
-		if addr < 0xC000 {
-			return c.prg[c.prgOff(int(m.prgReg&0x0F), 16384)+int(addr-0x8000)]
-		}
-		return c.prg[c.prgOff(last, 16384)+int(addr-0xC000)]
+		m.prgWin[0] = c.prgOff(int(m.prgReg&0x0F), 16384)
+		m.prgWin[1] = c.prgOff(last, 16384)
 	}
+	if m.control&0x10 == 0 { // one 8 KB CHR bank
+		m.chrWin[0] = c.chrOff(int(m.chr0>>1)*2, 4096)
+		m.chrWin[1] = c.chrOff(int(m.chr0>>1)*2+1, 4096)
+	} else {
+		m.chrWin[0] = c.chrOff(int(m.chr0), 4096)
+		m.chrWin[1] = c.chrOff(int(m.chr1), 4096)
+	}
+	m.winOK = true
+}
+
+func (m *mmc1) readPRG(c *Cart, addr uint16) uint8 {
+	if !m.winOK {
+		m.resolveWins(c)
+	}
+	return c.prg[m.prgWin[(addr>>14)&1]+int(addr&0x3FFF)]
 }
 
 func (m *mmc1) readCHR(c *Cart, addr uint16) uint8 {
-	if m.control&0x10 == 0 { // one 8 KB bank, low bit ignored
-		return c.chr[c.chrOff(int(m.chr0>>1), 8192)+int(addr)]
+	if !m.winOK {
+		m.resolveWins(c)
 	}
-	if addr < 0x1000 {
-		return c.chr[c.chrOff(int(m.chr0), 4096)+int(addr)]
-	}
-	return c.chr[c.chrOff(int(m.chr1), 4096)+int(addr-0x1000)]
+	return c.chr[m.chrWin[(addr>>12)&1]+int(addr&0x0FFF)]
 }
 
 func (m *mmc1) writeCHR(c *Cart, addr uint16, val uint8) {
 	if !c.chrRAM {
 		return
 	}
-	if m.control&0x10 == 0 {
-		c.chr[c.chrOff(int(m.chr0>>1), 8192)+int(addr)] = val
-		return
+	if !m.winOK {
+		m.resolveWins(c)
 	}
-	if addr < 0x1000 {
-		c.chr[c.chrOff(int(m.chr0), 4096)+int(addr)] = val
-	} else {
-		c.chr[c.chrOff(int(m.chr1), 4096)+int(addr-0x1000)] = val
-	}
+	c.chr[m.chrWin[(addr>>12)&1]+int(addr&0x0FFF)] = val
 }
 
 func (m *mmc1) mirror() (Mirror, bool) {
@@ -277,6 +291,7 @@ func (m *mmc1) setState(in []byte) error {
 	}
 	m.shift, m.count = in[0], int(in[1])
 	m.control, m.chr0, m.chr1, m.prgReg = in[2], in[3], in[4], in[5]
+	m.winOK = false
 	return nil
 }
 
@@ -305,6 +320,16 @@ type mmc3 struct {
 	irqReload  bool
 	irqEnabled bool
 	irqAssert  bool
+
+	// Resolved window bases: the byte offset of each 8 KB
+	// PRG window and each 1 KB CHR window under the current
+	// banking. Reads index through these instead of
+	// resolving bank numbers per byte (a switch plus a
+	// modulo division each). Any register write or state
+	// load dirties them; the next read resolves again.
+	prgWin [4]int
+	chrWin [8]int
+	winOK  bool
 }
 
 func newMMC3() *mmc3 {
@@ -336,18 +361,39 @@ func (m *mmc3) prgWindow(c *Cart, addr uint16) (bank int) {
 	}
 }
 
+// resolveWins recomputes the window bases by evaluating the
+// original bank resolution at each window's first address,
+// so the cached values are the original ones by construction.
+func (m *mmc3) resolveWins(c *Cart) {
+	for w := 0; w < 4; w++ {
+		m.prgWin[w] = c.prgOff(m.prgWindow(c, uint16(0x8000+w*8192)), 8192)
+	}
+	for s := 0; s < 8; s++ {
+		m.chrWin[s] = m.chrOffset(c, uint16(s*1024))
+	}
+	m.winOK = true
+}
+
 func (m *mmc3) readPRG(c *Cart, addr uint16) uint8 {
-	bank := m.prgWindow(c, addr)
-	return c.prg[c.prgOff(bank, 8192)+int(addr&0x1FFF)]
+	if !m.winOK {
+		m.resolveWins(c)
+	}
+	return c.prg[m.prgWin[(addr>>13)&3]+int(addr&0x1FFF)]
 }
 
 func (m *mmc3) readCHR(c *Cart, addr uint16) uint8 {
-	return c.chr[m.chrOffset(c, addr)]
+	if !m.winOK {
+		m.resolveWins(c)
+	}
+	return c.chr[m.chrWin[addr>>10]+int(addr&0x03FF)]
 }
 
 func (m *mmc3) writeCHR(c *Cart, addr uint16, val uint8) {
 	if c.chrRAM {
-		c.chr[m.chrOffset(c, addr)] = val
+		if !m.winOK {
+			m.resolveWins(c)
+		}
+		c.chr[m.chrWin[addr>>10]+int(addr&0x03FF)] = val
 	}
 }
 
@@ -389,6 +435,7 @@ func (m *mmc3) chrOffset(c *Cart, addr uint16) int {
 }
 
 func (m *mmc3) writePRG(c *Cart, addr uint16, val uint8) {
+	m.winOK = false
 	even := addr&1 == 0
 	switch {
 	case addr < 0xA000:
@@ -483,6 +530,7 @@ func (m *mmc3) setState(in []byte) error {
 	m.mirrorReg = in[9]
 	m.irqLatch = in[10]
 	m.irqCounter = in[11]
+	m.winOK = false
 	flags := in[12]
 	m.ramEnable = flags&1 != 0
 	m.ramProtect = flags&2 != 0
