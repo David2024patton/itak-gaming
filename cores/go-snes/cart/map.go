@@ -42,6 +42,29 @@ type Map struct {
 	wram []byte
 	sram []byte
 
+	// speedTab holds the access speed class for every
+	// bank and address band (band = addr>>13), computed
+	// once at map build from the decode rules, so the
+	// per access speed query is a single array load. The
+	// decode rules only test address bits at or above
+	// bit 13 (the IO window edges and the 0x8000 split),
+	// so one class covers a whole band exactly.
+	speedTab [256][8]w65c816.Speed
+
+	// sramBank marks the banks that contain an SRAM
+	// window for this cartridge, so reads and writes in
+	// any other bank skip the SRAM decode entirely.
+	sramBank [256]bool
+
+	// Precomputed ROM and SRAM wrap values: images are
+	// power-of-two sized in practice, where the wrap is
+	// a mask; the flags record that so the per access
+	// wrap skips the size test.
+	romMask  int
+	romPow2  bool
+	sramMask int
+	sramPow2 bool
+
 	// OpenBus is the byte reads of unmapped and (for now)
 	// IO addresses return. On hardware the data bus holds
 	// the last value driven on it; SNES-1 keeps a plain
@@ -56,6 +79,24 @@ func NewMap(c *Cart) *Map {
 	m := &Map{cart: c, wram: make([]byte, WRAMSize)}
 	if c.Header.RAMSize > 0 {
 		m.sram = make([]byte, c.Header.RAMSize)
+	}
+	if n := len(c.rom); n > 0 && n&(n-1) == 0 {
+		m.romMask, m.romPow2 = n-1, true
+	}
+	if n := len(m.sram); n > 0 && n&(n-1) == 0 {
+		m.sramMask, m.sramPow2 = n-1, true
+	}
+	for bank := 0; bank < 256; bank++ {
+		b := uint8(bank)
+		if _, ok := m.sramAt(b, 0x0000); ok {
+			m.sramBank[bank] = true
+		}
+		if _, ok := m.sramAt(b, 0x6000); ok {
+			m.sramBank[bank] = true
+		}
+		for band := 0; band < 8; band++ {
+			m.speedTab[bank][band] = m.speedClass(b, uint16(band<<13))
+		}
 	}
 	return m
 }
@@ -99,7 +140,7 @@ func (m *Map) loROMOffset(bank uint8, addr uint16) (int, bool) {
 		return 0, false
 	}
 	off := int(bank&0x7F)*0x8000 + int(addr&0x7FFF)
-	return wrapROM(off, len(m.cart.rom)), true
+	return wrapROMFast(off, m.romMask, m.romPow2, len(m.cart.rom)), true
 }
 
 // hiROMOffset computes the HiROM ROM offset for an
@@ -110,12 +151,12 @@ func (m *Map) hiROMOffset(bank uint8, addr uint16) (int, bool) {
 	switch {
 	case bank >= 0x40 && bank < 0x80 || bank >= 0xC0:
 		off := int(bank&0x7F)*0x10000 + int(addr)
-		return wrapROM(off, len(m.cart.rom)), true
+		return wrapROMFast(off, m.romMask, m.romPow2, len(m.cart.rom)), true
 	case addr >= 0x8000:
 		// System banks: mirror of the same-numbered full
 		// bank's high half.
 		off := int(bank&0x3F)*0x10000 + int(addr)
-		return wrapROM(off, len(m.cart.rom)), true
+		return wrapROMFast(off, m.romMask, m.romPow2, len(m.cart.rom)), true
 	}
 	return 0, false
 }
@@ -135,6 +176,20 @@ func wrapROM(off, size int) int {
 	return off % size
 }
 
+// wrapROMFast is wrapROM against a precomputed image
+// size: the mask and power-of-two flag NewMap derived
+// from the size, plus the size itself for the modulo
+// form.
+func wrapROMFast(off, mask int, pow2 bool, size int) int {
+	if size == 0 {
+		return 0
+	}
+	if pow2 {
+		return off & mask
+	}
+	return off % size
+}
+
 // sramAt translates a 24-bit address to an SRAM offset
 // under the cartridge's layout, reporting whether the
 // address is an SRAM window.
@@ -146,13 +201,13 @@ func (m *Map) sramAt(bank uint8, addr uint16) (int, bool) {
 	case LayoutLoROM, LayoutExLoROM:
 		if (bank >= 0x70 && bank <= 0x73) || (bank >= 0xF0 && bank <= 0xF3) {
 			off := int(bank&0x03)*0x10000 + int(addr)
-			return wrapROM(off, len(m.sram)), true
+			return wrapROMFast(off, m.sramMask, m.sramPow2, len(m.sram)), true
 		}
 	case LayoutHiROM, LayoutExHiROM:
 		if addr >= 0x6000 && addr < 0x8000 &&
 			((bank >= 0x20 && bank < 0x40) || (bank >= 0xA0 && bank < 0xC0)) {
 			off := int(bank&0x1F)*0x2000 + int(addr-0x6000)
-			return wrapROM(off, len(m.sram)), true
+			return wrapROMFast(off, m.sramMask, m.sramPow2, len(m.sram)), true
 		}
 	}
 	return 0, false
@@ -174,8 +229,10 @@ func (m *Map) Read(bank uint8, addr uint16) uint8 {
 	if isSystemBank(bank) && addr < 0x2000 {
 		return m.wram[addr]
 	}
-	if off, ok := m.sramAt(bank, addr); ok {
-		return m.sram[off]
+	if m.sramBank[bank] {
+		if off, ok := m.sramAt(bank, addr); ok {
+			return m.sram[off]
+		}
 	}
 	if off, ok := m.romAt(bank, addr); ok {
 		return m.cart.rom[off]
@@ -194,15 +251,25 @@ func (m *Map) Write(bank uint8, addr uint16, val uint8) {
 		m.wram[addr] = val
 		return
 	}
-	if off, ok := m.sramAt(bank, addr); ok {
-		m.sram[off] = val
-		return
+	if m.sramBank[bank] {
+		if off, ok := m.sramAt(bank, addr); ok {
+			m.sram[off] = val
+			return
+		}
 	}
 	// ROM and IO writes go nowhere in SNES-1.
 }
 
-// Speed implements the CPU bus speed provider.
+// Speed implements the CPU bus speed provider: one
+// lookup into the table precomputed at map build.
 func (m *Map) Speed(bank uint8, addr uint16) w65c816.Speed {
+	return m.speedTab[bank][addr>>13]
+}
+
+// speedClass decodes the access speed for one address
+// from the map rules. NewMap samples it once per bank
+// and address band to fill speedTab.
+func (m *Map) speedClass(bank uint8, addr uint16) w65c816.Speed {
 	if isSystemBank(bank) && addr >= 0x2000 && addr < 0x6000 {
 		return w65c816.SpeedXSlow // the IO region
 	}
