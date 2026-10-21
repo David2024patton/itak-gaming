@@ -36,7 +36,7 @@ func (p *PPU) expand(c uint16) uint32 {
 	r = (r << 3) | (r >> 2)
 	g = (g << 3) | (g >> 2)
 	b = (b << 3) | (b >> 2)
-	return 0xFF000000 | b<<16 | g<<8 | r
+	return 0xFF000000 | r<<16 | g<<8 | b
 }
 
 // modeInfo describes one background mode's layers.
