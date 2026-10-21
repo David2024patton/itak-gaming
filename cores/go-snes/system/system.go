@@ -209,6 +209,18 @@ type System struct {
 	// IRQ position tracking.
 	irqLine int
 	irqDot  int
+
+	// The last values syncLines pushed into the CPU and
+	// PPU line inputs, as 0 or 1 with -1 for never pushed.
+	// The pushes are idempotent value stores (the NMI
+	// setter only latches on a transition of the pushed
+	// sequence itself), so skipping a push whose value is
+	// unchanged is unobservable; the caches exist because
+	// syncLines runs once per CPU instruction while the
+	// values change at most a few times per frame. Reset
+	// and Deserialize restore the -1 state, since both
+	// rebuild the units the values were pushed into.
+	lineNMI, lineIRQ, lineActive int8
 }
 
 // New builds a System from a complete ROM image, powers it
@@ -258,6 +270,7 @@ func (s *System) Reset() {
 	s.wmadd, s.wmbank = 0, 0
 	s.joyData = [8]uint8{}
 	s.joyBusy, s.strobe = false, false
+	s.lineNMI, s.lineIRQ, s.lineActive = -1, -1, -1
 	s.shiftVal = [2]uint16{}
 	s.shiftIdx = [2]int{}
 	s.openBus = 0
@@ -505,14 +518,35 @@ func (s *System) enterLine(n int) {
 	}
 }
 
+// boolInt8 flattens a line value for the syncLines
+// caches: 1 for asserted, 0 for clear.
+func boolInt8(b bool) int8 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func (s *System) syncLines(dt int) {
-	s.CPU.SetNMILine(s.nmiFlag && s.nmitimen&0x80 != 0)
-	s.CPU.SetIRQLine(s.timeup)
+	// Each push happens only when its value changed (see
+	// the cache fields); in the steady state this whole
+	// function is three compares per instruction.
+	if v := boolInt8(s.nmiFlag && s.nmitimen&0x80 != 0); v != s.lineNMI {
+		s.lineNMI = v
+		s.CPU.SetNMILine(v != 0)
+	}
+	if v := boolInt8(s.timeup); v != s.lineIRQ {
+		s.lineIRQ = v
+		s.CPU.SetIRQLine(v != 0)
+	}
 	// The PPU drops CGRAM writes that land during active
 	// display outside hblank; tell it where the beam is.
 	d := s.displayLines()
-	active := s.line >= 1 && s.line <= d && dt < 274
-	s.ppu.SetDisplayActive(active && !s.ppu.ForcedBlank())
+	active := s.line >= 1 && s.line <= d && dt < 274 && !s.ppu.ForcedBlank()
+	if v := boolInt8(active); v != s.lineActive {
+		s.lineActive = v
+		s.ppu.SetDisplayActive(v != 0)
+	}
 }
 
 // checkIRQ evaluates the H/V timer against the position
@@ -606,6 +640,26 @@ func (s *System) Speed(bank uint8, addr uint16) w65c816.Speed {
 	if sp == w65c816.SpeedFast && s.memsel&1 == 0 {
 		return w65c816.SpeedSlow
 	}
+	return sp
+}
+
+// ReadSpeed implements the CPU's optional fused bus
+// extension: the speed query and the read in one call.
+// The speed is evaluated before the access, exactly as
+// the separate Speed then Read calls were ordered, so
+// the cycle a read is charged never changes.
+func (s *System) ReadSpeed(bank uint8, addr uint16) (uint8, w65c816.Speed) {
+	sp := s.Speed(bank, addr)
+	return s.Read(bank, addr), sp
+}
+
+// WriteSpeed is the write half of the fused extension.
+// The speed is evaluated before the write lands, so a
+// write to MEMSEL itself is charged at the speed in
+// effect when it started, as the separate calls did.
+func (s *System) WriteSpeed(bank uint8, addr uint16, val uint8) w65c816.Speed {
+	sp := s.Speed(bank, addr)
+	s.Write(bank, addr, val)
 	return sp
 }
 
@@ -1278,6 +1332,10 @@ func (s *System) Deserialize(in []byte) error {
 	s.mulReady += s.now
 	s.divReady += s.now
 	s.prevMaster = s.CPU.MasterCycles()
+	// The line input caches describe pushes into the
+	// pre-load CPU and PPU; force the sync below to push
+	// all three values into the restored units.
+	s.lineNMI, s.lineIRQ, s.lineActive = -1, -1, -1
 	s.syncLines(s.dot())
 	return nil
 }
