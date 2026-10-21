@@ -474,95 +474,170 @@ func (p *PPU) CatchUpTo(d int64) {
 func (p *PPU) Target() int64 { return p.executed + int64(p.pending) }
 
 // renderTo executes dots until executed reaches d. Bulk
-// spans (see bulkRoom) advance in closed form; live spans
-// step dot by dot to the end of the current scanline before
-// bulk eligibility is checked again, so the check costs
-// nothing per dot. The segment and mark bookkeeping rides
-// the step loop as two compares per dot against the next
-// segment end and the oldest unfilled mark.
+// spans (see bulkRoom) advance in closed form. Live spans
+// run within the current scanline, bounded by the render
+// target, the end of the line, and the flag edge dots: a
+// span never crosses the vblank set dot or the pre-render
+// clear dot, because marks filled after an edge would read
+// the flag on the wrong side of it, so the dot before an
+// edge ends the span and the edge dot itself runs as a
+// one-dot span between sweeps. Inside a span, tile groups
+// (see step8 in tick.go) execute eight dots at a time where
+// the position allows and single dots elsewhere.
+//
+// The segment and mark bookkeeping rides the span ends
+// (sweepBookkeeping) instead of stopping the stepping at
+// every segment end and mark the way the first lazy
+// renderer did. Both accountings are pure functions of the
+// absolute dots crossed, and their only readers (the
+// register file's race checks, save states, the MarkNMI
+// replay) observe them after a render pass completes, so
+// sweeping once per span lands the identical final state
+// at a fraction of the per-dot cost: segments end every
+// two to three dots in continuous play, and the old burst
+// loop paid its full stop computation for nearly every
+// segment.
 func (p *PPU) renderTo(d int64) {
 	for p.executed < d {
+		// Fast path: the whole advance sits inside the
+		// current live line, rendering on and past the
+		// line's first dots, so no bulk span, line end,
+		// or flag edge can intervene (a live line is
+		// never bulk-eligible, its only edge is dot 1,
+		// and lineDotsLeft bounds the span at the line
+		// end, odd-frame skip included). Most render
+		// calls in continuous play are a single bus
+		// access's worth of dots and take this path
+		// without the span computation.
+		if line := p.scanline; (line < 240 || line == preLine) && p.dot > 1 && p.rendering() &&
+			d-p.executed <= int64(p.lineDotsLeft()) {
+			for p.executed < d {
+				if d-p.executed >= 8 && p.groupOK() {
+					p.step8()
+					p.executed += 8
+					p.pending -= 8
+				} else {
+					p.step()
+					p.executed++
+					p.pending--
+				}
+			}
+			p.sweepBookkeeping()
+			continue
+		}
 		if n := p.bulkRoom(d); n > 0 {
 			p.advanceBulk(n)
 			continue
 		}
 		line := p.scanline
-		for p.executed < d && p.scanline == line {
-			// Burst to the next bookkeeping stop: the
-			// next segment end or the oldest unfilled
-			// mark, whichever comes first. Between stops
-			// no bookkeeping can come due, so the checks
-			// below run once per burst instead of once
-			// per dot. The stops are the same dots the
-			// per-dot checks used to fire on, so the
-			// accounting lands identically.
-			stop := d
-			if p.segHead < len(p.segEnds) && p.segEnds[p.segHead] < stop {
-				stop = p.segEnds[p.segHead]
-			}
-			for mf := p.markFill; mf >= 0; {
-				m := &p.marks[mf&31]
-				if m.seq != mf {
-					break
-				}
-				if !m.filled {
-					if m.dot < stop {
-						stop = m.dot
-					}
-					break
-				}
-				mf++
-				if mf > p.markSeq {
-					break
+		span := d
+		if le := p.executed + int64(p.lineDotsLeft()); le < span {
+			span = le
+		}
+		if line == vblSetLine || line == preLine {
+			// Cap the span at the flag edge dot (dot 1):
+			// the dot before it ends the span here, and
+			// the edge dot runs alone under the same
+			// cap on the next pass through the loop.
+			if p.dot <= 1 {
+				if e := p.executed + 1; e < span {
+					span = e
 				}
 			}
-			for p.executed < stop && p.scanline == line {
+		}
+		for p.executed < span {
+			if p.groupOK() && span-p.executed >= 8 {
+				p.step8()
+				p.executed += 8
+				p.pending -= 8
+			} else {
 				p.step()
 				p.executed++
 				p.pending--
 			}
-			// A segment end completes the SetInLastTick
-			// accounting for the segment that just
-			// finished: the value counts the dots of
-			// that segment that followed the vblank set
-			// dot, or stays -1 when the set dot was not
-			// in it.
-			if p.segHead < len(p.segEnds) && p.segEnds[p.segHead] == p.executed {
-				end := p.segEnds[p.segHead]
-				if p.lastSet > p.segPrev && p.lastSet <= end {
-					p.SetInLastTick = int(end - p.lastSet)
-				} else {
-					p.SetInLastTick = -1
-				}
-				p.segPrev = end
-				p.segHead++
-				if p.segHead == len(p.segEnds) {
-					p.segEnds = p.segEnds[:0]
-					p.segHead = 0
-				}
+		}
+		p.sweepBookkeeping()
+	}
+}
+
+// lineDotsLeft returns how many dots remain to execute on
+// the current scanline from the current position, counting
+// the odd-frame skip: on an odd frame with rendering
+// enabled, the pre-render line's last dot is never
+// executed, so a position at or before it has one fewer
+// dot to run.
+func (p *PPU) lineDotsLeft() int {
+	n := dotsPerLine - p.dot
+	if p.scanline == preLine && p.oddFrame && p.rendering() && p.dot < dotsPerLine-1 {
+		n--
+	}
+	return n
+}
+
+// groupOK reports whether the next eight dots form one
+// tile group the group stepper can execute: a fetch line
+// (visible or pre-render) with rendering enabled, at a
+// group boundary inside the background fetch window (dots
+// 1-256, groups starting every eight dots from dot 1) or
+// the prefetch window (dots 321-336, two groups). Groups
+// never cross a line boundary or the sprite fetch window,
+// whose per-dot behavior (the dot 257 scroll reload, the
+// pre-render Y reloads) stays on the single-dot path.
+func (p *PPU) groupOK() bool {
+	if !p.rendering() {
+		return false
+	}
+	if line := p.scanline; line >= 240 && line != preLine {
+		return false
+	}
+	dot := p.dot
+	return (dot >= 1 && dot <= 249 && (dot-1)%8 == 0) || dot == 321 || dot == 329
+}
+
+// sweepBookkeeping completes the segment and mark
+// accounting for every segment end and mark dot rendering
+// has crossed, in order. A segment completion resolves
+// SetInLastTick from the segment's end and the vblank set
+// dot's absolute position: the set dot belongs to exactly
+// one segment, and processing the completions in order
+// with the set dot's final position gives the same result
+// as processing each at its crossing, because a segment
+// that does not contain the set dot resolves to -1 either
+// way (the set dot is either still ahead of it, which the
+// segPrev comparison rejects, or behind it, which it also
+// rejects). Marks fill with the flag as it stands; spans
+// never cross a flag edge, so the standing flag is the
+// flag at every crossed mark's dot.
+func (p *PPU) sweepBookkeeping() {
+	for p.segHead < len(p.segEnds) && p.segEnds[p.segHead] <= p.executed {
+		end := p.segEnds[p.segHead]
+		if p.lastSet > p.segPrev && p.lastSet <= end {
+			p.SetInLastTick = int(end - p.lastSet)
+		} else {
+			p.SetInLastTick = -1
+		}
+		p.segPrev = end
+		p.segHead++
+	}
+	if p.segHead == len(p.segEnds) {
+		p.segEnds = p.segEnds[:0]
+		p.segHead = 0
+	}
+	for p.markFill >= 0 {
+		m := &p.marks[p.markFill&31]
+		if m.seq != p.markFill {
+			break
+		}
+		if !m.filled {
+			if m.dot > p.executed {
+				break
 			}
-			// Marks fill in as their dots render. A mark
-			// the record-time snapshot already filled is
-			// only stepped over, never refilled: its
-			// value is the flag at its dot, not the flag
-			// now.
-			for p.markFill >= 0 {
-				m := &p.marks[p.markFill&31]
-				if m.seq != p.markFill {
-					break
-				}
-				if !m.filled {
-					if m.dot > p.executed {
-						break
-					}
-					m.vbl = p.vblFlag
-					m.filled = true
-				}
-				p.markFill++
-				if p.markFill > p.markSeq {
-					p.markFill = -1
-				}
-			}
+			m.vbl = p.vblFlag
+			m.filled = true
+		}
+		p.markFill++
+		if p.markFill > p.markSeq {
+			p.markFill = -1
 		}
 	}
 }
@@ -650,57 +725,14 @@ func (p *PPU) advanceBulk(n int64) {
 		}
 	}
 	p.decayDebt += int(n)
-	for n > 0 {
-		chunk := n
-		if p.segHead < len(p.segEnds) {
-			if r := p.segEnds[p.segHead] - p.executed; r < chunk {
-				chunk = r
-			}
-		}
-		if p.markFill >= 0 {
-			if m := &p.marks[p.markFill&31]; m.seq == p.markFill && !m.filled {
-				if r := m.dot - p.executed; r < chunk {
-					chunk = r
-				}
-			}
-		}
-		p.bulkDots(chunk)
-		n -= chunk
-		// The chunk ended on a segment end or a mark dot
-		// (or the span's end): complete the bookkeeping
-		// for what it crossed.
-		if p.segHead < len(p.segEnds) && p.segEnds[p.segHead] == p.executed {
-			end := p.segEnds[p.segHead]
-			if p.lastSet > p.segPrev && p.lastSet <= end {
-				p.SetInLastTick = int(end - p.lastSet)
-			} else {
-				p.SetInLastTick = -1
-			}
-			p.segPrev = end
-			p.segHead++
-			if p.segHead == len(p.segEnds) {
-				p.segEnds = p.segEnds[:0]
-				p.segHead = 0
-			}
-		}
-		for p.markFill >= 0 {
-			m := &p.marks[p.markFill&31]
-			if m.seq != p.markFill {
-				break
-			}
-			if !m.filled {
-				if m.dot > p.executed {
-					break
-				}
-				m.vbl = p.vblFlag
-				m.filled = true
-			}
-			p.markFill++
-			if p.markFill > p.markSeq {
-				p.markFill = -1
-			}
-		}
-	}
+	p.bulkDots(n)
+	// The span never crosses a flag edge (bulkRoom caps
+	// the room at both edge dots), so the flag is constant
+	// across it and the segment and mark accounting for
+	// everything the span crossed sweeps once here, with
+	// the same final state the per-chunk accounting
+	// produced.
+	p.sweepBookkeeping()
 }
 
 // bulkDots advances the position (and the visible-line
