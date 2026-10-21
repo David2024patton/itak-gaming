@@ -330,6 +330,17 @@ func (c *CPU) x8() bool { return c.e || c.p&FlagX != 0 }
 // sampleInterrupts records the interrupt lines as they stand
 // before a cycle is spent.
 func (c *CPU) sampleInterrupts() {
+	if !c.nmiPending && !c.irqLine && !c.abortLine {
+		// The quiet fast path: no line is active and
+		// no NMI is latched, so the sample is all
+		// clear. This still runs at every access, so
+		// a pulse spanning any access is seen by the
+		// full path below.
+		c.smpNMI = false
+		c.smpIRQ = false
+		c.smpAbort = false
+		return
+	}
 	c.smpNMI = c.nmiPending
 	c.smpIRQ = c.irqLine && c.p&FlagI == 0
 	c.smpAbort = c.abortLine
