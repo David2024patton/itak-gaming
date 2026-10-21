@@ -185,12 +185,23 @@ func (p *PPU) atAddress() uint16 {
 // every background tile from the sprite half of CHR and
 // garbled the backgrounds of real games while the CPU and
 // register test suites still passed).
+//
+// The address is a pure function of the nametable latch, the
+// fine Y in v, and the table select bit, and it is asked for
+// on most fetch dots (and again by the A12 bus address
+// reconstruction on every dot), so the last answer is cached
+// against exactly those inputs.
 func (p *PPU) bgPatternAddress() uint16 {
-	base := uint16(0)
-	if p.ctrl&0x10 != 0 {
-		base = 0x1000
+	key := int32(p.ntLatch) | int32((p.v>>12)&7)<<8 | int32(p.ctrl&0x10)<<7
+	if p.bgPatKey != key {
+		base := uint16(0)
+		if p.ctrl&0x10 != 0 {
+			base = 0x1000
+		}
+		p.bgPatAddr = base | (uint16(p.ntLatch) << 4) | ((p.v >> 12) & 7)
+		p.bgPatKey = key
 	}
-	return base | (uint16(p.ntLatch) << 4) | ((p.v >> 12) & 7)
+	return p.bgPatAddr
 }
 
 // sprPatternAddress is the fetch address of the low pattern
@@ -198,7 +209,27 @@ func (p *PPU) bgPatternAddress() uint16 {
 // vertical flip and the 8x16 tile pairing applied. The row is
 // computed against the line the fetch prepares (the next
 // line, or line 0 from the pre-render line).
+//
+// The eight slot addresses for a line are a pure function
+// of the frame, the line, the control register, the
+// evaluation count, and secondary OAM, and secondary OAM
+// cannot change during the fetch window that asks (dots
+// 257-320), so a line's addresses are resolved once and
+// cached against those inputs. A state load invalidates
+// the cache through resetLazy, since it can replace
+// secondary OAM under otherwise identical inputs.
 func (p *PPU) sprPatternAddress(slot int) uint16 {
+	key := int64(p.frames)<<32 | int64(p.scanline)<<16 | int64(p.ctrl)<<8 | int64(uint8(p.evalCount))
+	if p.sprPatKey != key {
+		for s := 0; s < 8; s++ {
+			p.sprPatAddr[s] = p.sprPatternCompute(s)
+		}
+		p.sprPatKey = key
+	}
+	return p.sprPatAddr[slot]
+}
+
+func (p *PPU) sprPatternCompute(slot int) uint16 {
 	target := p.scanline + 1
 	if p.scanline == preLine {
 		target = 0
@@ -479,7 +510,7 @@ func (p *PPU) outputPixel(line, x int) {
 // just executed and clocks the cartridge's A12 hook on
 // filtered rising edges.
 func (p *PPU) trackA12() {
-	a12 := p.busAddress()&0x1000 != 0
+	a12 := p.a12Level()
 	if a12 {
 		if !p.prevA12 && p.a12Low >= a12MinLowDots {
 			p.mem.ClockA12()
@@ -489,6 +520,34 @@ func (p *PPU) trackA12() {
 		p.a12Low++
 	}
 	p.prevA12 = a12
+}
+
+// a12Level is bit 12 of the address the PPU drives for the
+// dot just executed (the position still names that dot when
+// this runs), computed directly instead of reconstructing
+// the full address the way busAddress does: during the
+// fetch windows the nametable and attribute phases drive a
+// $2xxx address, whose bit 12 is always clear, the pattern
+// phases drive the pattern address, whose bit 12 is the
+// table select, and at all other times the bus holds v.
+func (p *PPU) a12Level() bool {
+	line, dot := p.scanline, p.dot
+	if p.rendering() && (line < 240 || line == preLine) {
+		switch {
+		case (dot >= 1 && dot <= 256) || (dot >= 321 && dot <= 336):
+			if (dot-1)%8 >= 4 {
+				return p.bgPatternAddress()&0x1000 != 0
+			}
+		case dot >= 257 && dot <= 320:
+			if (dot-257)%8 >= 4 {
+				return p.sprPatternAddress((dot-257)/8)&0x1000 != 0
+			}
+		}
+		// Dot 0, the nametable and attribute phases, and
+		// dots 337-340 all drive a $2xxx address.
+		return false
+	}
+	return p.v&0x1000 != 0
 }
 
 // busAddress is the address on the PPU's address bus for the
