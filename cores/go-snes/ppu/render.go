@@ -377,6 +377,7 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) int {
 	if p.oamPrioRot {
 		start = (p.oamAddr >> 2) & 0x7F
 	}
+	szTab := objSizes[p.objSize]
 	nOn := 0
 	for i := 0; i < 128; i++ {
 		n := (start + i) & 0x7F
@@ -389,7 +390,7 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) int {
 		}
 		y0 := int(p.oam[o+1])
 		sizeBit := (hi >> (sh + 1)) & 1
-		sz := objSizes[p.objSize][sizeBit]
+		sz := szTab[sizeBit]
 		sy := y - y0
 		if sy < 0 {
 			sy += 256
@@ -438,12 +439,15 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) int {
 		p.objDraw[nDraw] = *s
 		nDraw++
 	}
-	// Draw from the last evaluated to the first, so the
-	// first sprite to cover a pixel keeps it. Each 8-pixel
-	// tile row is fetched once; px runs in tile space and
+	// Draw in evaluation order, skipping pixels an
+	// earlier sprite already claimed: the first sprite
+	// to cover a pixel keeps it, which is the same
+	// result the reverse order overwrite produced, with
+	// no pixel written twice. Each 8-pixel tile row is
+	// decoded once into idxs; px runs in tile space and
 	// sx maps it to the screen (mirrored under flipX).
 	written := 0
-	for i := nDraw - 1; i >= 0; i-- {
+	for i := 0; i < nDraw; i++ {
 		s := &p.objDraw[i]
 		ry := y - s.y
 		if ry < 0 {
@@ -453,6 +457,7 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) int {
 			ry = s.hgt - 1 - ry
 		}
 		rank := int8(mi.objRank[s.prio])
+		ciBase := 128 + s.pal*16
 		for cx := 0; cx < s.wid; cx += 8 {
 			tile := s.tile + uint16(ry/8)*16 + uint16(cx/8)
 			base := p.objBase
@@ -462,23 +467,27 @@ func (p *PPU) objLineB(mi *modeInfo, y, w int, out *lineBuf) int {
 			word := (base + (tile&0xFF)*16 + uint16(ry%8)) & 0x7FFF
 			w0 := p.vram[word]
 			w1 := p.vram[(word+8)&0x7FFF]
+			var idxs [8]uint8
+			for j := 0; j < 8; j++ {
+				bit := uint(7 - j)
+				idxs[j] = uint8((w0>>bit)&1) | uint8((w0>>(bit+8))&1)<<1 |
+					uint8((w1>>bit)&1)<<2 | uint8((w1>>(bit+8))&1)<<3
+			}
 			for j := 0; j < 8 && cx+j < s.wid; j++ {
+				idx := idxs[j]
+				if idx == 0 {
+					continue
+				}
 				px := cx + j
 				sx := px
 				if s.flipX {
 					sx = s.wid - 1 - px
 				}
 				dx := s.x + sx
-				if dx < 0 || dx >= w {
+				if dx < 0 || dx >= w || out.opaque[dx] {
 					continue
 				}
-				bit := uint(7 - j)
-				idx := int((w0>>bit)&1) | int((w0>>(bit+8))&1)<<1 |
-					int((w1>>bit)&1)<<2 | int((w1>>(bit+8))&1)<<3
-				if idx == 0 {
-					continue
-				}
-				out.color[dx] = p.cgram[128+s.pal*16+idx]
+				out.color[dx] = p.cgram[ciBase+int(idx)]
 				out.rank[dx] = rank
 				out.layer[dx] = 4
 				out.opaque[dx] = true
@@ -765,7 +774,12 @@ func (p *PPU) RenderLine(y int) {
 	if y < 0 || y >= Height {
 		return
 	}
-	row := p.frame[y*Width:]
+	// The row is exactly one display line wide; every
+	// write below indexes it by a display x. (The slice
+	// used to run to the end of the framebuffer, which
+	// made the forced blank fill below repaint the whole
+	// rest of the frame on every blanked line.)
+	row := p.frame[y*Width : y*Width+Width]
 	if p.forcedBlank {
 		for i := range row {
 			row[i] = 0xFF000000
@@ -850,20 +864,22 @@ func (p *PPU) RenderLine(y int) {
 	// mask bit for that screen is set and the pixel is
 	// inside the layer window, the winner drops out.
 	if p.tmw != 0 {
+		wm := p.winMask[:w]
 		for x := 0; x < w; x++ {
 			if main.opaque[x] {
 				l := main.layer[x]
-				if l <= 4 && p.tmw&(1<<uint(l)) != 0 && p.winIn[l][x] {
+				if l <= 4 && p.tmw&(1<<uint(l)) != 0 && wm[x]&(1<<uint(l)) != 0 {
 					main.opaque[x] = false
 				}
 			}
 		}
 	}
 	if p.tsw != 0 {
+		wm := p.winMask[:w]
 		for x := 0; x < w; x++ {
 			if sub.opaque[x] {
 				l := sub.layer[x]
-				if l <= 4 && p.tsw&(1<<uint(l)) != 0 && p.winIn[l][x] {
+				if l <= 4 && p.tsw&(1<<uint(l)) != 0 && wm[x]&(1<<uint(l)) != 0 {
 					sub.opaque[x] = false
 				}
 			}
@@ -871,6 +887,22 @@ func (p *PPU) RenderLine(y int) {
 	}
 	tab := p.expandTable()
 	if !hires {
+		if p.cgadsb == 0 && p.cgwsel&0xC0 == 0 {
+			// Color math is off for every layer and
+			// the main screen black region selector
+			// is 0 (nowhere), so no pixel is blacked:
+			// the output is the winning color or the
+			// backdrop, expanded.
+			backdrop := p.cgram[0]
+			for x := 0; x < w; x++ {
+				c := main.color[x]
+				if !main.opaque[x] {
+					c = backdrop
+				}
+				row[x] = tab[c]
+			}
+			return
+		}
 		if p.cgadsb == 0 {
 			// Color math is off for every layer, so
 			// mathLine reduces to the black region
@@ -901,6 +933,30 @@ func (p *PPU) RenderLine(y int) {
 			halfOK := p.cgadsb&0x40 != 0 && p.cgwsel&0x02 == 0
 			subMode := p.cgadsb&0x80 != 0
 			backdrop := p.cgram[0]
+			// Per channel math tables for the fixed
+			// addend: lut[variant][value], variant 1
+			// the halved math. Building 32 entries
+			// per channel once replaces three
+			// channelMath calls per pixel with three
+			// table loads; the tables are built from
+			// channelMath itself, so they agree with
+			// the general path by construction.
+			var lutR, lutG, lutB [2][32]uint16
+			ar, ag, ab := int(add&0x1F), int((add>>5)&0x1F), int((add>>10)&0x1F)
+			for v := 0; v < 32; v++ {
+				lutR[0][v] = uint16(channelMath(v, ar, subMode, false))
+				lutG[0][v] = uint16(channelMath(v, ag, subMode, false))
+				lutB[0][v] = uint16(channelMath(v, ab, subMode, false))
+				if halfOK {
+					lutR[1][v] = uint16(channelMath(v, ar, subMode, true))
+					lutG[1][v] = uint16(channelMath(v, ag, subMode, true))
+					lutB[1][v] = uint16(channelMath(v, ab, subMode, true))
+				}
+			}
+			var mathOn [6]bool
+			for l := 0; l < 6; l++ {
+				mathOn[l] = p.cgadsb&(1<<uint(l)) != 0
+			}
 			for x := 0; x < w; x++ {
 				c := main.color[x]
 				blacked := p.blackAt[x]
@@ -914,12 +970,12 @@ func (p *PPU) RenderLine(y int) {
 						c = backdrop
 					}
 				}
-				if p.cgadsb&(1<<uint(layer)) != 0 {
-					half := halfOK && !blacked
-					r := channelMath(int(c&0x1F), int(add&0x1F), subMode, half)
-					g := channelMath(int((c>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
-					b := channelMath(int((c>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
-					c = uint16(b<<10 | g<<5 | r)
+				if mathOn[layer] {
+					h := 0
+					if halfOK && !blacked {
+						h = 1
+					}
+					c = lutB[h][(c>>10)&0x1F]<<10 | lutG[h][(c>>5)&0x1F]<<5 | lutR[h][c&0x1F]
 				}
 				row[x] = tab[c]
 			}
@@ -930,11 +986,28 @@ func (p *PPU) RenderLine(y int) {
 		// transparent region. This is mathLine's body
 		// inlined into the line loop, with the fixed
 		// color packed once, so the per pixel cost
-		// carries no function call.
+		// carries no function call. Pixels whose sub
+		// screen is transparent fall back to the fixed
+		// addend with halving suppressed, which is a
+		// fixed function of the main color, so those
+		// pixels go through per channel tables built
+		// from channelMath; only true sub addend
+		// pixels run the math inline.
 		fixed := uint16(p.fixedB)<<10 | uint16(p.fixedG)<<5 | uint16(p.fixedR)
 		backdrop := p.cgram[0]
 		subMode := p.cgadsb&0x80 != 0
 		halfBit := p.cgadsb&0x40 != 0
+		var mathOn [6]bool
+		for l := 0; l < 6; l++ {
+			mathOn[l] = p.cgadsb&(1<<uint(l)) != 0
+		}
+		var fbR, fbG, fbB [32]uint16
+		far, fag, fab := int(fixed&0x1F), int((fixed>>5)&0x1F), int((fixed>>10)&0x1F)
+		for v := 0; v < 32; v++ {
+			fbR[v] = uint16(channelMath(v, far, subMode, false))
+			fbG[v] = uint16(channelMath(v, fag, subMode, false))
+			fbB[v] = uint16(channelMath(v, fab, subMode, false))
+		}
 		for x := 0; x < w; x++ {
 			c := main.color[x]
 			blacked := p.blackAt[x]
@@ -948,17 +1021,17 @@ func (p *PPU) RenderLine(y int) {
 					c = backdrop
 				}
 			}
-			if p.cgadsb&(1<<uint(layer)) != 0 {
-				subTransparent := !sub.opaque[x] || p.subRegAt[x]
-				add := fixed
-				if !subTransparent {
-					add = sub.color[x]
+			if mathOn[layer] {
+				if !sub.opaque[x] || p.subRegAt[x] {
+					c = fbB[(c>>10)&0x1F]<<10 | fbG[(c>>5)&0x1F]<<5 | fbR[c&0x1F]
+				} else {
+					add := sub.color[x]
+					half := halfBit && !blacked
+					r := channelMath(int(c&0x1F), int(add&0x1F), subMode, half)
+					g := channelMath(int((c>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
+					b := channelMath(int((c>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
+					c = uint16(b<<10 | g<<5 | r)
 				}
-				half := halfBit && !blacked && !subTransparent
-				r := channelMath(int(c&0x1F), int(add&0x1F), subMode, half)
-				g := channelMath(int((c>>5)&0x1F), int((add>>5)&0x1F), subMode, half)
-				b := channelMath(int((c>>10)&0x1F), int((add>>10)&0x1F), subMode, half)
-				c = uint16(b<<10 | g<<5 | r)
 			}
 			row[x] = tab[c]
 		}
@@ -1130,27 +1203,105 @@ func fillWindowRuns(dst *[512]bool, inv1, en1, inv2, en2 bool, log int, wh *[4]u
 	}
 }
 
+// fillWindowMaskRuns is fillWindowRuns for the packed
+// verdict byte: it walks the same edges and sets the
+// layer's bit across the runs whose verdict is true.
+// False runs write nothing: prepLineWindows clears the
+// array per line and each layer owns exactly one bit.
+func fillWindowMaskRuns(dst *[512]uint8, bit uint8, inv1, en1, inv2, en2 bool, log int, wh *[4]uint8, w int, hires bool) {
+	var pts [7]int
+	pts[0] = 0
+	pts[1] = 256
+	pts[2] = int(wh[0])
+	pts[3] = int(wh[1]) + 1
+	pts[4] = int(wh[2])
+	pts[5] = int(wh[3]) + 1
+	pts[6] = 256
+	for i := 1; i < len(pts); i++ {
+		for j := i; j > 0 && pts[j] < pts[j-1]; j-- {
+			pts[j], pts[j-1] = pts[j-1], pts[j]
+		}
+	}
+	prev := -1
+	for i := 0; i < len(pts); i++ {
+		a := pts[i]
+		if a < 0 {
+			a = 0
+		}
+		if a > 256 {
+			a = 256
+		}
+		if a == prev {
+			continue
+		}
+		prev = a
+		b := 256
+		for k := i + 1; k < len(pts); k++ {
+			c := pts[k]
+			if c < 0 {
+				c = 0
+			}
+			if c > 256 {
+				c = 256
+			}
+			if c > a {
+				b = c
+				break
+			}
+		}
+		if !windowEval(inv1, en1, inv2, en2, log, wh, a) {
+			continue
+		}
+		lo, hi := a, b
+		if hires {
+			lo, hi = a*2, b*2
+		}
+		if lo > w {
+			lo = w
+		}
+		if hi > w {
+			hi = w
+		}
+		for x := lo; x < hi; x++ {
+			dst[x] |= bit
+		}
+	}
+}
+
 // prepLineWindows decodes the layers window settings once
-// per line, evaluates the window regions into winIn, and
-// derives the two color window regions color math needs
-// (blackAt for the main screen, subRegAt for the sub
-// screen). Only layers whose verdict can be read are
-// evaluated: background and OBJ verdicts feed the winner
-// masks (gated by TMW/TSW), the color window always feeds
-// color math.
+// per line, evaluates the window regions, and derives the
+// two color window regions color math needs (blackAt for
+// the main screen, subRegAt for the sub screen). The
+// background and OBJ verdicts land in winMask, one bit
+// per layer in a per pixel byte, because the winner mask
+// pass reads them by winning layer and a packed load
+// beats gathering from six bool arrays; the color window
+// verdict keeps its own array in winIn[5], which the
+// region fills read. Only layers whose verdict can be
+// read are evaluated: background and OBJ verdicts feed
+// the winner masks (gated by TMW/TSW), the color window
+// always feeds color math.
 func (p *PPU) prepLineWindows(w int, hires bool) {
+	clear(p.winMask[:w])
 	for layer := 0; layer < 6; layer++ {
 		if layer < 5 && (p.tmw|p.tsw)&(1<<uint(layer)) == 0 {
 			continue // no mask reads this layer verdict
 		}
 		inv1, en1, inv2, en2 := p.layerWindowSel(layer)
-		dst := &p.winIn[layer]
-		if !en1 && !en2 {
-			// windowEval is false everywhere.
-			clear(dst[:w])
+		if layer == 5 {
+			dst := &p.winIn[5]
+			if !en1 && !en2 {
+				// windowEval is false everywhere.
+				clear(dst[:w])
+				continue
+			}
+			fillWindowRuns(dst, inv1, en1, inv2, en2, p.layerWindowLog(layer), &p.wh, w, hires)
 			continue
 		}
-		fillWindowRuns(dst, inv1, en1, inv2, en2, p.layerWindowLog(layer), &p.wh, w, hires)
+		if !en1 && !en2 {
+			continue // verdict false everywhere: the bit stays clear
+		}
+		fillWindowMaskRuns(&p.winMask, uint8(1<<uint(layer)), inv1, en1, inv2, en2, p.layerWindowLog(layer), &p.wh, w, hires)
 	}
 	blackSel := uint8(p.cgwsel >> 6)
 	subSel := uint8(p.cgwsel >> 4 & 3)
@@ -1185,12 +1336,14 @@ func fillRegion(dst []bool, sel uint8, cw *[512]bool, w int) {
 // an opaque sample replaces the current winner only when
 // its rank is strictly higher, so earlier layers keep ties.
 func mergeLine(dst, src *lineBuf, w int) {
-	for x := 0; x < w; x++ {
-		if src.opaque[x] && (!dst.opaque[x] || src.rank[x] > dst.rank[x]) {
-			dst.color[x] = src.color[x]
-			dst.rank[x] = src.rank[x]
-			dst.layer[x] = src.layer[x]
-			dst.opaque[x] = true
+	sc, sr, sl, so := src.color[:w], src.rank[:w], src.layer[:w], src.opaque[:w]
+	dc, dr, dl, do := dst.color[:w], dst.rank[:w], dst.layer[:w], dst.opaque[:w]
+	for x := range so {
+		if so[x] && (!do[x] || sr[x] > dr[x]) {
+			dc[x] = sc[x]
+			dr[x] = sr[x]
+			dl[x] = sl[x]
+			do[x] = true
 		}
 	}
 }
@@ -1212,13 +1365,18 @@ type tileRowEntry struct {
 // lookups are free.
 func (p *PPU) tileRow(b *bgLayer, tile uint16, row, bpp int) *[8]uint8 {
 	key := uint32(b.chrBase)<<15 | uint32(tile)<<5 | uint32(row)<<2 | uint32(bpp>>2)
+	if p.lastRowStamp == p.lineStamp && p.lastRowKey == key {
+		return &p.lastRowPix
+	}
 	e := &p.rowMemo[(key^(key>>7))&127]
 	if e.stamp != p.lineStamp || e.key != key {
 		p.decodeRowU8(b, tile, row, bpp, &e.pix)
 		e.key = key
 		e.stamp = p.lineStamp
 	}
-	return &e.pix
+	p.lastRowKey, p.lastRowStamp = key, p.lineStamp
+	p.lastRowPix = e.pix
+	return &p.lastRowPix
 }
 
 // decodeRowU8 decodes one 8-pixel tile row (row 0..7) at
@@ -1258,20 +1416,22 @@ func (p *PPU) decodeRowU8(b *bgLayer, tile uint16, row, bpp int, dst *[8]uint8) 
 	}
 }
 
-// emitPx records one opaque background pixel in a line
-// buffer, resolving its color through CGRAM or the
-// direct-color packing.
-func (p *PPU) emitPx(out *lineBuf, x, idx int, rank int8, bg int, direct bool, ciBase int) {
-	out.rank[x] = rank
-	out.layer[x] = int8(bg)
-	out.opaque[x] = true
+// emitSpan records one opaque background pixel into a
+// tile span's slices (the span of a lineBuf being
+// composed, cut to the span's length so the per pixel
+// indexing is provably in range), resolving its color
+// through CGRAM or the direct-color packing.
+func (p *PPU) emitSpan(cols []uint16, rks []int8, lys []int8, ops []bool, i, idx int, rank int8, bg int, direct bool, ciBase int) {
+	rks[i] = rank
+	lys[i] = int8(bg)
+	ops[i] = true
 	if direct {
 		// Direct color: the 8-bit index is the
 		// color, in the documented BBGGGRRR packing
 		// expanded to 15 bits (low bits zero).
-		out.color[x] = uint16(idx&0x07)<<2 | uint16((idx>>3)&0x07)<<7 | uint16((idx>>6)&0x03)<<13
+		cols[i] = uint16(idx&0x07)<<2 | uint16((idx>>3)&0x07)<<7 | uint16((idx>>6)&0x03)<<13
 	} else {
-		out.color[x] = p.cgram[(ciBase+idx)&0xFF]
+		cols[i] = p.cgram[(ciBase+idx)&0xFF]
 	}
 }
 
@@ -1383,27 +1543,32 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf, fused bool) int {
 		if x+n > w {
 			n = w - x
 		}
-		// Emit the part of the tile on screen. The
-		// index walk is specialized by tile width and
-		// flip state, so the per-pixel path carries no
+		// Emit the part of the tile on screen. The span
+		// is cut into its own slices first, so the per
+		// pixel loop indexes by the span offset, which
+		// the compiler can prove in range. The index
+		// walk is specialized by tile width and flip
+		// state, so the per-pixel path carries no
 		// branches but the transparency test.
+		cols := out.color[x : x+n]
+		rks := out.rank[x : x+n]
+		lys := out.layer[x : x+n]
+		ops := out.opaque[x : x+n]
 		switch {
 		case tileW == 8 && !flipX:
 			for i := 0; i < n; i++ {
-				if idx := int(ra[startPx+i]); idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
-					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				if idx := int(ra[startPx+i]); idx != 0 && (!fused || !ops[i] || rank > rks[i]) {
+					p.emitSpan(cols, rks, lys, ops, i, idx, rank, bg, direct, ciBase)
 					cnt++
 				}
-				x++
 			}
 		case tileW == 8:
 			base := 7 - startPx
 			for i := 0; i < n; i++ {
-				if idx := int(ra[base-i]); idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
-					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				if idx := int(ra[base-i]); idx != 0 && (!fused || !ops[i] || rank > rks[i]) {
+					p.emitSpan(cols, rks, lys, ops, i, idx, rank, bg, direct, ciBase)
 					cnt++
 				}
-				x++
 			}
 		case !flipX:
 			for i := 0; i < n; i++ {
@@ -1414,11 +1579,10 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf, fused bool) int {
 				} else {
 					idx = int(rb[pxv-8])
 				}
-				if idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
-					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				if idx != 0 && (!fused || !ops[i] || rank > rks[i]) {
+					p.emitSpan(cols, rks, lys, ops, i, idx, rank, bg, direct, ciBase)
 					cnt++
 				}
-				x++
 			}
 		default:
 			base := 15 - startPx
@@ -1430,13 +1594,13 @@ func (p *PPU) bgLine(mi *modeInfo, bg, y, w int, out *lineBuf, fused bool) int {
 				} else {
 					idx = int(rb[pxv-8])
 				}
-				if idx != 0 && (!fused || !out.opaque[x] || rank > out.rank[x]) {
-					p.emitPx(out, x, idx, rank, bg, direct, ciBase)
+				if idx != 0 && (!fused || !ops[i] || rank > rks[i]) {
+					p.emitSpan(cols, rks, lys, ops, i, idx, rank, bg, direct, ciBase)
 					cnt++
 				}
-				x++
 			}
 		}
+		x += n
 		gx += n
 	}
 	return cnt
