@@ -36,7 +36,7 @@ func expand15(v uint16) uint32 {
 	r := uint32(v & 0x1F)
 	g := uint32((v >> 5) & 0x1F)
 	b := uint32((v >> 10) & 0x1F)
-	return 0xFF000000 | ((b<<3)|(b>>2))<<16 | ((g<<3)|(g>>2))<<8 | ((r << 3) | (r >> 2))
+	return 0xFF000000 | ((r<<3)|(r>>2))<<16 | ((g<<3)|(g>>2))<<8 | ((b << 3) | (b >> 2))
 }
 
 func px(p *PPU, x, y int) uint32 { return p.Framebuffer()[y*Width+x] }
