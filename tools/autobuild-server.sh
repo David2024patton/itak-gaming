@@ -94,6 +94,27 @@ if [ "$AAR_TREE" != "$(state_get AAR_TREE)" ] || [ ! -f "$WORK/flutter_ui/androi
     state_set AAR_TREE "$AAR_TREE"
 fi
 
+# Rust switch: stage the six prebuilt Rust adapter libraries.
+# Each library ships two ways: as a jniLibs entry (packaged
+# into lib/armeabi-v7a) and as the assets/cores payload under
+# its libitak name. The app picks its core by shipped file
+# name: libitak_<system>.so resolves to the Rust adapter
+# through the backend switch, libgo_<system>.so to the
+# bundled Go core. The rsync above excludes assets/cores, so
+# the payload swap is explicit here: the libgo payload files
+# leave the build tree and the libitak files take their
+# place, byte-identical to the staged prebuilt libraries.
+RUSTLIBS=$HOME/itak-rust-libs/armeabi-v7a
+JNILIBDIR="$WORK/flutter_ui/android/app/src/main/jniLibs/armeabi-v7a"
+CORESDIR="$WORK/flutter_ui/android/app/src/main/assets/cores"
+mkdir -p "$JNILIBDIR" "$CORESDIR" || fail "rust staging mkdir"
+for so in libitak_gameboy.so libitak_nes.so libitak_snes.so libitak_genesis.so libitak_gba.so libitak_ps1.so; do
+    cp "$RUSTLIBS/$so" "$JNILIBDIR/$so" || fail "rust jniLibs staging: $so"
+    cp "$RUSTLIBS/$so" "$CORESDIR/$so" || fail "rust cores staging: $so"
+done
+rm -f "$CORESDIR"/libgo_*.so
+echo "staged Rust libraries:"; ls -la "$JNILIBDIR" "$CORESDIR"
+
 # Build the APK.
 export PATH=$JAVA_HOME/bin:$HOME/toolchain/flutter/bin:/usr/bin:/bin
 (cd "$WORK/flutter_ui" && env XDG_CONFIG_HOME=$HOME/toolchain/xdg \
