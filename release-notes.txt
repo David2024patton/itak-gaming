@@ -1,1 +1,1 @@
-Speed pass 3 for Nintendo and Super Nintendo: both engines rebuilt to do less work every frame, with every picture verified identical to the last build.
+Every game engine is new: rebuilt in Rust for speed. Super Nintendo colors are fixed, games run smoother, and your saved games carry over. On first launch this build backs up your saves automatically before anything changes.
