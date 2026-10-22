@@ -486,6 +486,12 @@ class EmulatorActivity : Activity(), TextureListener {
             )
             sysDir.mkdirs()
             Mobile.setSystemDir(sysDir.absolutePath)
+            // Backup-and-hold (Rust switch safety): the backend
+            // needs the app files dir before any core loads, so
+            // the first Rust core serve can back up saves/ and
+            // hold auto-save. No-op cost on a pure-Go build: the
+            // Go path never fires the trigger.
+            Mobile.setFilesDir(filesDir.absolutePath)
             Mobile.loadCore(coreFile.absolutePath)
             Mobile.loadGame(romPath)
             Log.i(TAG, "core+game loaded")
@@ -2370,7 +2376,11 @@ class EmulatorActivity : Activity(), TextureListener {
                 System.currentTimeMillis() - lastAutoSaveMs > 60_000) {
                 lastAutoSaveMs = System.currentTimeMillis()
                 try {
-                    val data = Mobile.saveState()
+                    // AutoSaveState, not saveState: during the
+                    // backup-and-hold hold (first session on a
+                    // Rust core) it returns nothing, so this
+                    // write cannot overwrite a pre-switch save.
+                    val data = Mobile.autoSaveState()
                     if (data != null && data.isNotEmpty()) {
                         saveFile().writeBytes(data)
                         Log.i(TAG, "auto-saved ${data.size} bytes")
@@ -2761,7 +2771,9 @@ class EmulatorActivity : Activity(), TextureListener {
         AlertDialog.Builder(this)
             .setTitle("Exit game?")
             .setMessage(
-                if (autoSaveEnabled)
+                if (Mobile.backupHoldActive())
+                    "Auto-save is paused for this first session on the new core, to protect your older saves. Anything you have not saved will be lost."
+                else if (autoSaveEnabled)
                     "Your game auto-saves on the way out, so you can pick up right where you left off."
                 else
                     "Anything you have not saved will be lost."
@@ -2779,7 +2791,9 @@ class EmulatorActivity : Activity(), TextureListener {
     private fun autoSaveNow() {
         if (!autoSaveEnabled || netplay) return
         try {
-            val data = Mobile.saveState()
+            // An exit save is automatic, so it honors the
+            // backup-and-hold hold like the timer save does.
+            val data = Mobile.autoSaveState()
             if (data != null && data.isNotEmpty()) {
                 saveFile().writeBytes(data)
                 Log.i(TAG, "auto-saved on exit (${data.size} bytes)")
@@ -2904,6 +2918,9 @@ class EmulatorActivity : Activity(), TextureListener {
             return
         }
         saveFile().writeBytes(data)
+        // A manual save is one of the hold's safe ends: the
+        // slot now holds a state this core wrote on purpose.
+        Mobile.noteManualSave()
         Toast.makeText(this, "Game saved", Toast.LENGTH_SHORT).show()
         Log.i(TAG, "saved ${data.size} bytes to ${saveFile().absolutePath}")
     }
