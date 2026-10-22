@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/davidpatton/itak-gaming/go_backend/internal/core"
+	"github.com/davidpatton/itak-gaming/go_backend/internal/switchguard"
 )
 
 // emuFace is the core handle the app drives. Two
@@ -62,12 +63,21 @@ const (
 )
 
 // LoadCore selects the core for the given core path. Bundled
-// cores resolve to their native adapter (linked into this
-// binary, one Go runtime in the process); anything else falls
-// back to loading the libretro .so at the path.
+// Go cores resolve to their native adapter (linked into this
+// binary, one Go runtime in the process); a Rust adapter
+// library (libitak_<system>.so) resolves to the Rust switch
+// adapter, which drives it through the bridge ABI behind the
+// same NativeBridge; anything else falls back to loading the
+// libretro .so at the path. A build chooses Go or Rust per
+// core by which file name it ships for that system.
 func LoadCore(path string) error {
 	if nb, ok := core.LoadNative(path); ok {
 		emu = nb
+		noteLoadedCore(path)
+		return nil
+	}
+	if rb, ok := core.LoadRust(path); ok {
+		emu = rb
 		noteLoadedCore(path)
 		return nil
 	}
@@ -241,10 +251,13 @@ func ClearCheats() {
 	}
 }
 
-// Close shuts down the core.
+// Close shuts down the core. Closing is the clean session
+// end: if a backup-and-hold hold is still active, it ends
+// here (the backup itself stays on disk, untouched).
 func Close() {
 	if emu != nil {
 		emu.Close()
 		emu = nil
 	}
+	switchguard.EndHold("session closed cleanly")
 }
