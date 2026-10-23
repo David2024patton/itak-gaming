@@ -14,7 +14,11 @@ import 'main.dart' show Prefs, SystemSelectScreen, appLog;
 // stalled start) falls through to home instead: the intro can
 // never trap or crash the app. Settings -> Intro video (pref
 // 'intro_video', default on) turns it off entirely; with it off
-// the app opens straight to home as it always did.
+// the app opens straight to home as it always did. The gate
+// gives its verdict at most once per app process: returning
+// home after a game rebuilds this widget, and the intro must
+// not replay for that (seen on hardware 2026-10-23); a cold
+// start is a new process and plays it again.
 // ---------------------------------------------------------------------------
 
 const String kIntroAsset = 'assets/intro/itak_intro.mp4';
@@ -30,6 +34,13 @@ class IntroGate extends StatefulWidget {
 }
 
 class _IntroGateState extends State<IntroGate> {
+  /// Set the first time the gate reaches any verdict (played,
+  /// skipped, errored, off) in this process. Static on purpose:
+  /// State objects are recreated when the home route rebuilds
+  /// on the way back from a game, but the process, and this
+  /// flag, live on, so the intro plays at most once per launch.
+  static bool _verdictGiven = false;
+
   final FocusNode _focusNode = FocusNode();
   VideoPlayerController? _controller;
   Timer? _watchdog;
@@ -40,6 +51,13 @@ class _IntroGateState extends State<IntroGate> {
   @override
   void initState() {
     super.initState();
+    if (_verdictGiven) {
+      // The gate already ran once in this process (the player
+      // is returning home from a game): go straight home.
+      _finished = true;
+      _showHome = true;
+      return;
+    }
     // Absolute backstop: whatever happens below, the app reaches
     // home. Twenty seconds is far beyond the 10 s clip plus any
     // sane start-up stall.
@@ -89,6 +107,7 @@ class _IntroGateState extends State<IntroGate> {
   void _finish(_IntroEnd end, [String? detail]) {
     if (_finished) return;
     _finished = true;
+    _verdictGiven = true;
     _watchdog?.cancel();
     final controller = _controller;
     _controller = null;
