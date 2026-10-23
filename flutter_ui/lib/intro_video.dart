@@ -17,8 +17,16 @@ import 'main.dart' show Prefs, SystemSelectScreen, appLog;
 // the app opens straight to home as it always did. The gate
 // gives its verdict at most once per app process: returning
 // home after a game rebuilds this widget, and the intro must
-// not replay for that (seen on hardware 2026-10-23); a cold
-// start is a new process and plays it again.
+// not replay for that (seen on hardware 2026-10-23). The
+// verdict itself lives in Kotlin process memory (channel
+// methods 'getIntroPlayed' / 'markIntroPlayed' on
+// net.itak/emu): this isolate is recreated when MainActivity
+// returns from EmulatorActivity, which wiped the Dart static
+// and replayed the intro on 1.73 (one process, two
+// "intro: start" lines). The static below stays as a
+// same-isolate fast path; native is the source of truth. A
+// cold start is a new process, the native flag starts
+// false, and the intro plays again.
 // ---------------------------------------------------------------------------
 
 const String kIntroAsset = 'assets/intro/itak_intro.mp4';
@@ -39,7 +47,11 @@ class _IntroGateState extends State<IntroGate> {
   /// State objects are recreated when the home route rebuilds
   /// on the way back from a game, but the process, and this
   /// flag, live on, so the intro plays at most once per launch.
+  /// It only covers gates rebuilt inside this same isolate;
+  /// across an isolate recreation the native flag decides.
   static bool _verdictGiven = false;
+
+  static const MethodChannel _channel = MethodChannel('net.itak/emu');
 
   final FocusNode _focusNode = FocusNode();
   VideoPlayerController? _controller;
@@ -72,6 +84,31 @@ class _IntroGateState extends State<IntroGate> {
 
   Future<void> _run() async {
     try {
+      // Native first: it holds the verdict for the whole
+      // process, this isolate included. If it says the intro
+      // already played, go straight home without a fresh
+      // "intro: start" in the log.
+      var nativePlayed = false;
+      try {
+        nativePlayed =
+            await _channel.invokeMethod<bool>('getIntroPlayed') ?? false;
+      } catch (_) {
+        // A channel failure must never trap the app: fall
+        // back to the Dart static, which _finish maintains.
+        nativePlayed = false;
+      }
+      if (_finished) return;
+      if (nativePlayed) {
+        _verdictGiven = true;
+        _finished = true;
+        _watchdog?.cancel();
+        if (mounted) {
+          setState(() => _showHome = true);
+        } else {
+          _showHome = true;
+        }
+        return;
+      }
       final pref = await Prefs.get(kIntroPref);
       if (_finished) return;
       if (pref == '0') {
@@ -108,6 +145,12 @@ class _IntroGateState extends State<IntroGate> {
     if (_finished) return;
     _finished = true;
     _verdictGiven = true;
+    // Record the verdict natively as well: the next gate may
+    // run in a recreated isolate where the static above is
+    // gone. Fire and forget; a failure only costs a replay.
+    unawaited(_channel
+        .invokeMethod<bool>('markIntroPlayed')
+        .then((_) {}, onError: (_) {}));
     _watchdog?.cancel();
     final controller = _controller;
     _controller = null;
