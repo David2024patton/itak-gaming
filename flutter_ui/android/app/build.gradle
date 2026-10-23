@@ -52,4 +52,6 @@ flutter {
 dependencies {
     // Go emulation backend (gomobile AAR, armeabi-v7a)
     implementation files('libs/itak_backend.aar')
+    // Debug chute: the 15-minute check-in worker (DebugChute.kt)
+    implementation "androidx.work:work-runtime:2.9.0"
 }
