@@ -1,1 +1,1 @@
-The home screen now flies through space: stars streak past at light speed, then slow down so you can see the galaxies drift by. You can turn it off in Settings.
+The app can now send a small debug report home to our server (app version, game speeds, and the app log) so problems can be checked without cables or pairing codes. Each stick is known only by an install code, and you can turn reports off in Settings.
