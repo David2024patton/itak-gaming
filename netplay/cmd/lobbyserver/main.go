@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/davidpatton/itak-gaming/netplay/internal/appdist"
+	"github.com/davidpatton/itak-gaming/netplay/internal/debugchute"
 	"github.com/davidpatton/itak-gaming/netplay/internal/friends"
 	"github.com/davidpatton/itak-gaming/netplay/internal/lobby"
 	"github.com/davidpatton/itak-gaming/netplay/internal/matches"
@@ -32,6 +33,13 @@ import (
 // /app routes entirely.
 func defaultAppDir() string {
 	return os.Getenv("ITAK_APP_DIR")
+}
+
+// defaultDebugDir is where debug chute reports land: the
+// ITAK_DEBUG_DIR environment variable wins; empty disables the
+// /debug routes entirely.
+func defaultDebugDir() string {
+	return os.Getenv("ITAK_DEBUG_DIR")
 }
 
 // defaultStatsFile is where the global leaderboard persists: the
@@ -72,6 +80,7 @@ func main() {
 	friendsFile := flag.String("friendsfile", "", "path to the friends list file (default: friends.json next to the stats file)")
 	matchesFile := flag.String("matchesfile", "", "path to the tournament results file (default: matches.json next to the stats file)")
 	appDir := flag.String("appdir", defaultAppDir(), "directory with published app builds (version.json + APK) for self-update; empty disables")
+	debugDir := flag.String("debugdir", defaultDebugDir(), "directory for debug chute reports from app installs; empty disables")
 	flag.Parse()
 
 	friendsPath := *friendsFile
@@ -122,6 +131,10 @@ func main() {
 	if *appDir != "" {
 		appdist.New(*appDir, logger).Register(mux)
 		logger.Printf("app updates served from %s", *appDir)
+	}
+	if *debugDir != "" {
+		debugchute.New(*debugDir, logger).Register(mux)
+		logger.Printf("debug chute reports stored under %s", *debugDir)
 	}
 	mux.Handle("/", srv.Handler())
 
