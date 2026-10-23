@@ -2185,12 +2185,65 @@ class EmulatorActivity : Activity(), TextureListener {
         audioTrack?.play()
     }
 
+    private fun sha256Hex(stream: java.io.InputStream): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(64 * 1024)
+        stream.use { input ->
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Returns the on-disk copy of a bundled core, refreshing it
+     * whenever the bundled bytes change. The old guard copied only
+     * when the file was missing or empty, so the first extraction
+     * (1.66-era cores) survived every app update in filesDir and
+     * silently stranded the newer cores inside the APK (proven on
+     * hardware 2026-10-23: the stick extracted a 401,640-byte GBA
+     * core while its own 1.72 APK carried the 405,616-byte fix).
+     * Now the bundled asset and the extracted file are SHA-256
+     * compared on every launch; on a mismatch the asset is written
+     * to a temp file in the same directory, hash-verified, then
+     * renamed over the old copy (atomic same-directory rename), so
+     * a device can never again run a core that does not match the
+     * APK it shipped in. A refresh failure keeps the previously
+     * extracted copy rather than crashing the launch.
+     */
     private fun extractCore(assetName: String): File {
         val out = File(filesDir, assetName)
-        if (!out.exists() || out.length() == 0L) {
-            assets.open("cores/$assetName").use { input ->
-                out.outputStream().use { input.copyTo(it) }
+        try {
+            val assetHash = sha256Hex(assets.open("cores/$assetName"))
+            val currentHash = if (out.exists() && out.length() > 0L) {
+                sha256Hex(out.inputStream())
+            } else {
+                null
             }
+            if (currentHash == assetHash) return out
+            val oldSize = if (out.exists()) out.length() else 0L
+            val tmp = File(filesDir, "$assetName.refresh")
+            assets.open("cores/$assetName").use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (sha256Hex(tmp.inputStream()) != assetHash) {
+                tmp.delete()
+                throw java.io.IOException("extracted core hash mismatch for $assetName")
+            }
+            if (!tmp.renameTo(out)) {
+                tmp.delete()
+                throw java.io.IOException("could not replace extracted core $assetName")
+            }
+            Log.i(TAG, "core refreshed $assetName oldSize=$oldSize newSize=${out.length()}")
+        } catch (e: Exception) {
+            // Never let a refresh failure kill the launch: the
+            // previously extracted copy (if any) still loads, and
+            // a missing copy surfaces inside the guarded loadCore
+            // try/catch in onCreate exactly as it did before.
+            Log.e(TAG, "core refresh failed for $assetName, keeping existing copy", e)
         }
         return out
     }
