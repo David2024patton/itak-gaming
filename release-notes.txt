@@ -1,1 +1,1 @@
-Every game engine is new: rebuilt in Rust for speed. Super Nintendo colors are fixed, games run smoother, and your saved games carry over. On first launch this build backs up your saves automatically before anything changes.
+Console pictures are built into the app now, so the system tiles always show the real machines. Cover art now pulls automatically for every game in the background, including games you add later.
