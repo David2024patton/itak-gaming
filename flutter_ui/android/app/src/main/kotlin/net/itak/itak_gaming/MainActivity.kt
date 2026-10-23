@@ -100,6 +100,9 @@ class MainActivity : FlutterActivity() {
         val im = getSystemService(Context.INPUT_SERVICE) as InputManager
         im.registerInputDeviceListener(deviceListener, Handler(Looper.getMainLooper()))
         startLogCapture()
+        // Debug chute: schedule the periodic check-in worker and
+        // one immediate check-in for this launch (DebugChute.kt).
+        DebugChute.enqueue(this)
     }
 
     // ----- Debug log capture (Settings -> Logs) -----
