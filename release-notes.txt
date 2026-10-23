@@ -1,1 +1,1 @@
-The app can now send a small debug report home to our server (app version, game speeds, and the app log) so problems can be checked without cables or pairing codes. Each stick is known only by an install code, and you can turn reports off in Settings.
+Speed update. Game Boy Advance games that spent their time waiting, like Anguna, now run up to ten times faster. Super Nintendo and NES games run faster too. Genesis speed is unchanged and stays faithful. All games, saves, and cheats behave exactly as before.
