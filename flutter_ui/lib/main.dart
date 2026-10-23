@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'debug_chute.dart';
 import 'space_background.dart';
 
 void main() {
@@ -826,6 +827,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     // last run) without opening each system first. Delayed so it
     // never blocks or janks the first paint.
     Future.delayed(const Duration(seconds: 3), Artwork.sweepAllBoxart);
+    // Debug chute: one full report home per launch when the last
+    // success is over 6 h old (Settings -> Debug reports gates
+    // it). Delayed and fire-and-forget, like the art sweep.
+    Future.delayed(
+        const Duration(seconds: 8), DebugChute.maybeSendOnLaunch);
     // Friend alerts: announce this box as online right away and
     // every 30 s after, and watch the friends list every 20 s.
     // initState runs once for the shell, so the timers cannot
@@ -3912,15 +3918,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoSave = true;
   bool _friendAlerts = true;
   bool _spaceBg = true;
+  bool _debugChute = true;
+  String _installCodeShort = '';
+  bool _sendingReport = false;
   String _versionName = '';
   bool _checkingUpdate = false;
   int _logSize = 0;
   final FocusNode _focusNode = FocusNode();
   final ScrollController _settingsScroll = ScrollController();
 
-  static const int _rowCount = 11;
+  static const int _rowCount = 14;
   // Picture, Display, Swap, Auto art, Auto-save, Friend alerts,
-  // Sound test, App updates, Logs, Space background, Back
+  // Sound test, App updates, Logs, Space background,
+  // Debug reports, Send debug report now, Install code, Back
 
   @override
   void initState() {
@@ -3939,6 +3949,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final asv = await Prefs.get('autosave');
     final fa = await Prefs.get('friend_alerts');
     final sb = await Prefs.get('space_bg');
+    final dc = await Prefs.get('debug_chute');
+    final code = await DebugChute.installCode();
     final ai = await AppUpdate.installed();
     try {
       final info = await _logChannel
@@ -3954,6 +3966,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoSave = asv != '0';
       _friendAlerts = fa != '0';
       _spaceBg = sb != '0';
+      _debugChute = dc != '0';
+      _installCodeShort = code.length >= 8 ? code.substring(0, 8) : code;
       _versionName = ai?['versionName']?.toString() ?? '';
     });
   }
@@ -4048,7 +4062,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (_row == 9) {
       setState(() => _spaceBg = !_spaceBg);
       Prefs.set('space_bg', _spaceBg ? '1' : '0');
+    } else if (_row == 10) {
+      setState(() => _debugChute = !_debugChute);
+      Prefs.set('debug_chute', _debugChute ? '1' : '0');
     }
+    // Row 12 (Install code) is read-only: adjust does nothing.
+  }
+
+  // Settings -> Send debug report now. The toggle gates it: with
+  // reports off the row says so plainly instead of sending.
+  Future<void> _sendReportNow() async {
+    if (_sendingReport) return;
+    if (!_debugChute) {
+      await _reportDialog('Debug reports are off',
+          'Turn Debug reports on above if you want this stick to send its app log and game speeds to our server.');
+      return;
+    }
+    setState(() => _sendingReport = true);
+    final ok = await DebugChute.sendReport('manual');
+    if (mounted) setState(() => _sendingReport = false);
+    if (!mounted) return;
+    await _reportDialog(
+      ok ? 'Report sent' : 'Report failed',
+      ok
+          ? 'The app log and game speeds from this stick are on our server now.'
+          : 'The report did not reach the server. Check the internet connection and try again.',
+    );
+  }
+
+  Future<void> _reportDialog(String title, String body) async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child:
+                const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
+          ),
+        ],
+      ),
+    );
   }
 
   void _onKey(KeyEvent event) {
@@ -4069,8 +4127,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 10) {
+      if (_row == 13) {
         Navigator.pop(context);
+      } else if (_row == 11) {
+        _sendReportNow();
       } else if (_row == 8) {
         _openLogs();
       } else if (_row == 7) {
@@ -4348,6 +4408,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: _spaceBg ? 'On' : 'Off',
                     hint: 'Fly through space behind the home screen: warp streaks, drifting stars and galaxies',
                   ),
+                  _settingRow(
+                    index: 10,
+                    label: 'Debug reports',
+                    value: _debugChute ? 'On' : 'Off',
+                    hint: 'Sends this stick\'s app log and game speeds to our server so problems can be checked remotely',
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() => _row = 11);
+                      _sendReportNow();
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      margin: const EdgeInsets.symmetric(vertical: 7),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 22, vertical: 16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1B1B28),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: _row == 11 ? Colors.white : Colors.white12,
+                          width: _row == 11 ? 3 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.cloud_upload),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Send debug report now',
+                                    style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold)),
+                                Text(
+                                    'Upload the app log and game speeds to our server right now',
+                                    style: TextStyle(
+                                        fontSize: 15, color: Colors.white54)),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            !_debugChute
+                                ? 'Off'
+                                : (_sendingReport ? 'Sending...' : 'Send'),
+                            style: TextStyle(
+                                fontSize: 19,
+                                color: _debugChute
+                                    ? const Color(0xFF00E676)
+                                    : Colors.white38),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  _settingRow(
+                    index: 12,
+                    label: 'Install code',
+                    value: _installCodeShort,
+                    hint: 'This stick\'s own code for debug reports: read it to whoever is checking a problem',
+                  ),
                   GestureDetector(
                     onTap: () => Navigator.pop(context),
                     child: AnimatedContainer(
@@ -4360,8 +4483,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 10 ? Colors.white : Colors.white12,
-                          width: _row == 10 ? 3 : 1,
+                              _row == 13 ? Colors.white : Colors.white12,
+                          width: _row == 13 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
