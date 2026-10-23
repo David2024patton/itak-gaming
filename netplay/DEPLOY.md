@@ -80,6 +80,30 @@ not meant to ship yet) are noted and skipped. Failed builds keep
 the old published version and retry at most every 30 minutes.
 Log: `~/itak-autobuild.log` on the server.
 
+## Debug chute
+
+The same binary receives debug reports from app installs when
+`ITAK_DEBUG_DIR` points at a writable directory (in production a
+bind mount of `~/itak-debug` to `/debug` on the host):
+
+- `POST /debug/ping` — tiny check-in (version, model, free
+  storage, newest `native timing` lines). Refreshes the stick's
+  `latest.json` with a server-side `lastSeen` and answers
+  `{"want_full_report": bool}`.
+- `POST /debug/report` — the full report (adds the log tail,
+  capped at 300 KB). Stored per stick, newest 20 kept, and
+  clears that stick's want-full-report flag.
+
+Sticks are keyed by the first 12 hex chars of the SHA-256 of
+their install code: `<dir>/<key>/report-<UTC>.json` plus
+`<dir>/<key>/latest.json`. `labels.json` in the same directory
+maps a key to a label, either a bare string or
+`{"label": "...", "wantFullReport": true}`; setting
+`wantFullReport` makes the stick's next check-in answer true,
+and the stick then uploads a full report on its own. Nothing
+here accepts commands or serves the reports back; reading them
+is a host-side file operation.
+
 ## Checks
 
 - `GET /healthz` returns `{"lobbies":0,"status":"ok"}` on both the
