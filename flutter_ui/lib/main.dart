@@ -383,8 +383,9 @@ const List<SystemInfo> kSystems = [
 SystemInfo systemById(String id) => kSystems.firstWhere((s) => s.id == id);
 
 // ---------------------------------------------------------------------------
-// Artwork: box art and console photos download automatically and cache
-// on the device next to the games.
+// Artwork: box art downloads automatically and caches on the device
+// next to the games. Console photos are bundled assets instead
+// (assets/consoles), so the tiles never depend on the network.
 // ---------------------------------------------------------------------------
 
 class Artwork {
@@ -424,8 +425,9 @@ class Artwork {
     final art = File('$romDirPath/boxart/$gameName.png');
     if (art.existsSync()) return art;
     if (!fetch) return null;
-    // The thumbnail repo replaces '&' with '_' in file names.
-    for (final candidate in {gameName, gameName.replaceAll('&', '_')}) {
+    // The thumbnail repos replace the whole libretro set with '_'
+    // in file names, so try the exact name first, then sanitized.
+    for (final candidate in {gameName, _libretroName(gameName)}) {
       final bytes = await _download(_boxartUrl(sys.thumbRepo, candidate));
       if (bytes != null && _looksLikeImage(bytes)) {
         try {
@@ -440,29 +442,71 @@ class Artwork {
     return null;
   }
 
-  static File? _systemImageFile(SystemInfo sys) {
-    // Transparent PNGs first: they are the processed console art.
-    for (final ext in ['.png', '.jpg']) {
-      final f = File('/sdcard/iTaK/systems/${sys.id}$ext');
-      if (f.existsSync()) return f;
+  /// The libretro thumbnail repos replace each of these characters
+  /// with '_' in their file names; everything else is kept as is.
+  static String _libretroName(String name) {
+    var out = name;
+    for (final ch in ['&', '*', '/', ':', '`', '<', '>', '?', r'\', '|', '"']) {
+      out = out.replaceAll(ch, '_');
     }
-    return null;
+    return out;
   }
 
-  static Future<File?> systemImage(SystemInfo sys) async {
-    final existing = _systemImageFile(sys);
-    if (existing != null) return existing;
-    final bytes = await _download(sys.imageUrl);
-    if (bytes == null || !_looksLikeImage(bytes)) return null;
-    final ext = sys.imageUrl.endsWith('.png') ? '.png' : '.jpg';
-    final out = File('/sdcard/iTaK/systems/${sys.id}$ext');
-    try {
-      await out.parent.create(recursive: true);
-      await out.writeAsBytes(bytes, flush: true);
-      return out;
-    } catch (_) {
-      return null;
+  /// Game name as used for art lookups: the file basename without
+  /// its final extension (mirrors the games screen's naming).
+  static String _gameName(File f) {
+    var name = f.uri.pathSegments.last;
+    final dot = name.lastIndexOf('.');
+    if (dot > 0) name = name.substring(0, dot);
+    return name;
+  }
+
+  /// Launch sweep: walk every system's ROM folder and fetch any box
+  /// art still missing, so covers fill in (including for games added
+  /// since the last run) without opening each system first. A failed
+  /// or slow game never stalls the sweep: each fetch is capped at
+  /// 25 s and errors just count as still missing. Gated by the
+  /// 'art_autofetch' preference, like every other artwork fetch.
+  static Future<void> sweepAllBoxart() async {
+    if ((await Prefs.get('art_autofetch')) == '0') return;
+    var scanned = 0;
+    var fetched = 0;
+    var missing = 0;
+    for (final sys in kSystems) {
+      final dir = Directory('/sdcard/ROMs/${sys.dir}');
+      try {
+        if (!await dir.exists()) continue;
+        final roms = <File>[];
+        await for (final e in dir.list()) {
+          if (e is File &&
+              sys.exts.any((x) => e.path.toLowerCase().endsWith(x))) {
+            roms.add(e);
+          }
+        }
+        for (final rom in roms) {
+          scanned++;
+          final name = _gameName(rom);
+          if (File('${dir.path}/boxart/$name.png').existsSync()) continue;
+          File? got;
+          try {
+            got = await boxart(sys, name, dir.path)
+                .timeout(const Duration(seconds: 25));
+          } catch (_) {
+            got = null;
+          }
+          if (got != null) {
+            fetched++;
+          } else {
+            missing++;
+          }
+        }
+      } catch (_) {
+        // One unreadable folder never stalls the sweep.
+        continue;
+      }
     }
+    appLog('boxart sweep: scanned $scanned, fetched $fetched, '
+        'still missing $missing');
   }
 }
 
@@ -557,7 +601,6 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   final List<_FriendAlertToast> _alertQueue = [];
   OverlayEntry? _alertEntry;
   Timer? _alertTimer;
-  final Map<String, File?> _systemImages = {};
   final Map<String, int> _gameCounts = {};
   final FocusNode _focusNode = FocusNode();
   final ScrollController _gridScroll = ScrollController();
@@ -758,13 +801,17 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     Avatars.load();
     _loadPlayers();
     _loadControllerMap();
-    _loadSystemImages();
     _countGames();
     // Self-update: check the server at launch and again whenever
     // the app comes back to the front (TV apps stay open for
     // days; an update published meanwhile should still appear).
     WidgetsBinding.instance.addObserver(this);
     Future.delayed(const Duration(seconds: 4), _checkForUpdate);
+    // Box art: sweep every system's folder once shortly after
+    // launch so covers fill in (including games added since the
+    // last run) without opening each system first. Delayed so it
+    // never blocks or janks the first paint.
+    Future.delayed(const Duration(seconds: 3), Artwork.sweepAllBoxart);
     // Friend alerts: announce this box as online right away and
     // every 30 s after, and watch the friends list every 20 s.
     // initState runs once for the shell, so the timers cannot
@@ -831,14 +878,6 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     await PlayerInfoStore.publishForUpload(cur);
     if (!mounted) return;
     setState(() {});
-  }
-
-  Future<void> _loadSystemImages() async {
-    for (final sys in kSystems) {
-      final f = await Artwork.systemImage(sys);
-      if (!mounted) return;
-      setState(() => _systemImages[sys.id] = f);
-    }
   }
 
   Future<void> _countGames() async {
@@ -1943,15 +1982,14 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     final sys = kSystems[index];
     final focused = _zone == _zoneSystems && _systemIndex == index;
     final locked = _locked(sys);
-    final img = _systemImages[sys.id];
     final count = _gameCounts[sys.id];
-    Widget art = img != null
-        ? Image.file(
-            img,
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => _consoleFallback(sys),
-          )
-        : _consoleFallback(sys);
+    // Console photos ship inside the app (assets/consoles) so the
+    // tiles always show the real machines, offline included.
+    Widget art = Image.asset(
+      'assets/consoles/${sys.id}.webp',
+      fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => _consoleFallback(sys),
+    );
     if (locked) {
       art = ColorFiltered(
         colorFilter: const ColorFilter.matrix(_greyMatrix),
