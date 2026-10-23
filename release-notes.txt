@@ -1,1 +1,1 @@
-Console pictures are built into the app now, so the system tiles always show the real machines. Cover art now pulls automatically for every game in the background, including games you add later.
+The home screen now flies through space: stars streak past at light speed, then slow down so you can see the galaxies drift by. You can turn it off in Settings.
