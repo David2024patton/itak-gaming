@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'space_background.dart';
+
 void main() {
   runApp(const ITaKGamingApp());
 }
@@ -607,6 +609,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
 
   bool _locked(SystemInfo sys) => sys.requires64 && !gIs64Bit;
 
+  // Animated space backdrop behind the shell (Settings ->
+  // Space background), default on. Reloaded whenever Settings
+  // closes so a toggle there lands on the home screen at once.
+  bool _spaceBg = true;
+
   bool _updateBusy = false;
 
   Future<void> _checkForUpdate() async {
@@ -794,10 +801,17 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     }
   }
 
+  Future<void> _loadSpaceBg() async {
+    final v = await Prefs.get('space_bg');
+    if (!mounted) return;
+    setState(() => _spaceBg = v != '0');
+  }
+
   @override
   void initState() {
     super.initState();
     _loadDeviceInfo();
+    _loadSpaceBg();
     Avatars.load();
     _loadPlayers();
     _loadControllerMap();
@@ -1871,7 +1885,10 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    ).then((_) => _focusNode.requestFocus());
+    ).then((_) {
+      _focusNode.requestFocus();
+      _loadSpaceBg();
+    });
   }
 
   void _openLeaderboard() {
@@ -2169,20 +2186,43 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
       body: KeyboardListener(
         focusNode: _focusNode,
         onKeyEvent: _onKey,
-        child: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFF2A1152),
-                Color(0xFF140B2E),
-                Color(0xFF0A1A33),
-              ],
+        child: Stack(
+          children: [
+            // Backdrop layers, bottom to top: base color, the
+            // animated space scene (Settings -> Space
+            // background, default on), then the theme gradient
+            // as an overlay so tiles and text stay readable.
+            // The overlay is translucent while the scene runs
+            // and fully opaque with it off, which restores
+            // the old static look exactly.
+            const Positioned.fill(
+              child: ColoredBox(color: Color(0xFF0A0A14)),
             ),
-          ),
-          child: Stack(
-            children: [
+            if (_spaceBg)
+              const Positioned.fill(child: SpaceBackground()),
+            Positioned.fill(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: _spaceBg
+                        ? const [
+                            Color(0x8C2A1152),
+                            Color(0xAD140B2E),
+                            Color(0xC70A1A33),
+                          ]
+                        : const [
+                            Color(0xFF2A1152),
+                            Color(0xFF140B2E),
+                            Color(0xFF0A1A33),
+                          ],
+                  ),
+                ),
+              ),
+            ),
+            Stack(
+              children: [
               // Soft color glows in the corners.
               Positioned(
                 top: -140,
@@ -2341,8 +2381,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                   const SizedBox(height: 22),
                 ],
               ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -3870,15 +3911,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoArt = true;
   bool _autoSave = true;
   bool _friendAlerts = true;
+  bool _spaceBg = true;
   String _versionName = '';
   bool _checkingUpdate = false;
   int _logSize = 0;
   final FocusNode _focusNode = FocusNode();
   final ScrollController _settingsScroll = ScrollController();
 
-  static const int _rowCount = 10;
+  static const int _rowCount = 11;
   // Picture, Display, Swap, Auto art, Auto-save, Friend alerts,
-  // Sound test, App updates, Logs, Back
+  // Sound test, App updates, Logs, Space background, Back
 
   @override
   void initState() {
@@ -3896,6 +3938,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final a = await Prefs.get('art_autofetch');
     final asv = await Prefs.get('autosave');
     final fa = await Prefs.get('friend_alerts');
+    final sb = await Prefs.get('space_bg');
     final ai = await AppUpdate.installed();
     try {
       final info = await _logChannel
@@ -3910,6 +3953,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoArt = a != '0';
       _autoSave = asv != '0';
       _friendAlerts = fa != '0';
+      _spaceBg = sb != '0';
       _versionName = ai?['versionName']?.toString() ?? '';
     });
   }
@@ -4001,6 +4045,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (_row == 5) {
       setState(() => _friendAlerts = !_friendAlerts);
       Prefs.set('friend_alerts', _friendAlerts ? '1' : '0');
+    } else if (_row == 9) {
+      setState(() => _spaceBg = !_spaceBg);
+      Prefs.set('space_bg', _spaceBg ? '1' : '0');
     }
   }
 
@@ -4022,7 +4069,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 9) {
+      if (_row == 10) {
         Navigator.pop(context);
       } else if (_row == 8) {
         _openLogs();
@@ -4295,6 +4342,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   ),
+                  _settingRow(
+                    index: 9,
+                    label: 'Space background',
+                    value: _spaceBg ? 'On' : 'Off',
+                    hint: 'Fly through space behind the home screen: warp streaks, drifting stars and galaxies',
+                  ),
                   GestureDetector(
                     onTap: () => Navigator.pop(context),
                     child: AnimatedContainer(
@@ -4307,8 +4360,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 9 ? Colors.white : Colors.white12,
-                          width: _row == 9 ? 3 : 1,
+                              _row == 10 ? Colors.white : Colors.white12,
+                          width: _row == 10 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
