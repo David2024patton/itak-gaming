@@ -33,6 +33,17 @@ class MainActivity : FlutterActivity() {
     companion object {
         private val logLock = Object()
         private var logStarted = false
+
+        // Launch intro verdict, kept in native process memory.
+        // The Flutter isolate is recreated when the app returns
+        // from EmulatorActivity, which wipes the Dart-side
+        // static, so "the intro already played this launch"
+        // lives here: it survives the trip to a game and back,
+        // and a fresh process starts false, so a cold start
+        // plays the intro again. Proven on hardware 2026-10-23:
+        // one process (PID 14849), two "intro: start" lines.
+        @Volatile
+        var introPlayed = false
     }
 
     private var channel: MethodChannel? = null
@@ -249,6 +260,15 @@ class MainActivity : FlutterActivity() {
                         } else {
                             result.error("BAD_ARGS", "key and value required", null)
                         }
+                    }
+                    // Launch intro: read or record the once-per
+                    // launch verdict held in the companion object.
+                    "getIntroPlayed" -> {
+                        result.success(introPlayed)
+                    }
+                    "markIntroPlayed" -> {
+                        introPlayed = true
+                        result.success(true)
                     }
                     // Controller assignment: list connected gamepads,
                     // or arm the one-shot "press any button" capture.
