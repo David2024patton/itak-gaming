@@ -1,1 +1,1 @@
-New: the iTaK Gaming intro plays when the app opens. Press any button to skip it, or turn it off in Settings (Intro video).
+PlayStation games now show their picture. A drawing bug was painting black over every finished frame; it is fixed. Super Nintendo gets a small speed gain. All saves and settings carry over as before.
