@@ -1,1 +1,1 @@
-PlayStation games now show their picture. A drawing bug was painting black over every finished frame; it is fixed. Super Nintendo gets a small speed gain. All saves and settings carry over as before.
+Fixed: games now actually load the newest emulator cores. A stale copy was being kept from the first install, so updates since then never reached your games. PlayStation games show their picture again, Super Nintendo and Game Boy Advance run their faster cores, and the intro now plays once when the app starts instead of after every game. All saves and settings carry over.
