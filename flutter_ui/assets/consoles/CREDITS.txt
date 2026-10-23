@@ -1,0 +1,72 @@
+Console photos bundled with iTaK Gaming (assets/consoles/)
+============================================================
+
+Each photo below is bundled as a 900 px wide WebP (quality 82)
+derived from the Wikimedia Commons file listed. All photographs
+are by Evan-Amos. Author, license, and file page for each photo
+were read from the Wikimedia Commons file pages on 2026-10-22.
+
+nes.webp - Nintendo (NES)
+  File page: https://commons.wikimedia.org/wiki/File:NES-Console-Set.png
+  Author: Evan-Amos
+  License: Public domain
+
+snes.webp - Super Nintendo (SNES)
+  File page: https://commons.wikimedia.org/wiki/File:SNES-Mod1-Console-Set.png
+  Author: Evan-Amos
+  License: CC BY-SA 3.0 (https://creativecommons.org/licenses/by-sa/3.0)
+
+genesis.webp - Sega Genesis
+  File page: https://commons.wikimedia.org/wiki/File:Sega-Genesis-NA-Mk2-Console-Set.png
+  Author: Evan-Amos
+  License: Public domain
+
+segacd.webp - Sega CD
+  File page: https://commons.wikimedia.org/wiki/File:Sega-CD-Model2-Set.png
+  Author: Evan-Amos
+  License: Public domain
+
+gameboy.webp - Game Boy
+  File page: https://commons.wikimedia.org/wiki/File:Game-Boy-Original.png
+  Author: Evan-Amos
+  License: Public domain
+
+gba.webp - Game Boy Advance
+  File page: https://commons.wikimedia.org/wiki/File:Nintendo-Game-Boy-Advance-Purple-FL.png
+  Author: Evan-Amos
+  License: Public domain
+
+ps1.webp - PlayStation
+  File page: https://commons.wikimedia.org/wiki/File:PSX-Console-wController.png
+  Author: Evan-Amos
+  License: Public domain
+
+n64.webp - Nintendo 64
+  File page: https://commons.wikimedia.org/wiki/File:N64-Console-Set.png
+  Author: Evan-Amos
+  License: Public domain
+
+dc.webp - Dreamcast
+  File page: https://commons.wikimedia.org/wiki/File:Dreamcast-Console-Set.png
+  Author: Evan-Amos
+  License: CC BY-SA 3.0 (https://creativecommons.org/licenses/by-sa/3.0)
+
+psp.webp - PSP
+  File page: https://commons.wikimedia.org/wiki/File:Sony-PSP-1000-Body.png
+  Author: Evan-Amos
+  License: Public domain
+
+ds.webp - Nintendo DS
+  File page: https://commons.wikimedia.org/wiki/File:Nintendo-DS-Fat-Blue.png
+  Author: Evan-Amos
+  License: Public domain
+
+saturn.webp - Sega Saturn
+  File page: https://commons.wikimedia.org/wiki/File:Sega-Saturn-Console-Set-Mk1.png
+  Author: Evan-Amos
+  License: Public domain
+
+gc.webp - GameCube
+  File page: https://commons.wikimedia.org/wiki/File:GameCube-Console-Set.png
+  Author: Evan-Amos
+  License: Public domain
