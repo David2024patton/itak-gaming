@@ -1,1 +1,1 @@
-Fixed: the intro video now plays only once when the app starts, not again after every game. Everything else is the same as 1.73: your games run the newest emulator cores, PlayStation shows its picture, and all saves and settings carry over.
+NES games now run at full speed on the stick, Zelda included, and the music runs at full speed right along with the game. Nothing else changed in this update. Your saves and settings carry over untouched.
