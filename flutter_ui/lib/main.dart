@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'debug_chute.dart';
+import 'intro_video.dart';
 import 'space_background.dart';
 
 void main() {
@@ -24,7 +25,7 @@ class ITaKGamingApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0A0A14),
         primaryColor: const Color(0xFF00E676),
       ),
-      home: const SystemSelectScreen(),
+      home: const IntroGate(),
     );
   }
 }
@@ -3918,6 +3919,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoSave = true;
   bool _friendAlerts = true;
   bool _spaceBg = true;
+  bool _introVideo = true;
   bool _debugChute = true;
   String _installCodeShort = '';
   bool _sendingReport = false;
@@ -3927,9 +3929,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final FocusNode _focusNode = FocusNode();
   final ScrollController _settingsScroll = ScrollController();
 
-  static const int _rowCount = 14;
+  static const int _rowCount = 15;
   // Picture, Display, Swap, Auto art, Auto-save, Friend alerts,
-  // Sound test, App updates, Logs, Space background,
+  // Sound test, App updates, Logs, Space background, Intro video,
   // Debug reports, Send debug report now, Install code, Back
 
   @override
@@ -3949,6 +3951,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final asv = await Prefs.get('autosave');
     final fa = await Prefs.get('friend_alerts');
     final sb = await Prefs.get('space_bg');
+    final iv = await Prefs.get('intro_video');
     final dc = await Prefs.get('debug_chute');
     final code = await DebugChute.installCode();
     final ai = await AppUpdate.installed();
@@ -3966,6 +3969,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoSave = asv != '0';
       _friendAlerts = fa != '0';
       _spaceBg = sb != '0';
+      _introVideo = iv != '0';
       _debugChute = dc != '0';
       _installCodeShort = code.length >= 8 ? code.substring(0, 8) : code;
       _versionName = ai?['versionName']?.toString() ?? '';
@@ -4063,10 +4067,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() => _spaceBg = !_spaceBg);
       Prefs.set('space_bg', _spaceBg ? '1' : '0');
     } else if (_row == 10) {
+      setState(() => _introVideo = !_introVideo);
+      Prefs.set('intro_video', _introVideo ? '1' : '0');
+    } else if (_row == 11) {
       setState(() => _debugChute = !_debugChute);
       Prefs.set('debug_chute', _debugChute ? '1' : '0');
     }
-    // Row 12 (Install code) is read-only: adjust does nothing.
+    // Row 13 (Install code) is read-only: adjust does nothing.
   }
 
   // Settings -> Send debug report now. The toggle gates it: with
@@ -4127,9 +4134,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 13) {
+      if (_row == 14) {
         Navigator.pop(context);
-      } else if (_row == 11) {
+      } else if (_row == 12) {
         _sendReportNow();
       } else if (_row == 8) {
         _openLogs();
@@ -4410,13 +4417,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   _settingRow(
                     index: 10,
+                    label: 'Intro video',
+                    value: _introVideo ? 'On' : 'Off',
+                    hint: 'Plays the iTaK intro when the app opens; press any button to skip it',
+                  ),
+                  _settingRow(
+                    index: 11,
                     label: 'Debug reports',
                     value: _debugChute ? 'On' : 'Off',
                     hint: 'Sends this stick\'s app log and game speeds to our server so problems can be checked remotely',
                   ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 11);
+                      setState(() => _row = 12);
                       _sendReportNow();
                     },
                     child: AnimatedContainer(
@@ -4428,8 +4441,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 11 ? Colors.white : Colors.white12,
-                          width: _row == 11 ? 3 : 1,
+                          color: _row == 12 ? Colors.white : Colors.white12,
+                          width: _row == 12 ? 3 : 1,
                         ),
                       ),
                       child: Row(
@@ -4466,7 +4479,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   _settingRow(
-                    index: 12,
+                    index: 13,
                     label: 'Install code',
                     value: _installCodeShort,
                     hint: 'This stick\'s own code for debug reports: read it to whoever is checking a problem',
@@ -4483,8 +4496,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 13 ? Colors.white : Colors.white12,
-                          width: _row == 13 ? 3 : 1,
+                              _row == 14 ? Colors.white : Colors.white12,
+                          width: _row == 14 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
