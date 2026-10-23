@@ -1,1 +1,1 @@
-Speed update. Game Boy Advance games that spent their time waiting, like Anguna, now run up to ten times faster. Super Nintendo and NES games run faster too. Genesis speed is unchanged and stays faithful. All games, saves, and cheats behave exactly as before.
+New: the iTaK Gaming intro plays when the app opens. Press any button to skip it, or turn it off in Settings (Intro video).
