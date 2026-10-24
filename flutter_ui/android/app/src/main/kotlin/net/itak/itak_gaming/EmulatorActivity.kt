@@ -67,6 +67,9 @@ class EmulatorActivity : Activity(), TextureListener {
 
     /** Stereo frames the AudioTrack has accepted; read by the game loop for audio sync. */
     @Volatile private var writtenFrames = 0L
+
+    /** Presentation-layer stream stretcher; see AudioCushion. */
+    private val audioCushion = AudioCushion()
     private var gameThread: Thread? = null
     private var romPath: String = ""
     private var menuOpen = false
@@ -2182,6 +2185,7 @@ class EmulatorActivity : Activity(), TextureListener {
             .setBufferSizeInBytes(maxOf(minBuf * 2, 16384))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+        audioCushion.reset()
         audioTrack?.play()
     }
 
@@ -2308,6 +2312,12 @@ class EmulatorActivity : Activity(), TextureListener {
         // Non-blocking writes can accept only part of a chunk; the rest
         // stays in `pending` for the next pass. Dropping the remainder
         // was the crackle/wacky-sound bug.
+        //
+        // Drained PCM goes through the audio cushion on its way to the
+        // track: while a heavy screen starves production the cushion
+        // stretches the stream a few percent so the track never runs
+        // dry (see AudioCushion for the model). `pending` below holds
+        // converted output the track has not accepted yet.
         val audioThread = thread(name = "emu-audio") {
             var pending = ByteArray(0)
             while (running) {
@@ -2317,11 +2327,17 @@ class EmulatorActivity : Activity(), TextureListener {
                 }
                 val chunk = Mobile.drainAudio()
                 if (chunk != null && chunk.isNotEmpty()) {
-                    pending = if (pending.isEmpty()) chunk else pending + chunk
-                    if (pending.size > 131072) {
-                        // Runaway guard: keep only the newest half.
-                        pending = pending.copyOfRange(pending.size - 65536, pending.size)
-                    }
+                    audioCushion.feed(chunk)
+                }
+                val trackForLead = audioTrack
+                val playedNow = if (trackForLead != null) {
+                    trackForLead.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                } else {
+                    writtenFrames
+                }
+                audioCushion.update(writtenFrames - playedNow, System.nanoTime())
+                if (pending.isEmpty()) {
+                    pending = audioCushion.convert()
                 }
                 if (pending.isNotEmpty()) {
                     try {
