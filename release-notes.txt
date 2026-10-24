@@ -1,1 +1,1 @@
-Fixes the bright white flash when the app opens and closes, and the intro now fades out at the end instead of cutting off. Nothing else changed. Your games, saves, and settings carry over untouched.
+Fixes the bright white flash when the app opens and closes, fixes the in-game menu and popups washing out white on some TVs, and the intro now fades out at the end instead of cutting off. Nothing else changed. Your games, saves, and settings carry over untouched.
