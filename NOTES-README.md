@@ -3,7 +3,7 @@
 This branch is the continuity record for iTaK Gaming. It exists so the work
 can be picked up exactly where it left off, from any machine or session.
 
-Snapshot: 2026-10-24, about 01:25 EDT, written by lulu during the 1.80 work.
+Snapshot: 2026-10-24, about 01:48 EDT, updated after the 1.80 ship.
 
 Read in this order:
 
@@ -15,13 +15,14 @@ Read in this order:
 
 ## Where things stand right now
 
-- Latest shipped build: **1.79** (versionCode 80), published 2026-10-24
-  04:50 UTC to https://arcade.itak.live/app/version.json
-  APK sha256 0363ce6dbd63885decc8a4d4e1645a15426d4c591f6b4f7186d96dd3b36a51df,
-  36,664,973 bytes. It fixes the SNES controller byte swap (see DONE.md).
-- In flight: the **1.80 audio cushion** for the SNES file-select sound tear
-  (TODO.md item 1). David confirmed the symptom is the sound and ordered
-  the build at 01:22 EDT.
+- Latest shipped build: **1.80** (versionCode 81), published 2026-10-24
+  05:45 UTC to https://arcade.itak.live/app/version.json
+  APK sha256 e96f9ba81daa4cde306b93206c25264243078cea99cc5af8cb624709e9cf230a,
+  36,664,973 bytes. It carries the adaptive audio cushion for the SNES
+  file-select sound tear (see DONE.md). 1.79 (code 80) fixed the SNES
+  controller byte swap.
+- Owed: the on-TV proof of 1.80 (install in a called window, Zelda file
+  select, David's ear). The TV still runs 1.79.
 - David's Philips TV (the home bench): 1.79 installed and proven on device.
   The Missouri stick (Mary and Terry): still on 1.75; it takes updates from
   the same feed when used.
