@@ -1,17 +1,20 @@
 # Still to do
 
-Status and blockers as of 2026-10-24, about 01:48 EDT.
+Status and blockers as of 2026-10-24, about 02:52 EDT.
 
-## 1. SNES file-select sound tear — FIXED in 1.80, device proof owed
+## 1. SNES file-select sound tear — FIXED in 1.80, retuned in 1.81, device proof owed
 
 - Resolved by the adaptive audio cushion; full design and simulation
-  numbers are in DONE.md ("SNES audio cushion"). Still owed: the
-  on-TV proof. Install 1.80 on David's Philips TV in a window he
-  calls, enter Zelda file select, confirm by ear, and read the
-  logcat cushion lines (engage, release, peak stretch near 1.05,
-  zero underruns). If a screen ever overruns harder than about a
-  5.7 percent deficit for a long stretch, some tearing can remain;
-  the deep cure for that is item 2.
+  numbers are in DONE.md ("SNES audio cushion", plus the 1.81 entry
+  for the all-engine retune). 1.81 is already installed on David's
+  Philips TV. Still owed: the on-TV proof in a window he calls.
+  Enter Zelda file select, confirm by ear, and read the logcat
+  cushion lines (engage, release, peak stretch, zero underruns);
+  also confirm the new purity signature: NO cushion engagement
+  lines during healthy NES or Game Boy play. With the 1.08 clamp
+  the cushion now covers sustained deficits up to about 7.4
+  percent; beyond that some tearing can remain, and the deep cure
+  is item 2.
 
 ## 2. SNES speed headroom (the deep fix for the same screens)
 
@@ -68,6 +71,11 @@ Status and blockers as of 2026-10-24, about 01:48 EDT.
   option 3 on a widget Oct 23 and retracted it in words seconds later;
   that tap does not count. Fidelity contract stands until he decides
   in words.
+- Sound angle, measured Oct 24 (Genesis cushion pass): the audio
+  cushion covers Genesis completely if sustained device cost lands
+  at or under 17.69 ms/frame; the central pacing estimate (21.93 ms)
+  needs stretch 1.314 (4.73 semitones), rejected on price. The owed
+  Sonic stick timing settles which side of 17.69 reality is on.
 
 ## 8. Fresh-TV storage prompt (UX gap, small)
 
