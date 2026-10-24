@@ -909,8 +909,8 @@ func (s *System) sampleJoypads() {
 				hi |= 1 << uint(7-i)
 			}
 		}
-		s.joyData[port*4] = lo
-		s.joyData[port*4+1] = hi
+		s.joyData[port*4] = hi
+		s.joyData[port*4+1] = lo
 		s.joyData[port*4+2] = 0
 		s.joyData[port*4+3] = 0
 	}
