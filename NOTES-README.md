@@ -15,15 +15,20 @@ Read in this order:
 
 ## Where things stand right now
 
-- Latest shipped build: **1.80** (versionCode 81), published 2026-10-24
-  05:45 UTC to https://arcade.itak.live/app/version.json
-  APK sha256 e96f9ba81daa4cde306b93206c25264243078cea99cc5af8cb624709e9cf230a,
-  36,664,973 bytes. It carries the adaptive audio cushion for the SNES
-  file-select sound tear (see DONE.md). 1.79 (code 80) fixed the SNES
-  controller byte swap.
-- Owed: the on-TV proof of 1.80 (install in a called window, Zelda file
-  select, David's ear). The TV still runs 1.79.
-- David's Philips TV (the home bench): 1.79 installed and proven on device.
+- Latest shipped build: **1.81** (versionCode 82), published 2026-10-24
+  06:45 UTC to https://arcade.itak.live/app/version.json
+  APK sha256 299476dc0d864e2bb2d8c73ff6885c9c0eddb61c99fb45e1b0839fe5a5058092,
+  36,664,973 bytes. It carries the integrated all-engine audio cushion
+  retune (LEAD_TARGET 1800, LEAD_BAND 300, STRETCH_MAX 1.08; see
+  DONE.md). 1.80 (code 81) introduced the cushion; 1.79 (code 80)
+  fixed the SNES controller byte swap.
+- Owed: the on-device proof of 1.81. It is already installed on
+  David's TV (silent install, dumpsys 1.81/82); the listen test
+  (Zelda file select by ear plus logcat cushion lines, and no
+  cushion engagement during healthy NES/Game Boy play) waits for a
+  window he calls.
+- David's Philips TV (the home bench): 1.79 was the last build fully
+  proven on device; 1.80 and 1.81 are installed there.
   The Missouri stick (Mary and Terry): still on 1.75; it takes updates from
   the same feed when used.
 
