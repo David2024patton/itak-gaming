@@ -1,1 +1,1 @@
-Fixes the Super Nintendo sound tearing up on heavy screens like the Zelda file select. The sound now carries a bigger cushion for the moments the picture runs heavy, so it stays smooth through them. Nothing else changed. Your games, saves, and settings carry over untouched.
+Fixes the sound cushion tuning for every system: during normal play the sound now stays exactly as the games made it, and the cushion only steps in on heavy screens. The Super Nintendo file select fix stays in. Nothing else changed. Your games, saves, and settings carry over untouched.
