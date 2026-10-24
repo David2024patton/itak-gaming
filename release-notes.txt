@@ -1,1 +1,1 @@
-Fixes the Super Nintendo controller: the Start button and the D-pad were not reaching the games, and the face buttons were crossed. Every button now lands exactly as it does on a real Super Nintendo. Nothing else changed. Your games, saves, and settings carry over untouched.
+Fixes the Super Nintendo sound tearing up on heavy screens like the Zelda file select. The sound now carries a bigger cushion for the moments the picture runs heavy, so it stays smooth through them. Nothing else changed. Your games, saves, and settings carry over untouched.
