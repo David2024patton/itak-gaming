@@ -1,1 +1,1 @@
-Fixes the bright white flash when the app opens and closes, fixes the in-game menu and popups washing out white on some TVs, and the intro now fades out at the end instead of cutting off. Nothing else changed. Your games, saves, and settings carry over untouched.
+Fixes the Super Nintendo controller: the Start button and the D-pad were not reaching the games, and the face buttons were crossed. Every button now lands exactly as it does on a real Super Nintendo. Nothing else changed. Your games, saves, and settings carry over untouched.
