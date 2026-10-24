@@ -4,6 +4,12 @@ Newest first within each area. Dates are 2026 unless noted.
 
 ## Shipped builds (32-bit line, feed: arcade.itak.live/app/version.json)
 
+- **1.80** (Oct 24, code 81) — the SNES audio cushion (section below).
+  APK sha256 e96f9ba8..., dissection vs 1.79: only the manifest version,
+  classes.dex (the cushion), libgojni.so (the Go AAR rebind carrying the
+  already-pushed Go joypad fix), and dexopt byproducts differ; all six
+  Rust core libraries byte-identical. On-TV proof still owed.
+
 - **1.79** (Oct 24, code 80) — SNES controller byte swap fix, libraries
   only. The whole story is under "SNES controller" below. APK sha256
   0363ce6d..., dissection vs 1.78: only the manifest version and both
@@ -37,6 +43,38 @@ Newest first within each area. Dates are 2026 unless noted.
   the from-scratch Rust cores behind the Go bridge seam, plus the save
   backup-and-hold (first Rust session backs up the whole saves tree and
   holds auto-save; proven on the Missouri stick Oct 23).
+
+## SNES audio cushion (shipped in 1.80)
+
+- Problem (verdict B, below): on heavy screens the TV produces frames
+  at about 95.5 percent of real time for up to about 21 s, so any fixed
+  sound bank eventually runs dry and the music tears. A host simulation
+  of the shipped pipeline driven by the measured pacing put today's
+  starvation at 29,586 samples (about 925 ms of audio, 971 micro-gaps)
+  across the two heavy windows.
+- Fix: a streaming resampler module (AudioCushion.kt) between the
+  drained PCM and the AudioTrack. A band controller watches the track
+  lead; while frames overrun it stretches the stream slightly (average
+  1.053 while engaged, settling 1.0484 against a theoretical need of
+  1.0487) so consumption matches production and the track never runs
+  dry. Simulation after the change: zero starved samples, minimum lead
+  held at 1,098 frames through the heavy stretch. Coverage is full for
+  deficits up to about 5.7 percent (the 1.06 clamp); a probe at a 10.1
+  percent deficit still cut starvation from 2,209 ms to 585 ms.
+- Steady state: stretch parks at exactly 1.0, a bit-exact pass-through,
+  and the lead band (2,100 plus/minus 200 frames) sits under the
+  existing 2,400-frame gate cap, so added steady-state latency is zero.
+  Core sample production, the gate, the drain path, and the runaway
+  guard numbers are untouched (the guard moved into the cushion).
+- Diagnostics: engage and release lines with lead and stretch,
+  throttled underrun warnings with a starved-time estimate, and a
+  session summary, all on the iTaKEmu logcat tag.
+- Commits: AudioCushion.kt c3717f7, EmulatorActivity.kt e9b514e,
+  release-notes cb1dede, pubspec 1.80.0+81 1d007ab. Simulation
+  artifacts: ~/itak-speed/snes-audio-cushion/ (sim.py, results.json,
+  MODEL.md). Device proof owed: logcat should show the cushion engage
+  then release at the Zelda file select, peak stretch near 1.05, zero
+  underruns, and David's ear agrees.
 
 ## SNES controller byte swap (the 1.79 fix)
 
