@@ -936,7 +936,7 @@ class EmulatorActivity : Activity(), TextureListener {
                         Log.w(TAG, "next match failed: $err")
                         runOnUiThread {
                             if (isFinishing) return@runOnUiThread
-                            AlertDialog.Builder(this)
+                            AlertDialog.Builder(this, R.style.ItakDialogTheme)
                                 .setTitle("Online game ended")
                                 .setMessage(err)
                                 .setPositiveButton("OK") { _, _ -> finish() }
@@ -1001,7 +1001,7 @@ class EmulatorActivity : Activity(), TextureListener {
 
     /** The host referee's one v1 call: this watcher plays next. */
     private fun confirmSeatAssign(name: String) {
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("Put $name in seat 2?")
             .setMessage("$name plays the next match in the guest seat. " +
                 "Whoever holds it now moves to watching.")
@@ -1073,7 +1073,7 @@ class EmulatorActivity : Activity(), TextureListener {
             runOnUiThread {
                 if (isFinishing) return@runOnUiThread
                 if (token == null) {
-                    AlertDialog.Builder(this)
+                    AlertDialog.Builder(this, R.style.ItakDialogTheme)
                         .setTitle("Could not move to watching")
                         .setMessage("The seat change went through, but this box " +
                             "could not take a watcher seat. The room goes on without you.")
@@ -1472,7 +1472,7 @@ class EmulatorActivity : Activity(), TextureListener {
             ).show()
             return
         }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("Tournament champion")
             .setItems(arrayOf<CharSequence>(*names.toTypedArray())) { _, which ->
                 confirmChampion(tName, names[which])
@@ -1487,7 +1487,7 @@ class EmulatorActivity : Activity(), TextureListener {
      * same second thought a seat change gets.
      */
     private fun confirmChampion(tournament: String, champion: String) {
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("Crown $champion?")
             .setMessage("$champion is recorded as the winner of " +
                 "$tournament on the tournament board.")
@@ -1651,7 +1651,7 @@ class EmulatorActivity : Activity(), TextureListener {
             runOnUiThread {
                 if (isFinishing) return@runOnUiThread
                 if (token == null) {
-                    AlertDialog.Builder(this)
+                    AlertDialog.Builder(this, R.style.ItakDialogTheme)
                         .setTitle("Could not take the seat")
                         .setMessage("The host put you in seat 2, but this box " +
                             "could not join as the guest in time.")
@@ -1724,7 +1724,7 @@ class EmulatorActivity : Activity(), TextureListener {
         if (phase == "ended" && !watchEndShown) {
             watchEndShown = true
             val err = obj.optString("error", "")
-            AlertDialog.Builder(this)
+            AlertDialog.Builder(this, R.style.ItakDialogTheme)
                 .setTitle("Watch ended")
                 .setMessage(if (err.isNotEmpty()) err else "The match is over.")
                 .setPositiveButton("OK") { _, _ -> finish() }
@@ -2268,7 +2268,7 @@ class EmulatorActivity : Activity(), TextureListener {
             if (failed != null) {
                 if (isFinishing) return
                 runOnUiThread {
-                    AlertDialog.Builder(this)
+                    AlertDialog.Builder(this, R.style.ItakDialogTheme)
                         .setTitle("Could not watch this game")
                         .setMessage(failed)
                         .setPositiveButton("OK") { _, _ -> finish() }
@@ -2292,7 +2292,7 @@ class EmulatorActivity : Activity(), TextureListener {
             if (failed != null) {
                 if (npCancelled || isFinishing) return
                 runOnUiThread {
-                    AlertDialog.Builder(this)
+                    AlertDialog.Builder(this, R.style.ItakDialogTheme)
                         .setTitle("Online game could not start")
                         .setMessage(failed)
                         .setPositiveButton("OK") { _, _ -> finish() }
@@ -2392,7 +2392,7 @@ class EmulatorActivity : Activity(), TextureListener {
                             Log.w(TAG, "netplay ended: $err")
                             running = false
                             runOnUiThread {
-                                AlertDialog.Builder(this)
+                                AlertDialog.Builder(this, R.style.ItakDialogTheme)
                                     .setTitle("Online game ended")
                                     .setMessage(err)
                                     .setPositiveButton("OK") { _, _ -> finish() }
@@ -2752,7 +2752,7 @@ class EmulatorActivity : Activity(), TextureListener {
         // this TV's dialog theme, so the player rides in the title.
         // The dialog is kept in a field so a match end landing
         // while the menu is open can close it (handleMatchEnd).
-        pauseDialog = AlertDialog.Builder(this)
+        pauseDialog = AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("${File(romPath).nameWithoutExtension}  ·  ${currentPlayer()}")
             .setItems(entries.map { it.first }.toTypedArray()) { _, which ->
                 entries[which].second()
@@ -2821,7 +2821,7 @@ class EmulatorActivity : Activity(), TextureListener {
     // Exit asks first, so a stray press cannot end a game by
     // accident. Confirming auto-saves (when enabled) on the way out.
     private fun confirmExit() {
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("Exit game?")
             .setMessage(
                 if (Mobile.backupHoldActive())
@@ -2936,7 +2936,7 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         val labels = cheatDb.map { it.desc }.toTypedArray()
         val working = BooleanArray(cheatDb.size) { enabledCheats.contains(cheatDb[it].code) }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("Cheats")
             .setMultiChoiceItems(labels, working) { _, which, isChecked ->
                 working[which] = isChecked
