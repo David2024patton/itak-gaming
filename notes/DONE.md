@@ -4,6 +4,30 @@ Newest first within each area. Dates are 2026 unless noted.
 
 ## Shipped builds (32-bit line, feed: arcade.itak.live/app/version.json)
 
+- **1.81** (Oct 24, code 82) — the all-engine audio cushion retune.
+  Six parallel verification passes (one per core) checked the shipped
+  cushion: SNES FINE (builder numbers independently reproduced
+  byte-identical, PAL covered), GBA FINE (never engages in real
+  play), NES and Game Boy RETUNE (at 44.1 kHz the band bottom sat
+  inside the gate sawtooth trough, so the cushion false-engaged
+  during healthy play: NES stretch up to 1.0154, GB creep 1.0004,
+  breaking bit-exact steady state), PS1 RETUNE (rate-scaled scheme
+  proposed), Genesis COVERAGE GAP (core speed, not tuning; cushion
+  covers it fully at or under 17.69 ms/frame sustained). An
+  integration matrix (8 candidate schemes x 27 hard checks across
+  every engine harness) picked the winner 27/27: LEAD_TARGET
+  2100 -> 1800, LEAD_BAND 200 -> 300, STRETCH_MAX 1.06 -> 1.08
+  (coverage class 5.66% -> 7.41%; price 1.33 semitones at the clamp,
+  paid only while a screen rides it; the PS1 5% deficit trace forces
+  the raise). AudioCushion.kt only; the game-loop gate is untouched.
+  Nothing in the matrix got worse; SNES brutal improved
+  18,005 -> 12,111 starved. Commits e68a8e9 (AudioCushion.kt),
+  81a9d89 (notes), 21bba38 (pubspec, last). APK sha256
+  299476dc0d864e2bb2d8c73ff6885c9c0eddb61c99fb45e1b0839fe5a5058092;
+  dissection vs 1.80: manifest, classes.dex, dexopt only; libgojni
+  and all six core libraries byte-identical. Evidence:
+  ~/itak-speed/audio-cushion-integration/ and the six
+  ~/itak-speed/audio-cushion-*/ dirs. Device proof owed (TODO 1).
 - **1.80** (Oct 24, code 81) — the SNES audio cushion (section below).
   APK sha256 e96f9ba8..., dissection vs 1.79: only the manifest version,
   classes.dex (the cushion), libgojni.so (the Go AAR rebind carrying the
