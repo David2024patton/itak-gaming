@@ -15,4 +15,13 @@
     <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+    <!-- Dark theme pinned on every native AlertDialog the app builds (pause menu,
+         exit confirm, cheat picker, chat, netplay prompts). Without it the dialog
+         resolves from the device theme, which on some TVs is a bright white panel
+         with white-on-white rows. Colors match the app's own overlay surface. -->
+    <style name="ItakDialogTheme" parent="@android:style/Theme.Material.Dialog">
+        <item name="android:windowBackground">#0E0E18</item>
+        <item name="android:textColorPrimary">@android:color/white</item>
+        <item name="android:textColorSecondary">#B0B0B8</item>
+    </style>
 </resources>
