@@ -26,7 +26,11 @@ import 'main.dart' show Prefs, SystemSelectScreen, appLog;
 // "intro: start" lines). The static below stays as a
 // same-isolate fast path; native is the source of truth. A
 // cold start is a new process, the native flag starts
-// false, and the intro plays again.
+// false, and the intro plays again. On the way out the
+// picture fades to black (about 750 ms at the clip's
+// natural end, 250 ms on any early exit) instead of
+// cutting; a hard timer backs the fade so the handoff to
+// home can never stall.
 // ---------------------------------------------------------------------------
 
 const String kIntroAsset = 'assets/intro/itak_intro.mp4';
@@ -41,7 +45,8 @@ class IntroGate extends StatefulWidget {
   State<IntroGate> createState() => _IntroGateState();
 }
 
-class _IntroGateState extends State<IntroGate> {
+class _IntroGateState extends State<IntroGate>
+    with SingleTickerProviderStateMixin {
   /// Set the first time the gate reaches any verdict (played,
   /// skipped, errored, off) in this process. Static on purpose:
   /// State objects are recreated when the home route rebuilds
@@ -56,6 +61,9 @@ class _IntroGateState extends State<IntroGate> {
   final FocusNode _focusNode = FocusNode();
   VideoPlayerController? _controller;
   Timer? _watchdog;
+  AnimationController? _fadeController;
+  Timer? _fadeTimer;
+  bool _fading = false;
   bool _showHome = false;
   bool _finished = false;
   bool _started = false;
@@ -74,7 +82,7 @@ class _IntroGateState extends State<IntroGate> {
     // home. Twenty seconds is far beyond the 10 s clip plus any
     // sane start-up stall.
     _watchdog = Timer(const Duration(seconds: 20), () {
-      _finish(_IntroEnd.done);
+      _beginFade(_IntroEnd.done, const Duration(milliseconds: 250));
     });
     _run();
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -97,7 +105,7 @@ class _IntroGateState extends State<IntroGate> {
         // back to the Dart static, which _finish maintains.
         nativePlayed = false;
       }
-      if (_finished) return;
+      if (_finished || _fading) return;
       if (nativePlayed) {
         _verdictGiven = true;
         _finished = true;
@@ -110,41 +118,83 @@ class _IntroGateState extends State<IntroGate> {
         return;
       }
       final pref = await Prefs.get(kIntroPref);
-      if (_finished) return;
+      if (_finished || _fading) return;
       if (pref == '0') {
-        _finish(_IntroEnd.off);
+        _beginFade(_IntroEnd.off, const Duration(milliseconds: 250));
         return;
       }
       final controller = VideoPlayerController.asset(kIntroAsset);
       _controller = controller;
       await controller.initialize().timeout(const Duration(seconds: 6));
-      if (_finished) return;
+      if (_finished || _fading) return;
       controller.addListener(_onPlayerUpdate);
       await controller.play();
-      if (_finished) return;
+      if (_finished || _fading) return;
       _started = true;
       appLog('intro: start');
       if (mounted) setState(() {});
     } catch (e) {
-      _finish(_IntroEnd.error, '$e');
+      _beginFade(_IntroEnd.error, const Duration(milliseconds: 250), '$e');
     }
   }
 
   void _onPlayerUpdate() {
     final controller = _controller;
-    if (controller == null || _finished) return;
+    if (controller == null || _finished || _fading) return;
     final value = controller.value;
     if (value.hasError) {
-      _finish(_IntroEnd.error, value.errorDescription ?? 'player error');
+      _beginFade(_IntroEnd.error, const Duration(milliseconds: 250),
+          value.errorDescription ?? 'player error');
     } else if (value.isCompleted) {
-      _finish(_IntroEnd.done);
+      // No usable duration to time the long fade against (or
+      // the end arrived between ticks): short fade from here.
+      _beginFade(_IntroEnd.done, const Duration(milliseconds: 250));
+    } else if (value.duration > Duration.zero) {
+      // Natural end approaching: start the fade to black so
+      // the clip melts out instead of cutting off.
+      final remaining = value.duration - value.position;
+      if (remaining <= const Duration(milliseconds: 800)) {
+        _beginFade(_IntroEnd.done, const Duration(milliseconds: 750));
+      }
     }
+  }
+
+  /// Starts the fade to black and runs the existing finish
+  /// path when it lands. The first exit request wins; later
+  /// ones are ignored, exactly like _finish's guard. A hard
+  /// timer backs the animation up, so even a stalled fade
+  /// finishes within the fade length plus 300 ms and the
+  /// gate can never hang.
+  void _beginFade(_IntroEnd end, Duration fadeDuration, [String? detail]) {
+    if (_finished || _fading) return;
+    if (!mounted || _showHome) {
+      _finish(end, detail);
+      return;
+    }
+    _fading = true;
+    _fadeTimer = Timer(fadeDuration + const Duration(milliseconds: 300), () {
+      _finish(end, detail);
+    });
+    final controller = AnimationController(
+      vsync: this,
+      duration: fadeDuration,
+    );
+    _fadeController = controller;
+    controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _finish(end, detail);
+      }
+    });
+    setState(() {});
+    controller.forward();
   }
 
   void _finish(_IntroEnd end, [String? detail]) {
     if (_finished) return;
     _finished = true;
     _verdictGiven = true;
+    _fadeTimer?.cancel();
+    _fadeController?.stop();
     // Record the verdict natively as well: the next gate may
     // run in a recreated isolate where the static above is
     // gone. Fire and forget; a failure only costs a replay.
@@ -182,12 +232,16 @@ class _IntroGateState extends State<IntroGate> {
   }
 
   void _onKey(KeyEvent event) {
-    if (event is KeyDownEvent) _finish(_IntroEnd.skipped);
+    if (event is KeyDownEvent) {
+      _beginFade(_IntroEnd.skipped, const Duration(milliseconds: 250));
+    }
   }
 
   @override
   void dispose() {
     _watchdog?.cancel();
+    _fadeTimer?.cancel();
+    _fadeController?.dispose();
     _controller?.removeListener(_onPlayerUpdate);
     _controller?.dispose();
     _focusNode.dispose();
@@ -219,10 +273,29 @@ class _IntroGateState extends State<IntroGate> {
           onKeyEvent: _onKey,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => _finish(_IntroEnd.skipped),
-            child: Container(
-              color: Colors.black,
-              child: _playerWidget(),
+            onTap: () => _beginFade(
+              _IntroEnd.skipped,
+              const Duration(milliseconds: 250),
+            ),
+            child: Stack(
+              children: [
+                Container(
+                  color: Colors.black,
+                  child: _playerWidget(),
+                ),
+                if (_fadeController != null)
+                  AnimatedBuilder(
+                    animation: _fadeController!,
+                    builder: (context, _) {
+                      return Opacity(
+                        opacity: _fadeController!.value,
+                        child: const SizedBox.expand(
+                          child: ColoredBox(color: Colors.black),
+                        ),
+                      );
+                    },
+                  ),
+              ],
             ),
           ),
         ),
