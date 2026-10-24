@@ -1,1 +1,1 @@
-NES games now run at full speed on the stick, Zelda included, and the music runs at full speed right along with the game. Nothing else changed in this update. Your saves and settings carry over untouched.
+The Nintendo console picture on the home screen now blends in like the others; its white background is gone. Nothing else changed. Your saves and settings carry over untouched.
