@@ -1,40 +1,17 @@
 # Still to do
 
-Status and blockers as of 2026-10-24, about 01:25 EDT.
+Status and blockers as of 2026-10-24, about 01:48 EDT.
 
-## 1. SNES file-select sound tear — BUILD IN PROGRESS (1.80)
+## 1. SNES file-select sound tear — FIXED in 1.80, device proof owed
 
-- Symptom: entering file select in SNES Zelda tears and warbles on
-  David's TV. Diagnosis is verdict B (see DONE.md): the core's samples
-  are clean; the heavy screens run 17.0-17.45 ms against a 16.698 ms
-  budget, production falls to about 95.5 percent of real time, and the
-  playback stream starves.
-- David confirmed "it's the sound" and ordered the build 2026-10-24
-  01:22 EDT.
-- Audio path as built today (measured in the source, Oct 24):
-  - Go bridge `NativeBridge.pending` grows by append per frame;
-    `DrainAudio(maxFrames)` slices it. `mobile.DrainAudio` caps a call
-    at 4096 frames.
-  - Kotlin `EmulatorActivity.startAudio`: AudioTrack buffer is
-    maxOf(minBuffer times 2, 16384) bytes, which at the SNES rate of
-    32 kHz stereo 16-bit is 4096 frames, about 128 ms.
-  - The game loop's audio gate: production waits whenever
-    writtenFrames minus playbackHead exceeds 2400 frames (75 ms). So
-    the total bank ahead of the DAC is roughly 200 ms, and the loop can
-    never bank more.
-  - The audio thread has a runaway guard that trims its byte queue at
-    131072 bytes, keeping the newest 65536.
-- Deficit math: a 0.5-0.75 ms per-frame overrun eats the 200 ms bank in
-  a few seconds of heavy screen; the measured over-budget stretches run
-  up to about 20 s (two 600-frame windows). A cushion must either grow
-  the bank a lot (which adds steady-state sound delay, because the lead
-  sits at the gate cap) or adapt: small in steady state, bigger while
-  frames are overrunning, easing back after. Simulating against the
-  measured pacing before building is required; pitch or sample content
-  must not change in steady state, and core sample production is off
-  limits (presentation layer only).
-- Acceptance: David's ear at the Zelda file-select transition on his
-  TV, plus the session timing lines. The deep alternative is item 2.
+- Resolved by the adaptive audio cushion; full design and simulation
+  numbers are in DONE.md ("SNES audio cushion"). Still owed: the
+  on-TV proof. Install 1.80 on David's Philips TV in a window he
+  calls, enter Zelda file select, confirm by ear, and read the
+  logcat cushion lines (engage, release, peak stretch near 1.05,
+  zero underruns). If a screen ever overruns harder than about a
+  5.7 percent deficit for a long stretch, some tearing can remain;
+  the deep cure for that is item 2.
 
 ## 2. SNES speed headroom (the deep fix for the same screens)
 
