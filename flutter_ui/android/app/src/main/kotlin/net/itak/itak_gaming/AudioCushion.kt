@@ -42,12 +42,12 @@ import kotlin.math.floor
  * gate, drain, track, DAC) driven by the TV's measured frame times:
  * baseline starved about 29,600 samples (roughly 0.93 s of audio,
  * in about 970 bursts) across the file-select stretch; with the
- * cushion it starved zero, holding at least ~1,100 frames of lead
+ * cushion it starved zero, holding at least ~700 frames of lead
  * throughout, at an average stretch of about 1.05 while engaged.
- * The cushion fully covers production deficits up to about 5.7
+ * The cushion fully covers production deficits up to about 7.4
  * percent (the S_MAX clamp); beyond that it still stretches the
  * bank proportionally (an 18.5 ms/frame probe cut starvation from
- * about 2,210 ms to about 590 ms) but cannot hold the stream alone.
+ * about 2,210 ms to about 400 ms) but cannot hold the stream alone.
  *
  * Diagnostics: engaging and releasing are logged with the lead and
  * stretch, underrun episodes are counted (with an estimate of the
@@ -61,12 +61,36 @@ class AudioCushion {
 
         // Controller constants, in frames at the core's sample rate
         // (the tuned case is SNES: 32,000 Hz, gate cap 2400 frames).
-        private const val LEAD_TARGET = 2100.0   // band center
-        private const val LEAD_BAND = 200.0      // band half-width
+        //
+        // 1.81 retune. The band has to clear the game loop's
+        // production lead sawtooth, and the sawtooth is one frame of
+        // production deep: 532 samples at the SNES rate (trough near
+        // 1,868) but about 736 at the 44,100 Hz the other five cores
+        // run at (trough near 1,664, sampled as low as 1,650 on the
+        // near-budget trace). The shipped band bottom (2,100 - 200 =
+        // 1,900) sat inside the 44,100 Hz sawtooth, so healthy NES,
+        // Game Boy and PS1 play tripped the correction and left the
+        // bit-exact path (stretch up to 1.0334 near budget on NES).
+        // A band bottom of 1,500 (1,800 - 300) clears every shipped
+        // core's trough. The six per-engine passes plus the combined
+        // matrix (build server: itak-speed/audio-cushion-*) verify
+        // every healthy trace back on the exact 1.0 path with zero
+        // engagement and zero starved samples on every deficit trace
+        // in the coverage class, the SNES file select included
+        // (minimum lead about 700 frames, average stretch about 1.05
+        // while engaged). The clamp rose from 1.06 to 1.08 because a
+        // sustained 5 percent deficit's jitter peaks (about 6.9
+        // percent instantaneous) exceed what 1.06 covers (5.7
+        // percent); the PS1 5 percent trace is the one that forces
+        // it. Riding the clamp costs about 1.3 semitones of pitch
+        // against 1.0 at the old clamp, and only while a screen is
+        // that far behind.
+        private const val LEAD_TARGET = 1800.0   // band center
+        private const val LEAD_BAND = 300.0      // band half-width
         private const val GAIN_UP = 0.8          // push-up rate, 1/s
         private const val GAIN_DN = 0.25         // ease-off rate, 1/s
         private const val LEAK = 0.04            // glide to 1.0 in band, 1/s
-        private const val STRETCH_MAX = 1.06     // hardest stretch
+        private const val STRETCH_MAX = 1.08     // hardest stretch
         private const val STRETCH_SLEW = 0.10    // max |dstretch/dt|, 1/s
 
         // A stretch this close to 1.0 counts as released: at 32 kHz
