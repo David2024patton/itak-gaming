@@ -265,13 +265,13 @@ func TestJoypads(t *testing.T) {
 		t.Errorf("HVBJOY = %#x, want joypad busy during auto read", v)
 	}
 	s.RunFrame() // one more frame: the read has completed
-	if v := rdReg(s, 0x4219); v != 0x80 {
-		t.Errorf("JOY1H = %#x, want 0x80 (A at bit 7)", v)
+	if v := rdReg(s, 0x4218); v != 0x80 {
+		t.Errorf("JOY1L = %#x, want 0x80 (A at bit 7)", v)
 	}
 	// Serial order B Y Sel Start Up Down Left Right:
 	// Start is index 3 (bit 4), Left index 6 (bit 1).
-	if v := rdReg(s, 0x4218); v != 0x12 {
-		t.Errorf("JOY1L = %#x, want 0x12 (Start + Left)", v)
+	if v := rdReg(s, 0x4219); v != 0x12 {
+		t.Errorf("JOY1H = %#x, want 0x12 (Start + Left)", v)
 	}
 	// Manual serial read: strobe, then clock out pad 1.
 	s.SetButtons(0, ButtonB|ButtonR)
