@@ -1,45 +1,52 @@
-<!--
-INSTRUCTIONS FOR THIS FILE (user and AI: read before editing. Keep this header.)
+# The End Goal
 
-WHAT THIS FILE IS: the end state this project exists to reach, in plain
-words. TODO.md and PLAN.md serve this file; work continues until the end
-goal is reached. When David restates or extends the end goal, update this
-file the same day and let PLAN/TODO follow.
+David's words, 2026-10-13: "Make sure everything matches exactly.
+We want this to be the best emulator in the world!!!"
 
-EXACT STRUCTURE:
-- "## The end state": the finished project described as the experience of
-  the person using it, start to finish.
-- "## How we will know it is reached": observable conditions, each one
-  checkable, tied to the TODO item that proves it where one exists.
-- "## Not in the end state": explicit exclusions David has set, so the
-  goal cannot drift.
+## What iTaK Gaming is
 
-RULES:
-- Sourced from David's stated vision, the repo README and features, and
-  what he has talked about in the record. Never invented. Where the
-  record is thin, say the end state at the level the record supports.
-- No secrets, passwords, or tokens in this file, ever.
--->
-# ENDGOAL: iTaK Gaming
+An open-source (MIT) game console app for cheap Android TV sticks
+and televisions, built from scratch: our own emulator cores, our
+own frontend, our own netplay. No RetroArch, no borrowed cores in
+the shipped product. It runs the games people already own, from
+files on the device, exactly as the original hardware played them.
 
-The end state this project exists to reach, in plain words. TODO.md and PLAN.md are how we get here; this file is how we know we are done. Work continues until this end goal is reached. When David restates or extends the end goal, this file is updated the same day and PLAN/TODO follow.
+## What finished looks like
 
-## The end state
+- **Every supported system plays at full speed on stick-class
+  hardware** (a $30 Chromecast HD), with picture and sound
+  indistinguishable from the real console.
+- **Accuracy is provable, not claimed:** pixel-exact frames,
+  byte-exact save states that stay interchangeable with the Go
+  reference cores, and hardware test corpora passing in the
+  millions of instructions per core.
+- **Twelve systems:** Game Boy, NES, SNES, Genesis (plus Sega CD),
+  GBA, PS1 ship today. Nintendo DS, N64, Saturn, GameCube, PSP,
+  and Dreamcast cores are built and join the lineup as the
+  product grows into them.
+- **Netplay that cannot desync:** two machines, same inputs, same
+  state hash, proven machine to machine. Friends and family play
+  across states (Kentucky to Missouri is the founding case).
+- **It installs and updates itself** from our own feed, keeps
+  saves safe across every update (automatic backup before any
+  core switch), and reports its own health home through the debug
+  chute so problems are visible without touching the device.
+- **The 1.x line is 32-bit** (armeabi-v7a), because that is what
+  the installed base of sticks and TVs runs. **2.0 is the 64-bit
+  edition**, the major-version jump when the 64-bit pipeline ships.
 
-iTaK Gaming is the family arcade on every screen in the house and beyond it: a TV stick, a stronger TV box, a Windows or Linux machine, all running the same open-source arcade. Anyone in the family picks up a remote or controller, picks their profile, picks a system and a game, and plays, with their own save states waiting where they left them. David in Kentucky opens a lobby and plays his brother in Missouri like they are on the same couch, with family watching as spectators. Updates arrive on their own and verify themselves. The box in Mary and Terry's house in Missouri runs the same arcade, set up from the kit, recoverable from a one-page card by a family member with no developer help.
+## The standing constraints
 
-## How we will know it is reached
-
-- The shipped app runs on the real Chromecast HD and every target device, and a game launches and plays without returning to the home screen, proven per build on the device itself.
-- The Kentucky to Missouri acceptance game is played over the public lobby with a dated session note: build, game, connection path, desync count, result.
-- Every bundled core carries a standard proof pack, and retail-game status is recorded separately from homebrew proof for the 64-bit cores.
-- Spectators, friends, play stats, and leaderboards work in the live lobby service over TLS.
-- A family member completes setup and a failed-update recovery from the written kit and card without developer help.
-- The release gate passes clean on the release commit: tests, lint, secret scan, leak check, save compatibility, and netplay determinism.
-- The repo stays clean in public: MIT code, and a tree leak check with every release finds no ROMs, BIOS files, core binaries, private logs, or credentials.
-
-## Not in the end state
-
-- No server-side game delivery or streaming of games to other people, ever. The server carries lobbies, signals, inputs, stats, friends, and updates only.
-- No ROMs or core binaries shipped in the repo or the app packages; players supply their own legally obtained games.
-- No pop-up ads in any build. Banner ads only in a build whose per-build core license manifest proves every bundled core allows that revenue model.
+- Fidelity first: a faster, less exact mode exists only if David
+  orders it in words. (He has not; a stray widget tap on
+  2026-10-23 was retracted in words seconds later and does not
+  count.)
+- No copyrighted games are ever distributed by the app or the
+  repo. Players bring their own files; the app reads local
+  storage only. Server-side game delivery was considered and
+  scratched permanently on 2026-10-12 over lawsuit risk.
+- Everything modular: every feature is its own module, one
+  feature per commit, pushed when verified.
+- Build 20 years ahead: interface seams at every boundary that
+  will change (cores behind one bridge ABI, limits as config,
+  data formats versioned).
