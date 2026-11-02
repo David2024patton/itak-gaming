@@ -56,6 +56,52 @@ class MainActivity : FlutterActivity() {
     private var updateProgressSink: EventChannel.EventSink? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // The official Newsmax app, launched by the home screen's
+    // Newsmax tab. One package serves phones and TV boxes. The
+    // manifest names it in <queries> so this app is allowed to see
+    // whether it is installed.
+    private fun launchNewsmaxApp(): String {
+        val pkg = "com.fli.android.newsmaxapp"
+        var intent = packageManager.getLaunchIntentForPackage(pkg)
+        if (intent == null) {
+            // TV boxes enter through the leanback launcher entry.
+            intent = packageManager.getLeanbackLaunchIntentForPackage(pkg)
+        }
+        if (intent == null) return "missing"
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            "launched"
+        } catch (e: Exception) {
+            android.util.Log.w("iTaKApp", "Newsmax launch failed", e)
+            "missing"
+        }
+    }
+
+    // Newsmax's page in the Play Store, offered when the app is
+    // not installed. Falls back to the web page if the store app
+    // itself is somehow absent.
+    private fun openNewsmaxStorePage() {
+        val pkg = "com.fli.android.newsmaxapp"
+        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg"))
+        market.setPackage("com.android.vending")
+        market.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            startActivity(market)
+        } catch (e: Exception) {
+            try {
+                startActivity(
+                    Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://play.google.com/store/apps/details?id=$pkg")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (e2: Exception) {
+                android.util.Log.w("iTaKApp", "Newsmax store page failed", e2)
+            }
+        }
+    }
+
     private fun reportUpdateProgress(downloaded: Long, total: Long) {
         if (updateProgressSink == null) return
         mainHandler.post {
@@ -344,6 +390,16 @@ class MainActivity : FlutterActivity() {
                         } else {
                             result.error("BAD_ARGS", "old and new required", null)
                         }
+                    }
+                    // Newsmax tab on the home screen: open the
+                    // official Newsmax app, or report it missing so
+                    // Dart can offer the download prompt.
+                    "launchNewsmax" -> {
+                        result.success(launchNewsmaxApp())
+                    }
+                    "openNewsmaxStore" -> {
+                        openNewsmaxStorePage()
+                        result.success(true)
                     }
                     // Leaderboard: hand Dart the raw per-player stat
                     // files (files/stats/*.json) as one JSON array.
