@@ -46,9 +46,34 @@ func New(dir string, logger *log.Logger) *Handler {
 //
 //	GET /app/version.json  the manifest, as stored on disk
 //	GET /app/latest.apk    the APK file the manifest names
+//	GET /app/embed.html    the stream embed host page the app's
+//	                       video player loads (PATRIOTS streams)
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/app/version.json", h.manifest)
 	mux.HandleFunc("/app/latest.apk", h.apk)
+	mux.HandleFunc("/app/embed.html", h.embed)
+}
+
+// embed serves the stream player host page stored in the served
+// directory. YouTube's embedded player refuses app-side wrappers
+// (errors 152 and 153, proven on hardware 2026-11-02): the embed
+// must be framed by a page served over HTTPS from a real domain
+// so the iframe request carries a genuine Referer. The page
+// itself ships as a file next to version.json; publishing a new
+// one is a file operation, like every other publish here.
+func (h *Handler) embed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(h.dir, "embed.html"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(raw)
 }
 
 func (h *Handler) readManifest() (Manifest, []byte, error) {
