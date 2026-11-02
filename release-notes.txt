@@ -1,1 +1,1 @@
-New: when you start a game you have played before, the app now asks if you want to continue where you left off or start fresh. Your saved game is offered right at the start, no digging through the pause menu. If you pick start fresh, your old save is kept as a backup copy first. Nothing else changed. Your games, saves, and settings carry over untouched.
+Player profiles are easier to finish now: a middle initial is no longer required. A first name, a last initial, and a home state are all you need. Nothing else changed. Your games, saves, and settings carry over untouched.
