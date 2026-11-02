@@ -531,7 +531,16 @@ func (s *System) syncLines(dt int) {
 	// Each push happens only when its value changed (see
 	// the cache fields); in the steady state this whole
 	// function is three compares per instruction.
-	if v := boolInt8(s.nmiFlag && s.nmitimen&0x80 != 0); v != s.lineNMI {
+	// The NMI push follows the vblank window, NOT the
+	// readable RDNMI flag: on hardware the PPU pulses NMI
+	// every vblank whether or not the game ever reads
+	// $4210. Driving the line from nmiFlag (which only a
+	// $4210 read clears) delivered exactly one NMI to
+	// games that wait on an NMI-set WRAM flag instead of
+	// polling $4210, parking them forever (Harvest Moon,
+	// found 2026-11-02; regression gate
+	// TestNMIFlagWaitPattern).
+	if v := boolInt8(s.vblank && s.nmitimen&0x80 != 0); v != s.lineNMI {
 		s.lineNMI = v
 		s.CPU.SetNMILine(v != 0)
 	}
