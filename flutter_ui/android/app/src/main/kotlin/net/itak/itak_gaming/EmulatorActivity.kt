@@ -70,6 +70,18 @@ class EmulatorActivity : Activity(), TextureListener {
 
     /** Presentation-layer stream stretcher; see AudioCushion. */
     private val audioCushion = AudioCushion()
+
+    /** The rate the core produces audio at, and the rate the track runs at. */
+    private var coreAudioRate = 0
+    private var trackAudioRate = 0
+
+    /** In-app rate converter, present only when the core rate needs one; see AudioResampler. */
+    private var audioResampler: AudioResampler? = null
+
+    /** Audio gate cap, in track frames. The historic figure is 2400
+     * at the core rate; when the track runs at another rate the cap
+     * scales with it, so the gate holds the same amount of time. */
+    private var audioGateCapFrames = 2400L
     private var gameThread: Thread? = null
     private var romPath: String = ""
     private var menuOpen = false
@@ -2164,30 +2176,52 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private fun startAudio() {
-        var rate = 0
-        try { rate = Mobile.sampleRate().toInt() } catch (e: Exception) { Log.w(TAG, "sampleRate failed", e) }
-        if (rate <= 0) rate = 32040
-        Log.i(TAG, "audio rate = $rate")
-        val minBuf = AudioTrack.getMinBufferSize(
-            rate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT
+        var coreRate = 0
+        try { coreRate = Mobile.sampleRate().toInt() } catch (e: Exception) { Log.w(TAG, "sampleRate failed", e) }
+        if (coreRate <= 0) {
+            // No rate, no track. Before 1.85 this silently fell
+            // back to a made-up 32,040 Hz, which for most systems
+            // would have built a track at a wildly wrong rate and
+            // played everything at the wrong speed and pitch. Fail
+            // loudly instead: the game still plays, the log and the
+            // toast say exactly what is wrong.
+            Log.e(TAG, "audio unavailable: the core reported no sample rate")
+            runOnUiThread {
+                Toast.makeText(this, "Sound is unavailable for this game.", Toast.LENGTH_LONG).show()
+            }
+            audioTrack = null
+            audioResampler = null
+            return
+        }
+        coreAudioRate = coreRate
+        Log.i(TAG, "audio rate = $coreRate")
+
+        // Rate plan. Most cores declare 44,100 Hz, a rate the
+        // platform converts to the device rate on its documented
+        // high-quality path; their tracks keep opening at the core
+        // rate, exactly as before. The cores that declare a
+        // non-standard rate (SNES 32,000, GBA 32,768) used to hand
+        // that rate to the stick's mixer and inherit whatever
+        // converter quality it chose. Those now convert inside the
+        // app (AudioResampler) and the track opens at the device's
+        // own output rate.
+        val nativeRate = EmuAudioOutput.deviceOutputRate(this)
+        val useResampler = coreRate != nativeRate && coreRate != 44100
+        trackAudioRate = if (useResampler) nativeRate else coreRate
+        audioGateCapFrames =
+            if (useResampler) 2400L * trackAudioRate / coreRate else 2400L
+        audioResampler = if (useResampler) AudioResampler(coreRate, trackAudioRate) else null
+        if (useResampler) {
+            // Build the shared kernel table off the UI thread; the
+            // first conversion would otherwise pay for it.
+            thread(isDaemon = true) { AudioResampler.table }
+        }
+        Log.i(
+            TAG,
+            "audio path: core=$coreRate track=$trackAudioRate " +
+                "resampler=${if (useResampler) "in-app" else "off"}"
         )
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(rate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .build()
-            )
-            .setBufferSizeInBytes(maxOf(minBuf * 2, 16384))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        audioTrack = EmuAudioOutput.buildTrack(trackAudioRate)
         audioCushion.reset()
         audioTrack?.play()
     }
@@ -2329,6 +2363,14 @@ class EmulatorActivity : Activity(), TextureListener {
                     continue
                 }
                 val chunk = Mobile.drainAudio()
+                if (audioTrack == null) {
+                    // No track (the core reported no rate at audio
+                    // start): the drain above still matters, it
+                    // keeps the core side from backing up, but the
+                    // audio itself has nowhere to go.
+                    Thread.sleep(3)
+                    continue
+                }
                 if (chunk != null && chunk.isNotEmpty()) {
                     audioCushion.feed(chunk)
                 }
@@ -2338,9 +2380,24 @@ class EmulatorActivity : Activity(), TextureListener {
                 } else {
                     writtenFrames
                 }
-                audioCushion.update(writtenFrames - playedNow, System.nanoTime())
+                // The cushion's constants live in core-rate frames;
+                // when the track runs at the device rate, scale the
+                // track lead back into core frames before the
+                // controller sees it.
+                val leadTrack = writtenFrames - playedNow
+                val leadForCushion = if (audioResampler != null && trackAudioRate > 0) {
+                    leadTrack * coreAudioRate / trackAudioRate
+                } else {
+                    leadTrack
+                }
+                audioCushion.update(leadForCushion, System.nanoTime())
                 if (pending.isEmpty()) {
-                    pending = audioCushion.convert()
+                    var converted = audioCushion.convert()
+                    val resampler = audioResampler
+                    if (resampler != null && converted.isNotEmpty()) {
+                        converted = resampler.convert(converted)
+                    }
+                    pending = converted
                 }
                 if (pending.isNotEmpty()) {
                     try {
@@ -2488,7 +2545,7 @@ class EmulatorActivity : Activity(), TextureListener {
                 var guard = 0
                 while (running && !paused && guard < 12) {
                     val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-                    if (writtenFrames - played <= 2400) break
+                    if (writtenFrames - played <= audioGateCapFrames) break
                     Thread.sleep(1)
                     guard++
                 }
