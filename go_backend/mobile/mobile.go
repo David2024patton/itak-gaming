@@ -162,10 +162,14 @@ func FPS() float32 {
 	return float32(emu.FPS())
 }
 
-// SampleRate returns the core audio sample rate in Hz.
+// SampleRate returns the core audio sample rate in Hz, or 0 when
+// no core is loaded. It used to return a made-up 32040 with no
+// core, which the app trusted and built a track from; a missing
+// rate is an error the caller must surface, not a number to play
+// at the wrong speed.
 func SampleRate() int {
 	if emu == nil {
-		return 32040
+		return 0
 	}
 	return int(emu.SampleRate())
 }
