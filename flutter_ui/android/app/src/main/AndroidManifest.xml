@@ -53,6 +53,15 @@
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:screenOrientation="landscape" />
+        <!-- PATRIOTS livestream player: YouTube's embedded
+             player in a full-screen WebView. -->
+        <activity
+            android:name=".StreamPlayerActivity"
+            android:label="Livestream"
+            android:exported="false"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:screenOrientation="landscape" />
         <!-- Shares the downloaded update APK with the system
              installer (cache dir only). -->
         <provider
