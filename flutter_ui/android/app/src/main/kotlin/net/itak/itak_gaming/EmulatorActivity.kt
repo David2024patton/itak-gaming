@@ -555,6 +555,9 @@ class EmulatorActivity : Activity(), TextureListener {
                 }
             }
         }
+        // If this player already has a saved game for this game,
+        // offer the pickup right away (see maybeOfferResume).
+        maybeOfferResume()
         // Cheats for this game (bundled list + the codes left on last
         // time). Applied before the first frame runs. Never in an
         // online session or while watching: every side must run the
@@ -2440,8 +2443,11 @@ class EmulatorActivity : Activity(), TextureListener {
             // progress survives even if nobody remembers to save. Runs
             // here on the game thread, between frames, never racing
             // the core. Never while watching: the reconstructed game
-            // is not this player's to save.
+            // is not this player's to save. Never while the launch
+            // resume prompt is waiting, either: an unanswered prompt
+            // must not let this timer overwrite the save it offers.
             if (autoSaveEnabled && !netplay && !watching &&
+                !resumeChoicePending &&
                 System.currentTimeMillis() - lastAutoSaveMs > 60_000) {
                 lastAutoSaveMs = System.currentTimeMillis()
                 try {
@@ -2521,6 +2527,8 @@ class EmulatorActivity : Activity(), TextureListener {
     private var swapAB = false
     private var autoSaveEnabled = true
     @Volatile private var lastAutoSaveMs = System.currentTimeMillis()
+    // True while the launch resume prompt is on screen unanswered.
+    @Volatile private var resumeChoicePending = false
     private var statsArmed = false
     private var sessionStartMs = 0L
     private var statsPlayer = ""
@@ -3012,6 +3020,57 @@ class EmulatorActivity : Activity(), TextureListener {
         } catch (e: Exception) {
             Log.e(TAG, "load failed", e)
             Toast.makeText(this, "Load failed", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Launch resume prompt: the saves this app writes are whole
+    // game states, so a game's own save slots (Zelda's three
+    // files) start empty on every fresh boot, and the saved state
+    // used to be reachable only through pause, then Load Game.
+    // Most players never find it there. When a saved game exists
+    // for this player and game, ask up front instead: Continue
+    // loads the same file Load Game loads; Start fresh first
+    // keeps a one-off backup copy of it, so the new session
+    // cannot silently destroy the only copy.
+    // ---------------------------------------------------------------
+    private fun maybeOfferResume() {
+        if (netplay || watching) return
+        val primary = saveFile()
+        val f = if (primary.exists() && primary.length() > 0) primary
+            else legacySaveFile().takeIf { it.exists() && it.length() > 0 }
+            ?: return
+        resumeChoicePending = true
+        Log.i(TAG, "resume prompt: saved game found for ${currentPlayer()} (${f.length()} bytes)")
+        AlertDialog.Builder(this, R.style.ItakDialogTheme)
+            .setTitle("Continue where you left off?")
+            .setMessage(
+                "You have a saved game. Continue picks up right " +
+                    "where you left off. Start fresh begins from " +
+                    "the beginning of the game."
+            )
+            .setPositiveButton("Continue") { _, _ ->
+                resumeChoicePending = false
+                Log.i(TAG, "resume prompt: continue chosen")
+                doLoad()
+            }
+            .setNegativeButton("Start fresh") { _, _ ->
+                keepSaveBackup(f)
+                resumeChoicePending = false
+                Log.i(TAG, "resume prompt: start fresh chosen")
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** One-off safety copy next to a save the player chose to leave behind. */
+    private fun keepSaveBackup(f: File) {
+        try {
+            val bak = File(f.parentFile, f.name + ".bak")
+            f.copyTo(bak, overwrite = true)
+            Log.i(TAG, "resume prompt: previous save kept at ${bak.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "resume prompt: could not keep previous save", e)
         }
     }
 
