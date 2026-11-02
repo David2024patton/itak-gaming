@@ -1,1 +1,1 @@
-Fixes PATRIOTS playback. The livestreams opened to a YouTube "video unavailable" error; the player now loads the stream the way a normal browser tab does, and the channels play. Nothing else changed. Your games, saves, and settings carry over untouched.
+Fixes PATRIOTS playback for real this time. YouTube only allows its player inside a page served from a real website, so the streams now load through our own player page. The channels play. Nothing else changed. Your games, saves, and settings carry over untouched.
