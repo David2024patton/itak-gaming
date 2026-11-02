@@ -365,6 +365,29 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     }
+                    // PATRIOTS screen: play one channel's YouTube
+                    // livestream in the native stream player. The
+                    // video id is the live broadcast Dart pulled
+                    // from the channel's live page; when it is
+                    // absent the player uses the channel's
+                    // permanent live embed instead.
+                    "playStream" -> {
+                        val intent = android.content.Intent(
+                            this,
+                            StreamPlayerActivity::class.java
+                        )
+                        intent.putExtra(
+                            "videoId", call.argument<String>("videoId")
+                        )
+                        intent.putExtra(
+                            "channelId", call.argument<String>("channelId")
+                        )
+                        intent.putExtra(
+                            "name", call.argument<String>("name")
+                        )
+                        startActivity(intent)
+                        result.success(true)
+                    }
                     // A player rename moves their saves folder and
                     // stats file so nothing is lost.
                     "renamePlayerFiles" -> {
