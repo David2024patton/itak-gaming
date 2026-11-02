@@ -109,9 +109,12 @@ class AudioCushion {
         // of pitch, inaudible) for RELEASE_DWELL_NS, so band-edge
         // noise cannot immediately re-engage it. The cap lifts
         // early if the lead falls to DWELL_EMERGENCY_LEAD, so a
-        // genuine deficit still engages at once. Validated against
-        // the host simulation (file-select trace still starves
-        // zero; chatter trace engagements collapse) before shipping.
+        // genuine deficit still engages at once. Host simulation
+        // (completed 2026-11-02, after the 1.85 ship; DWELL.md in
+        // the cushion rig): the file-select trace is numerically
+        // identical with the dwell on, zero starved, and a
+        // retrigger inside the window is capped at 1.001, which
+        // halves the engagement rate on periodic chatter.
         private const val RELEASE_DWELL_NS = 250_000_000L
         private const val DWELL_STRETCH_CAP = 1.001
         private const val DWELL_EMERGENCY_LEAD = 1200.0 // LEAD_TARGET - 2 * LEAD_BAND
