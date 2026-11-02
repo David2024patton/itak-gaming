@@ -101,8 +101,10 @@ class PlayerIdentity {
   final String region; // state code or free text, may be empty
   const PlayerIdentity(this.middle, this.last, this.region);
 
-  bool get complete =>
-      middle.isNotEmpty && last.isNotEmpty && region.isNotEmpty;
+  // Complete means the boards can tell this player apart: a last
+  // initial and a home state. The middle initial is optional
+  // (David, 2026-11-02).
+  bool get complete => last.isNotEmpty && region.isNotEmpty;
 
   String displayName(String name) {
     final parts = <String>[name];
@@ -1047,9 +1049,11 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   }
 
   // The player form: first name, middle initial, last initial, and
-  // home state or region. Every field is required (David,
-  // 2026-10-12) so the leaderboards can tell people apart. Returns
-  // the cleaned values, or null when cancelled.
+  // home state or region. First name, last initial, and home state
+  // are required so the leaderboards can tell people apart; the
+  // middle initial is optional (David, 2026-11-02, relaxing the
+  // every-field rule of 2026-10-12). Returns the cleaned values,
+  // or null when cancelled.
   Future<({String name, PlayerIdentity id})?> _playerForm({
     String? existing,
   }) async {
@@ -1159,9 +1163,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Every player needs a first name, a middle and last '
-                    'initial, and a home state. That is how the '
-                    'leaderboards tell people apart.',
+                    'Every player needs a first name, a last initial, '
+                    'and a home state. A middle initial is optional. '
+                    'That is how the leaderboards tell people apart.',
                     style: TextStyle(fontSize: 15, color: Colors.white70),
                   ),
                   field('First name', name, editName, auto: true),
@@ -1192,7 +1196,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                   if (!valid) {
                     setLocal(() => error = taken
                         ? 'That first name is already taken on this box.'
-                        : 'Fill in every field to save.');
+                        : 'Fill in your first name, last initial, and '
+                            'state to save.');
                     return;
                   }
                   Navigator.pop(ctx, (name: name.trim(), id: id));
