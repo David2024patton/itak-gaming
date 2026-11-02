@@ -589,7 +589,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     with WidgetsBindingObserver {
   static const _channel = MethodChannel('net.itak/emu');
   int _systemIndex = 1; // SNES default
-  int _tabIndex = 0; // tab row: 0 Home, 1 Leaderboard, 2 Online, 3 Settings
+  int _tabIndex = 0; // tab row: 0 Home, 1 Leaderboard, 2 Online, 3 Settings, 4 Newsmax
   int _zone = _zoneSystems;
   List<String> _players = [];
   String _currentPlayer = '';
@@ -1849,7 +1849,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     } else if (key == LogicalKeyboardKey.arrowLeft) {
       setState(() {
         if (_zone == _zoneTabs) {
-          _tabIndex = (_tabIndex + 3) % 4;
+          _tabIndex = (_tabIndex + 4) % 5;
         } else if (_zone == _zoneSystems && _systemIndex > 0) {
           _systemIndex -= 1;
           _scrollSystemsTo(_systemIndex);
@@ -1859,7 +1859,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     } else if (key == LogicalKeyboardKey.arrowRight) {
       setState(() {
         if (_zone == _zoneTabs) {
-          _tabIndex = (_tabIndex + 1) % 4;
+          _tabIndex = (_tabIndex + 1) % 5;
         } else if (_zone == _zoneSystems &&
             _systemIndex < kSystems.length - 1) {
           _systemIndex += 1;
@@ -1917,6 +1917,54 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     ).then((_) => _focusNode.requestFocus());
   }
 
+  // Newsmax tab: hand off to the official Newsmax app (David,
+  // 2026-11-02, for Terry). When the app is not on this box, offer
+  // its Play Store page instead of stranding the user.
+  Future<void> _openNewsmax() async {
+    var result = 'missing';
+    try {
+      result =
+          await _channel.invokeMethod<String>('launchNewsmax') ?? 'missing';
+    } catch (_) {
+      result = 'missing';
+    }
+    if (result == 'launched' || !mounted) {
+      _focusNode.requestFocus();
+      return;
+    }
+    final download = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: const Text('Newsmax is not installed',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This box does not have the Newsmax app yet. Open its '
+          'page in the Play Store to download it? The app is free.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Not now'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Download'),
+          ),
+        ],
+      ),
+    );
+    if (download == true) {
+      try {
+        await _channel.invokeMethod('openNewsmaxStore');
+      } catch (_) {
+        // No store to send them to; the prompt already explained.
+      }
+    }
+    _focusNode.requestFocus();
+  }
+
   // What selecting a top tab does: Home drops focus into the
   // systems grid; the rest open their screens.
   void _activateTab(int index) {
@@ -1932,6 +1980,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
         break;
       case 3:
         _openSettings();
+        break;
+      case 4:
+        _openNewsmax();
         break;
     }
   }
@@ -2275,7 +2326,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
               Column(
                 children: [
                   // Tab row at the very top: Home, Leaderboard,
-                  // Online, Settings.
+                  // Online, Settings, Newsmax.
                   Padding(
                     padding: const EdgeInsets.fromLTRB(40, 12, 40, 0),
                     child: Row(
@@ -2287,6 +2338,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                         _tabItem(2, Icons.public, 'Online'),
                         const SizedBox(width: 6),
                         _tabItem(3, Icons.settings, 'Settings'),
+                        const SizedBox(width: 6),
+                        _tabItem(4, Icons.live_tv, 'Newsmax'),
                       ],
                     ),
                   ),
