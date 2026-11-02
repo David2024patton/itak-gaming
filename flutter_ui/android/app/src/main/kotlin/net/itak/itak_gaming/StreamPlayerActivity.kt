@@ -37,21 +37,20 @@ class StreamPlayerActivity : Activity() {
         settings.mediaPlaybackRequiresUserGesture = false
         settings.loadWithOverviewMode = true
         settings.useWideViewPort = true
+        // YouTube refuses embedded playback to the stock WebView
+        // user agent and to pages with no real referrer: the
+        // first build's iframe wrapper (loadDataWithBaseURL) got
+        // error 152 on every live channel on the Missouri stick
+        // (proven 2026-11-02). What works is loading the embed
+        // URL as the page itself, with a desktop Chrome user
+        // agent, so the player sees an ordinary browser tab.
+        settings.userAgentString =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/130.0.0.0 Safari/537.36"
         wv.webViewClient = WebViewClient()
         wv.webChromeClient = WebChromeClient()
-        // The iframe wrapper with a youtube.com base URL is the
-        // standard way to embed: loading the bare embed URL in a
-        // WebView gets refused for many streams.
-        val html = "<!DOCTYPE html><html><head>" +
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
-            "<style>html,body{margin:0;padding:0;background:#000;height:100%}" +
-            "iframe{width:100%;height:100%;border:0}</style></head>" +
-            "<body><iframe src=\"$embed?autoplay=1&rel=0\" " +
-            "allow=\"autoplay; encrypted-media; fullscreen\" allowfullscreen>" +
-            "</iframe></body></html>"
-        wv.loadDataWithBaseURL(
-            "https://www.youtube.com", html, "text/html", "utf-8", null
-        )
+        wv.loadUrl("$embed?autoplay=1&playsinline=1&rel=0")
         setContentView(wv)
     }
 
