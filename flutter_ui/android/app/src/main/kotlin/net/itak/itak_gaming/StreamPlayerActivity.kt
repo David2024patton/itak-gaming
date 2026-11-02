@@ -24,10 +24,20 @@ class StreamPlayerActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val videoId = intent.getStringExtra("videoId")
         val channelId = intent.getStringExtra("channelId")
-        val embed = if (!videoId.isNullOrEmpty()) {
-            "https://www.youtube.com/embed/$videoId"
+        // YouTube's embed player only plays when the page framing
+        // it is served over HTTPS from a real domain, so the
+        // iframe request carries a genuine Referer. Proven on the
+        // Missouri stick (2026-11-02): an in-app iframe wrapper
+        // (loadDataWithBaseURL) got error 152 on every channel,
+        // and loading the bare embed URL with a spoofed desktop
+        // user agent got error 153. The player therefore loads
+        // our own tiny host page on the update service, which
+        // frames the channel's embed; the WebView itself stays
+        // completely stock.
+        val page = if (!videoId.isNullOrEmpty()) {
+            "https://arcade.itak.live/app/embed.html?v=$videoId"
         } else {
-            "https://www.youtube.com/embed/live_stream?channel=$channelId"
+            "https://arcade.itak.live/app/embed.html?c=$channelId"
         }
         val wv = WebView(this)
         webView = wv
@@ -37,20 +47,9 @@ class StreamPlayerActivity : Activity() {
         settings.mediaPlaybackRequiresUserGesture = false
         settings.loadWithOverviewMode = true
         settings.useWideViewPort = true
-        // YouTube refuses embedded playback to the stock WebView
-        // user agent and to pages with no real referrer: the
-        // first build's iframe wrapper (loadDataWithBaseURL) got
-        // error 152 on every live channel on the Missouri stick
-        // (proven 2026-11-02). What works is loading the embed
-        // URL as the page itself, with a desktop Chrome user
-        // agent, so the player sees an ordinary browser tab.
-        settings.userAgentString =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/130.0.0.0 Safari/537.36"
         wv.webViewClient = WebViewClient()
         wv.webChromeClient = WebChromeClient()
-        wv.loadUrl("$embed?autoplay=1&playsinline=1&rel=0")
+        wv.loadUrl(page)
         setContentView(wv)
     }
 
