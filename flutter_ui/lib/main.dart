@@ -99,18 +99,23 @@ class PlayerIdentity {
   final String middle; // one letter, may be empty
   final String last; // one letter, may be empty
   final String region; // state code or free text, may be empty
-  const PlayerIdentity(this.middle, this.last, this.region);
+  final String city; // free text, may be empty
+  const PlayerIdentity(this.middle, this.last, this.region, this.city);
 
-  // Complete means the boards can tell this player apart: a last
-  // initial and a home state. The middle initial is optional
-  // (David, 2026-11-02).
-  bool get complete => last.isNotEmpty && region.isNotEmpty;
+  // A first name is a complete identity now (David, 2026-11-02:
+  // keep it simple and small). City, state, and the initials are
+  // optional extras; when present they help the leaderboards
+  // tell players with the same first name apart.
+  bool get complete => true;
 
   String displayName(String name) {
     final parts = <String>[name];
     if (middle.isNotEmpty) parts.add('$middle.');
     if (last.isNotEmpty) parts.add('$last.');
-    return parts.join(' ');
+    var out = parts.join(' ');
+    final place = [city, region].where((s) => s.isNotEmpty).join(', ');
+    if (place.isNotEmpty) out = '$out, $place';
+    return out;
   }
 }
 
@@ -133,6 +138,7 @@ class PlayerInfoStore {
               (m['m'] ?? '').toString(),
               (m['l'] ?? '').toString(),
               (m['st'] ?? '').toString(),
+              (m['c'] ?? '').toString(),
             ),
           );
         });
@@ -143,7 +149,8 @@ class PlayerInfoStore {
 
   static Future<void> _persist() async {
     final map = _cache.map(
-      (k, v) => MapEntry(k, {'m': v.middle, 'l': v.last, 'st': v.region}),
+      (k, v) => MapEntry(k,
+          {'m': v.middle, 'l': v.last, 'st': v.region, 'c': v.city}),
     );
     await Prefs.set('player_info', jsonEncode(map));
   }
@@ -1048,12 +1055,13 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     _refocusHome();
   }
 
-  // The player form: first name, middle initial, last initial, and
-  // home state or region. First name, last initial, and home state
-  // are required so the leaderboards can tell people apart; the
-  // middle initial is optional (David, 2026-11-02, relaxing the
-  // every-field rule of 2026-10-12). Returns the cleaned values,
-  // or null when cancelled.
+  // The player form: first name, city, home state or region, and
+  // the middle and last initials. Only the first name is required
+  // (David, 2026-11-02: keep it simple and small; this supersedes
+  // the every-field rule of 2026-10-12 and the last-initial rule
+  // that briefly replaced it). Everything else is an optional
+  // extra that helps the leaderboards tell players apart.
+  // Returns the cleaned values, or null when cancelled.
   Future<({String name, PlayerIdentity id})?> _playerForm({
     String? existing,
   }) async {
@@ -1061,8 +1069,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     var name = existing ?? '';
     var id = existing != null
         ? (PlayerInfoStore.of(existing) ??
-            const PlayerIdentity('', '', ''))
-        : const PlayerIdentity('', '', '');
+            const PlayerIdentity('', '', '', ''))
+        : const PlayerIdentity('', '', '', '');
     String? error;
     if (!mounted) return null;
     final result = await showDialog<({String name, PlayerIdentity id})>(
@@ -1091,15 +1099,27 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
             final one = letters.isEmpty ? '' : letters[0];
             setLocal(() {
               id = middle
-                  ? PlayerIdentity(one, id.last, id.region)
-                  : PlayerIdentity(id.middle, one, id.region);
+                  ? PlayerIdentity(one, id.last, id.region, id.city)
+                  : PlayerIdentity(id.middle, one, id.region, id.city);
             });
           }
 
           Future<void> editRegion() async {
             final picked = await _pickRegion(id.region);
             if (picked == null) return;
-            setLocal(() => id = PlayerIdentity(id.middle, id.last, picked));
+            setLocal(() =>
+                id = PlayerIdentity(id.middle, id.last, picked, id.city));
+          }
+
+          Future<void> editCity() async {
+            final v = await showTvKeyboard(
+              ctx,
+              title: 'City (optional)',
+              initial: id.city,
+            );
+            if (v == null) return;
+            setLocal(() => id = PlayerIdentity(id.middle, id.last,
+                id.region, v.trim().replaceAll('\n', ' ')));
           }
 
           Widget field(
@@ -1152,7 +1172,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
 
           final taken =
               _players.any((p) => p != existing && p == name.trim());
-          final valid = name.trim().isNotEmpty && id.complete && !taken;
+          final valid = name.trim().isNotEmpty && !taken;
           return AlertDialog(
             backgroundColor: _dialogBg,
             title: Text(existing == null ? 'Add a player' : 'Edit player'),
@@ -1163,17 +1183,19 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Every player needs a first name, a last initial, '
-                    'and a home state. A middle initial is optional. '
-                    'That is how the leaderboards tell people apart.',
+                    'A first name is all a player needs. Add a city '
+                    'and state if you like: they help tell players '
+                    'with the same name apart on the leaderboards. '
+                    'Initials are optional too.',
                     style: TextStyle(fontSize: 15, color: Colors.white70),
                   ),
                   field('First name', name, editName, auto: true),
+                  field('City', id.city, editCity),
+                  field('State / region', id.region, editRegion),
                   field('Middle initial', id.middle,
                       () => editInitial('Middle initial', true)),
                   field('Last initial', id.last,
                       () => editInitial('Last initial', false)),
-                  field('State / region', id.region, editRegion),
                   if (error != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
@@ -1196,8 +1218,7 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                   if (!valid) {
                     setLocal(() => error = taken
                         ? 'That first name is already taken on this box.'
-                        : 'Fill in your first name, last initial, and '
-                            'state to save.');
+                        : 'Put in a first name to save.');
                     return;
                   }
                   Navigator.pop(ctx, (name: name.trim(), id: id));
