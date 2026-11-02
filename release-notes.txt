@@ -1,1 +1,1 @@
-Player profiles are easier to finish now: a middle initial is no longer required. A first name, a last initial, and a home state are all you need. Nothing else changed. Your games, saves, and settings carry over untouched.
+Harvest Moon works now. A timing bug in the SNES core left it stuck on a black screen, even though the game was running. That is fixed, along with any other game that waits on the screen refresh the same way. Nothing else changed. Your games, saves, and settings carry over untouched.
