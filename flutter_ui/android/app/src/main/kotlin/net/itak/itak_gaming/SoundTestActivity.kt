@@ -34,8 +34,11 @@ import kotlin.math.sin
 /**
  * Sound test screen. Proves audio paths with moving level bars
  * instead of ears: play a generated jingle and watch the speaker
- * bar follow it, then run the mic test and watch the mic bar
- * follow your voice. If a bar moves, that path works on this box.
+ * bar follow it, play the game sound path test (bright tones made
+ * at the SNES rate and converted inside the app, the exact path
+ * games take since 1.85), then run the mic test and watch the mic
+ * bar follow your voice. If a bar moves, that path works on this
+ * box.
  *
  * The mic half doubles as the voice chat hardware checker: any
  * microphone the box can hear (a USB mic, or a Bluetooth mic if
@@ -58,6 +61,9 @@ class SoundTestActivity : Activity() {
     private lateinit var peakLabel: TextView
     private lateinit var playButton: Button
     private lateinit var micButton: Button
+    private lateinit var gameButton: Button
+    private lateinit var gameBar: LevelBar
+    private lateinit var gameStatus: TextView
 
     // Speaker state. The play thread owns its AudioTrack; other
     // threads only set flags and read the envelope.
@@ -65,6 +71,12 @@ class SoundTestActivity : Activity() {
     @Volatile private var playAbort = false
     @Volatile private var speakerEnv = 0f
     @Volatile private var playTrack: AudioTrack? = null
+
+    // Game path test state: shares the playing/playAbort/playTrack
+    // bookkeeping with the jingle (only one speaker test runs at a
+    // time), with its own bar envelope.
+    @Volatile private var gamePlaying = false
+    @Volatile private var gameEnv = 0f
 
     // Mic state. The record thread releases its AudioRecord when
     // it exits; stopMic only flags and stops.
@@ -80,7 +92,8 @@ class SoundTestActivity : Activity() {
     private val meterTicker = object : Runnable {
         override fun run() {
             if (uiBuilt) {
-                speakerBar.tick(if (playing) speakerEnv else 0f)
+                speakerBar.tick(if (playing && !gamePlaying) speakerEnv else 0f)
+                gameBar.tick(if (gamePlaying) gameEnv else 0f)
                 micBar.tick(if (micRunning) micEnv else 0f)
                 if (micRunning) peakLabel.text = "Peak ${micPeakPct}%"
             }
@@ -249,6 +262,43 @@ class SoundTestActivity : Activity() {
         )
         root.addView(spacer(24))
 
+        // Game sound path card: the same conversion path SNES and
+        // GBA games take, so a sick path is audible here, not only
+        // in a game.
+        val gameCard = makeCard()
+        gameCard.addView(makeText("GAME SOUND PATH", 20f, bold = true))
+        gameCard.addView(spacer(14))
+        gameButton = makeButton("Play game path test")
+        gameButton.setOnClickListener { playGamePath() }
+        gameCard.addView(
+            gameButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(56)
+            )
+        )
+        gameCard.addView(spacer(16))
+        gameBar = LevelBar(this)
+        gameCard.addView(
+            gameBar,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
+        )
+        gameCard.addView(spacer(12))
+        gameStatus = makeText(
+            "Bright tones made at the SNES sound rate, converted inside " +
+                "the app the same way games are. Clean tones, no scratch " +
+                "or buzz, mean the game sound path is healthy.",
+            17f, dim = true
+        )
+        gameCard.addView(gameStatus)
+        root.addView(
+            gameCard,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        root.addView(spacer(24))
+
         // Mic card.
         val micCard = makeCard()
         micCard.addView(makeText("MICROPHONE", 20f, bold = true))
@@ -291,9 +341,11 @@ class SoundTestActivity : Activity() {
         root.addView(spacer(24))
         root.addView(makeText("Press BACK to leave this screen.", 15f, dim = true))
 
-        // Simple vertical D-pad flow: play button, then mic button.
-        playButton.nextFocusDownId = micButton.id
-        micButton.nextFocusUpId = playButton.id
+        // Simple vertical D-pad flow: play, game path, then mic.
+        playButton.nextFocusDownId = gameButton.id
+        gameButton.nextFocusUpId = playButton.id
+        gameButton.nextFocusDownId = micButton.id
+        micButton.nextFocusUpId = gameButton.id
 
         setContentView(scroll)
         uiBuilt = true
@@ -368,28 +420,8 @@ class SoundTestActivity : Activity() {
             var outcome = "Done. If the bar moved, this box is putting out sound."
             var track: AudioTrack? = null
             try {
-                val rate = 44100
-                val minBuf = AudioTrack.getMinBufferSize(
-                    rate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT
-                )
-                if (minBuf <= 0) throw IllegalStateException("no stereo output on this box")
-                track = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_GAME)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(rate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(maxOf(minBuf * 2, 16384))
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
+                // The shared builder, same as the emulator's.
+                track = EmuAudioOutput.buildTrack(44100)
                 if (track.state != AudioTrack.STATE_INITIALIZED) {
                     throw IllegalStateException("audio output did not start")
                 }
@@ -464,6 +496,149 @@ class SoundTestActivity : Activity() {
         try {
             playTrack?.stop()
         } catch (e: Exception) {
+        }
+    }
+
+    // Game sound path test: the jingle's three notes as bright
+    // band-limited square tones, generated at 32,000 Hz (the SNES
+    // rate) and converted to this box's output rate by the same
+    // AudioResampler the emulator uses, then played on a track
+    // built by the same shared builder. Rich harmonics are the
+    // point: a conversion that adds scratch or buzz is obvious on
+    // square tones and invisible on the soft jingle above.
+
+    private val gameNoteFrames = 19200 // 0.60 s at 32,000 Hz
+    private val gameGapFrames = 2560 // 0.08 s at 32,000 Hz
+
+    private fun gameToneFrames(): Int =
+        noteFreqs.size * gameNoteFrames + (noteFreqs.size - 1) * gameGapFrames
+
+    // One mono sample of the game path signal at an absolute frame
+    // index. Odd harmonics to the 15th, Gibbs-safe peak, and the
+    // same attack and release discipline as the jingle.
+    private fun gameSample(frame: Int): Double {
+        var idx = frame
+        for (n in noteFreqs.indices) {
+            if (idx < gameNoteFrames) {
+                val t = idx / 32000.0
+                var s = 0.0
+                var k = 1
+                while (k <= 15) {
+                    s += sin(2.0 * PI * noteFreqs[n] * k * t) / k
+                    k += 2
+                }
+                s /= 2.03
+                var env = 1.0
+                val attack = 640.0
+                val release = 4800.0
+                if (idx < attack) env = idx / attack
+                val left = gameNoteFrames - idx
+                if (left < release) {
+                    val r = left / release
+                    if (r < env) env = r
+                }
+                return 0.5 * env * s
+            }
+            idx -= gameNoteFrames
+            if (n < noteFreqs.size - 1) {
+                if (idx < gameGapFrames) return 0.0
+                idx -= gameGapFrames
+            }
+        }
+        return 0.0
+    }
+
+    private fun playGamePath() {
+        if (playing) return
+        playing = true
+        gamePlaying = true
+        playAbort = false
+        gameEnv = 0f
+        gameStatus.text = "Playing the game sound path now."
+        thread(name = "soundtest-gamepath", isDaemon = true) {
+            var outcome = "Done. Clean tones mean the game sound path is healthy on this box."
+            var track: AudioTrack? = null
+            try {
+                val nativeRate = EmuAudioOutput.deviceOutputRate(this)
+                track = EmuAudioOutput.buildTrack(nativeRate)
+                if (track.state != AudioTrack.STATE_INITIALIZED) {
+                    throw IllegalStateException("audio output did not start")
+                }
+                playTrack = track
+                track.play()
+                val resampler = AudioResampler(32000, nativeRate)
+                val totalFrames = gameToneFrames()
+                val chunkFrames = 533 // about one video frame of audio
+                var frame = 0
+                var writtenTotal = 0L
+                while (frame < totalFrames && !playAbort) {
+                    val n = minOf(chunkFrames, totalFrames - frame)
+                    val pcm = ByteArray(n * 4)
+                    for (i in 0 until n) {
+                        val v = (gameSample(frame + i) * 32767.0).toInt()
+                            .coerceIn(-32767, 32767)
+                        val o = i * 4
+                        pcm[o] = (v and 0xFF).toByte()
+                        pcm[o + 1] = ((v shr 8) and 0xFF).toByte()
+                        pcm[o + 2] = (v and 0xFF).toByte()
+                        pcm[o + 3] = ((v shr 8) and 0xFF).toByte()
+                    }
+                    val out = resampler.convert(pcm)
+                    var off = 0
+                    var peak = 0
+                    while (off < out.size && !playAbort) {
+                        val w = track.write(out, off, out.size - off)
+                        if (w < 0) throw IllegalStateException("audio write failed")
+                        off += w
+                    }
+                    writtenTotal += out.size / 4
+                    // The bar follows the converted signal, the
+                    // one the box actually plays.
+                    var j = 0
+                    while (j + 1 < out.size) {
+                        val v = (out[j + 1].toInt() shl 8) or (out[j].toInt() and 0xFF)
+                        val a = abs(v)
+                        if (a > peak) peak = a
+                        j += 4
+                    }
+                    if (!playAbort && out.isNotEmpty()) gameEnv = peak / 32767f
+                    frame += n
+                }
+                // Writes return once data is buffered, not played;
+                // wait for the head to reach the end so the tail is
+                // heard and metered too.
+                val deadline = System.currentTimeMillis() + 2500
+                while (!playAbort && System.currentTimeMillis() < deadline) {
+                    val head = try {
+                        track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                    } catch (e: Exception) {
+                        writtenTotal
+                    }
+                    if (head >= writtenTotal) break
+                    gameEnv *= 0.9f
+                    Thread.sleep(40)
+                }
+                if (playAbort) outcome = "Stopped."
+            } catch (e: Exception) {
+                Log.w(TAG, "game path test failed", e)
+                outcome = "Game path error: " + (e.message ?: "unknown problem")
+            } finally {
+                try {
+                    track?.stop()
+                } catch (e: Exception) {
+                }
+                track?.release()
+                if (playTrack === track) playTrack = null
+                playing = false
+                gamePlaying = false
+                gameEnv = 0f
+                val msg = outcome
+                uiHandler.post {
+                    if (uiBuilt) {
+                        gameStatus.text = msg
+                    }
+                }
+            }
         }
     }
 
