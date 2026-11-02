@@ -80,5 +80,10 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- The home screen's Newsmax tab opens the official
+             Newsmax app. Package visibility rules require naming
+             the package here before this app can check whether it
+             is installed or ask the system to launch it. -->
+        <package android:name="com.fli.android.newsmaxapp" />
     </queries>
 </manifest>
