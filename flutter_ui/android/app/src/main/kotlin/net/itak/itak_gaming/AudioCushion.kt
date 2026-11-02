@@ -100,6 +100,22 @@ class AudioCushion {
         private const val ENGAGE_AT = 1.002
         private const val RELEASE_AT = 1.0005
 
+        // Release dwell (1.85). A real session on the Missouri
+        // stick (2026-11-02) showed the controller engaging and
+        // releasing about a dozen times in 14 seconds while the
+        // lead hovered at the band edge: each cycle is a small
+        // pitch wobble. After a release, the stretch is capped at
+        // DWELL_STRETCH_CAP (a tenth of a percent, about 2 cents
+        // of pitch, inaudible) for RELEASE_DWELL_NS, so band-edge
+        // noise cannot immediately re-engage it. The cap lifts
+        // early if the lead falls to DWELL_EMERGENCY_LEAD, so a
+        // genuine deficit still engages at once. Validated against
+        // the host simulation (file-select trace still starves
+        // zero; chatter trace engagements collapse) before shipping.
+        private const val RELEASE_DWELL_NS = 250_000_000L
+        private const val DWELL_STRETCH_CAP = 1.001
+        private const val DWELL_EMERGENCY_LEAD = 1200.0 // LEAD_TARGET - 2 * LEAD_BAND
+
         // Runaway guard on the source queue, the same numbers the
         // audio thread always used: past 128 KB queued, keep only
         // the newest 64 KB. Production is gated by the track lead,
@@ -125,6 +141,7 @@ class AudioCushion {
     private var engaged = false
     private var engagedNs = 0L
     private var peakStretch = 1.0
+    private var lastReleaseNs = 0L
 
     // Underrun accounting: an underrun is the DAC demanding samples
     // while the track lead is empty and the cushion has nothing to
@@ -154,6 +171,7 @@ class AudioCushion {
         lastUpdateNs = 0L
         engaged = false
         peakStretch = 1.0
+        lastReleaseNs = 0L
         armed = false
         starving = false
         underrunEpisodes = 0
@@ -216,6 +234,15 @@ class AudioCushion {
         if (ds < -maxStep) ds = -maxStep
         val was = stretch
         stretch = (stretch + ds).coerceIn(1.0, STRETCH_MAX)
+        // Release dwell: hold the stretch at the inaudible cap for
+        // a beat after a release, unless the lead says the deficit
+        // is real (see the constants for the evidence).
+        if (nowNs - lastReleaseNs < RELEASE_DWELL_NS &&
+            leadFrames >= DWELL_EMERGENCY_LEAD &&
+            stretch > DWELL_STRETCH_CAP
+        ) {
+            stretch = DWELL_STRETCH_CAP
+        }
         if (stretch > peakStretch) peakStretch = stretch
 
         if (!engaged && stretch >= ENGAGE_AT) {
@@ -225,6 +252,7 @@ class AudioCushion {
         } else if (engaged && stretch <= RELEASE_AT) {
             engaged = false
             stretch = 1.0
+            lastReleaseNs = nowNs
             // Returning to exactly 1.0: snap the read position to a
             // whole frame (a slip of at most half a frame, once) so
             // pass-through from here is bit-exact.
