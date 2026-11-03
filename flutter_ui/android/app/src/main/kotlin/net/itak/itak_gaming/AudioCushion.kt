@@ -158,6 +158,34 @@ class AudioCushion {
 
     private var guardTrims = 0L
 
+    // Session-cumulative mirrors of the episodic counters above.
+    // logSummary() zeroes the episodic pair at every release, which
+    // is right for log lines but wrong for an end-of-session total;
+    // these accumulate across the whole session and are cleared
+    // only by reset(). Read them through diagTotals().
+    private var sessionUnderrunEpisodes = 0L
+    private var sessionStarvedMs = 0.0
+    private var sessionPeakStretch = 1.0
+
+    /** Snapshot of the session-cumulative counters, for AudioDiag. */
+    data class SessionTotals(
+        val underrunEpisodes: Long,
+        val starvedMs: Double,
+        val guardTrims: Long,
+        val peakStretch: Double,
+    )
+
+    /** The controller's lead target, in core-rate frames. */
+    fun diagLeadTargetFrames(): Double = LEAD_TARGET
+
+    /** The session totals as they stand right now; never resets. */
+    fun diagTotals(): SessionTotals = SessionTotals(
+        underrunEpisodes = sessionUnderrunEpisodes,
+        starvedMs = sessionStarvedMs,
+        guardTrims = guardTrims,
+        peakStretch = sessionPeakStretch,
+    )
+
     /** Current stretch factor (1.0 = pass-through). */
     val currentStretch: Double
         get() = stretch
@@ -181,6 +209,9 @@ class AudioCushion {
         starvedMsEstimate = 0.0
         lastUnderrunLogNs = 0L
         guardTrims = 0
+        sessionUnderrunEpisodes = 0
+        sessionStarvedMs = 0.0
+        sessionPeakStretch = 1.0
     }
 
     /** Queue drained PCM (little-endian stereo int16) for conversion. */
@@ -247,6 +278,7 @@ class AudioCushion {
             stretch = DWELL_STRETCH_CAP
         }
         if (stretch > peakStretch) peakStretch = stretch
+        if (stretch > sessionPeakStretch) sessionPeakStretch = stretch
 
         if (!engaged && stretch >= ENGAGE_AT) {
             engaged = true
@@ -269,9 +301,11 @@ class AudioCushion {
         val empty = leadFrames <= 0 && srcLen < 2
         if (armed && empty) {
             starvedMsEstimate += dt * 1000.0
+            sessionStarvedMs += dt * 1000.0
             if (!starving) {
                 starving = true
                 underrunEpisodes++
+                sessionUnderrunEpisodes++
                 if (underrunEpisodes == 1L || nowNs - lastUnderrunLogNs > 5_000_000_000L) {
                     lastUnderrunLogNs = nowNs
                     Log.w(TAG, "audio cushion: underrun, track starved (episode $underrunEpisodes, stretch=${fmt(stretch)})")

@@ -13,6 +13,7 @@ import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Bundle
@@ -64,6 +65,14 @@ class SoundTestActivity : Activity() {
     private lateinit var gameButton: Button
     private lateinit var gameBar: LevelBar
     private lateinit var gameStatus: TextView
+    private lateinit var delayButton: Button
+    private lateinit var delayStatus: TextView
+    private lateinit var debugButton: Button
+    private lateinit var debugStatus: TextView
+
+    // Delay measurement state: its own short-lived track and
+    // thread, independent of the speaker tests above.
+    @Volatile private var measuring = false
 
     // Speaker state. The play thread owns its AudioTrack; other
     // threads only set flags and read the envelope.
@@ -339,13 +348,64 @@ class SoundTestActivity : Activity() {
             )
         )
         root.addView(spacer(24))
+
+        // Debug card: measure the sound delay on this box, and
+        // send the full debug report up on the spot instead of
+        // waiting for the server to ask for one.
+        val debugCard = makeCard()
+        debugCard.addView(makeText("DEBUG", 20f, bold = true))
+        debugCard.addView(spacer(14))
+        delayButton = makeButton("Measure sound delay")
+        delayButton.setOnClickListener { measureDelay() }
+        debugCard.addView(
+            delayButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(56)
+            )
+        )
+        debugCard.addView(spacer(12))
+        delayStatus = makeText(
+            "Plays a soft tone through the game sound path and " +
+                "measures how far the sound trails behind, in " +
+                "milliseconds.",
+            17f, dim = true
+        )
+        debugCard.addView(delayStatus)
+        debugCard.addView(spacer(16))
+        debugButton = makeButton("Send debug report now")
+        debugButton.setOnClickListener { sendDebugNow() }
+        debugCard.addView(
+            debugButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(56)
+            )
+        )
+        debugCard.addView(spacer(12))
+        debugStatus = makeText(
+            "Sends the full report, the latest game session's " +
+                "sound measurements included, to the debug server.",
+            17f, dim = true
+        )
+        debugCard.addView(debugStatus)
+        root.addView(
+            debugCard,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        root.addView(spacer(24))
         root.addView(makeText("Press BACK to leave this screen.", 15f, dim = true))
 
-        // Simple vertical D-pad flow: play, game path, then mic.
+        // Simple vertical D-pad flow: play, game path, mic, debug.
         playButton.nextFocusDownId = gameButton.id
         gameButton.nextFocusUpId = playButton.id
         gameButton.nextFocusDownId = micButton.id
         micButton.nextFocusUpId = gameButton.id
+        micButton.nextFocusDownId = delayButton.id
+        delayButton.nextFocusUpId = micButton.id
+        delayButton.nextFocusDownId = debugButton.id
+        debugButton.nextFocusUpId = delayButton.id
 
         setContentView(scroll)
         uiBuilt = true
@@ -364,6 +424,101 @@ class SoundTestActivity : Activity() {
         abortPlayback()
         stopMic()
         super.onDestroy()
+    }
+
+    // Send the full debug report immediately (reason "manual"),
+    // through the same chute the periodic check-in uses. The
+    // upload itself runs in the chute's worker; this just queues
+    // it and says so on screen.
+    private fun sendDebugNow() {
+        DebugChute.enqueueFull(this, "manual")
+        debugStatus.text =
+            "Debug report queued. It sends as soon as the network " +
+                "allows, with the latest game session's sound " +
+                "measurements inside."
+    }
+
+    // Measure the sound delay on this box: open a track exactly
+    // the way a game does (EmuAudioOutput), feed it a soft tone
+    // for a few seconds, and read the track's own presentation
+    // timestamps to learn how many milliseconds of sound sit
+    // between the app and the speaker. The same measurement the
+    // emulator now records for every game session (see
+    // AudioDiag), runnable here on demand.
+    private fun measureDelay() {
+        if (measuring) return
+        measuring = true
+        delayButton.isEnabled = false
+        delayStatus.text = "Measuring..."
+        thread {
+            var track: AudioTrack? = null
+            try {
+                val rate = EmuAudioOutput.deviceOutputRate(this)
+                track = EmuAudioOutput.buildTrack(rate)
+                val t = track
+                val bufFrames = try { t.bufferSizeInFrames } catch (e: Exception) { 0 }
+                t.play()
+                // A soft 220 Hz tone, written in quarter-second
+                // chunks for about three seconds.
+                val chunkFrames = rate / 4
+                val pcm = ByteArray(chunkFrames * 4)
+                var frame = 0
+                val samples = mutableListOf<Double>()
+                val ts = AudioTimestamp()
+                var written = 0L
+                val started = System.nanoTime()
+                while ((System.nanoTime() - started) / 1_000_000 < 3000) {
+                    for (i in 0 until chunkFrames) {
+                        val s = (sin(2.0 * PI * 220.0 * (frame + i) / rate) * 0.2 * 32767).toInt()
+                        val o = i * 4
+                        pcm[o] = (s and 0xFF).toByte()
+                        pcm[o + 1] = ((s shr 8) and 0xFF).toByte()
+                        pcm[o + 2] = (s and 0xFF).toByte()
+                        pcm[o + 3] = ((s shr 8) and 0xFF).toByte()
+                    }
+                    frame += chunkFrames
+                    val n = t.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                    if (n > 0) written += n / 4
+                    try {
+                        if (t.getTimestamp(ts)) {
+                            val inFlight = written - ts.framePosition
+                            if (inFlight >= 0) samples.add(inFlight * 1000.0 / rate)
+                        }
+                    } catch (e: Exception) { /* keep measuring */ }
+                }
+                val routed = try {
+                    val dev = t.routedDevice
+                    if (dev != null) dev.productName.toString() else "unknown"
+                } catch (e: Exception) {
+                    "unknown"
+                }
+                val text = if (samples.size >= 3) {
+                    val sorted = samples.sorted()
+                    val median = sorted[sorted.size / 2]
+                    val bufMs = if (rate > 0) bufFrames * 1000.0 / rate else 0.0
+                    "Sound delay on this box: about ${"%.0f".format(median)} ms.\n" +
+                        "Track runs at $rate Hz, its buffer is " +
+                        "${"%.0f".format(bufMs)} ms, output to $routed."
+                } else {
+                    "The track would not report its timing on this " +
+                        "box, so the delay could not be measured here."
+                }
+                uiHandler.post {
+                    delayStatus.text = text
+                    delayButton.isEnabled = true
+                    measuring = false
+                }
+            } catch (e: Exception) {
+                uiHandler.post {
+                    delayStatus.text = "The delay measurement failed on this box."
+                    delayButton.isEnabled = true
+                    measuring = false
+                }
+            } finally {
+                try { track?.stop() } catch (e: Exception) { /* already stopped */ }
+                try { track?.release() } catch (e: Exception) { /* already released */ }
+            }
+        }
     }
 
     // Speaker: a rising three note jingle, generated as PCM, no

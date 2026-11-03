@@ -171,6 +171,12 @@ object DebugChute {
         val o = baseJson(ctx)
         o.put("timingLines", JSONArray(timingLines(ctx, 40)))
         o.put("logTail", logTailText(ctx, 120 * 1024L))
+        // The most recent finished audio session's diagnostics
+        // (see AudioDiag): measured output latency, lead trace,
+        // session header and cushion totals. Absent until the
+        // first measured session ends on this install.
+        val audioDiag = AudioDiag.loadLast(ctx)
+        if (audioDiag != null) o.put("audioDiag", audioDiag)
         o.put("reason", reason)
         val res = post("/debug/report", o) ?: return false
         Log.i(TAG, "full report ($reason) -> ${res.first}")
@@ -223,12 +229,48 @@ object DebugChute {
             Log.w(TAG, "enqueue failed", e)
         }
     }
+
+    // Queue an immediate full report with a caller-chosen reason
+    // ("game_exit" when a game session ends, "manual" for the
+    // sound screen's send button). The periodic check-in only
+    // uploads a full report when the server asks for one; these
+    // are the two moments the app itself knows the report is
+    // worth sending, so the session the player just finished is
+    // the one that arrives. Network work runs in the worker, so
+    // callers on the UI thread just enqueue.
+    fun enqueueFull(ctx: Context, reason: String) {
+        try {
+            val appCtx = ctx.applicationContext
+            val wm = WorkManager.getInstance(appCtx)
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val req = OneTimeWorkRequestBuilder<DebugChuteWorker>()
+                .setConstraints(constraints)
+                .setInputData(
+                    androidx.work.Data.Builder().putString("reason", reason).build()
+                )
+                .build()
+            wm.enqueueUniqueWork("debug_chute_full", ExistingWorkPolicy.REPLACE, req)
+        } catch (e: Exception) {
+            Log.w(TAG, "enqueueFull failed", e)
+        }
+    }
 }
 
 class DebugChuteWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
         val ctx = applicationContext
         if (!DebugChute.enabled(ctx)) return Result.success()
-        return if (DebugChute.checkIn(ctx)) Result.success() else Result.retry()
+        // A "reason" in the input data means enqueueFull queued
+        // this run: send the full report now, no ping round trip.
+        val reason = params.inputData.getString("reason")
+        return if (!reason.isNullOrBlank()) {
+            if (DebugChute.sendFull(ctx, reason)) Result.success() else Result.retry()
+        } else if (DebugChute.checkIn(ctx)) {
+            Result.success()
+        } else {
+            Result.retry()
+        }
     }
 }

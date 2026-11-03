@@ -71,6 +71,9 @@ class EmulatorActivity : Activity(), TextureListener {
     /** Presentation-layer stream stretcher; see AudioCushion. */
     private val audioCushion = AudioCushion()
 
+    /** Session audio diagnostics; see AudioDiag. */
+    private val audioDiag = AudioDiag()
+
     /** The rate the core produces audio at, and the rate the track runs at. */
     private var coreAudioRate = 0
     private var trackAudioRate = 0
@@ -2224,6 +2227,34 @@ class EmulatorActivity : Activity(), TextureListener {
         audioTrack = EmuAudioOutput.buildTrack(trackAudioRate)
         audioCushion.reset()
         audioTrack?.play()
+        // Open the diagnostics session (see AudioDiag). The
+        // buffer figure is the size the built track reports for
+        // itself, and the routed device is read after play(),
+        // when routing has settled.
+        try {
+            val track = audioTrack
+            val bufFrames = try { track?.bufferSizeInFrames ?: 0 } catch (e: Exception) { 0 }
+            val routed = try {
+                val dev = track?.routedDevice
+                if (dev != null) "type${dev.type}/${dev.productName}" else "unknown"
+            } catch (e: Exception) {
+                "unknown"
+            }
+            audioDiag.begin(
+                system = coreAssetName.removePrefix("libgo_").removePrefix("libitak_")
+                    .removeSuffix(".so"),
+                game = java.io.File(romPath).name,
+                coreRate = coreRate,
+                trackRate = trackAudioRate,
+                resamplerInPath = useResampler,
+                trackBufferFrames = bufFrames,
+                cushionTargetMs = audioCushion.diagLeadTargetFrames() * 1000.0 / coreRate,
+                deviceOutputRate = nativeRate,
+                routedDevice = routed,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "audio diag begin failed", e)
+        }
     }
 
     private fun sha256Hex(stream: java.io.InputStream): String {
@@ -2357,6 +2388,7 @@ class EmulatorActivity : Activity(), TextureListener {
         // converted output the track has not accepted yet.
         val audioThread = thread(name = "emu-audio") {
             var pending = ByteArray(0)
+            var lastDiagSampleNs = 0L
             while (running) {
                 if (paused) {
                     Thread.sleep(20)
@@ -2391,6 +2423,38 @@ class EmulatorActivity : Activity(), TextureListener {
                     leadTrack
                 }
                 audioCushion.update(leadForCushion, System.nanoTime())
+                // Diagnostics sampling (see AudioDiag): a few
+                // times a second, turn the track's own
+                // presentation timestamp into the session's
+                // measured output latency, and record the lead
+                // in track-rate milliseconds with the cushion's
+                // current stretch. A failed timestamp call skips
+                // the latency figure for this sample only.
+                val diagNowNs = System.nanoTime()
+                if (diagNowNs - lastDiagSampleNs > 200_000_000L) {
+                    lastDiagSampleNs = diagNowNs
+                    var latencyMs = -1.0
+                    val tsTrack = audioTrack
+                    if (tsTrack != null && trackAudioRate > 0) {
+                        try {
+                            val ts = android.media.AudioTimestamp()
+                            if (tsTrack.getTimestamp(ts)) {
+                                val inFlight = writtenFrames - ts.framePosition
+                                if (inFlight >= 0) {
+                                    latencyMs = inFlight * 1000.0 / trackAudioRate
+                                }
+                            }
+                        } catch (e: Exception) { /* no timestamp this sample */ }
+                    }
+                    val leadMs = if (trackAudioRate > 0) {
+                        leadTrack * 1000.0 / trackAudioRate
+                    } else {
+                        0.0
+                    }
+                    audioDiag.sample(
+                        leadMs, latencyMs, audioCushion.currentStretch, diagNowNs
+                    )
+                }
                 if (pending.isEmpty()) {
                     var converted = audioCushion.convert()
                     val resampler = audioResampler
@@ -3281,6 +3345,28 @@ class EmulatorActivity : Activity(), TextureListener {
         statsEnd()
         running = false
         gameThread?.join(1000)
+        // Close out this session's audio diagnostics and send the
+        // full debug report now (reason "game_exit"), so the
+        // session that just ended is the one the server holds,
+        // instead of its log tail riding up at some later launch.
+        // Skipped on a role switch: the new instance owns the
+        // session record from here.
+        if (!roleSwitching) {
+            try {
+                val totals = audioCushion.diagTotals()
+                val summary = audioDiag.finish(
+                    totals.underrunEpisodes,
+                    totals.starvedMs,
+                    totals.guardTrims,
+                    totals.peakStretch,
+                    writtenFrames,
+                )
+                AudioDiag.saveLast(this, summary)
+                DebugChute.enqueueFull(this, "game_exit")
+            } catch (e: Exception) {
+                Log.w(TAG, "audio diag finish failed", e)
+            }
+        }
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
