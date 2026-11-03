@@ -2224,6 +2224,20 @@ class EmulatorActivity : Activity(), TextureListener {
             audioResampler = null
             return
         }
+        if (coreRate == 32000) {
+            // The one core that declares 32,000 Hz is the SNES,
+            // and 32,000 is the nominal figure from the hardware
+            // divider math. Measured SNES sound oscillators run
+            // nearer 32,040 Hz (a ceramic resonator with loose
+            // tolerance), the value the emulator ecosystem
+            // standardized on after Snes9x's own scratchy-sound
+            // fix. Run everything downstream (conversion ratio,
+            // gate cap, cushion scaling) at 32,040 instead: at a
+            // fixed wrong ratio the audio buffer creeps until
+            // the correction lands as a pop.
+            Log.i(TAG, "audio rate adjusted: core reports 32000, using 32040 (measured SNES APU rate)")
+            coreRate = 32040
+        }
         coreAudioRate = coreRate
         Log.i(TAG, "audio rate = $coreRate")
 
@@ -2235,7 +2249,8 @@ class EmulatorActivity : Activity(), TextureListener {
         // that rate to the stick's mixer and inherit whatever
         // converter quality it chose. Those now convert inside the
         // app (AudioResampler) and the track opens at the device's
-        // own output rate.
+        // own output rate. (The SNES figure below is the adjusted
+        // 32,040 from the block above.)
         val nativeRate = EmuAudioOutput.deviceOutputRate(this)
         val useResampler = coreRate != nativeRate && coreRate != 44100
         trackAudioRate = if (useResampler) nativeRate else coreRate
@@ -2412,8 +2427,12 @@ class EmulatorActivity : Activity(), TextureListener {
         // Drained PCM goes through the audio cushion on its way to the
         // track: while a heavy screen starves production the cushion
         // stretches the stream a few percent so the track never runs
-        // dry (see AudioCushion for the model). `pending` below holds
-        // converted output the track has not accepted yet.
+        // dry (see AudioCushion for the model). On the resampled
+        // path (SNES, GBA) the cushion is the controller only and
+        // its stretch drives the resampler's ratio, so the stream
+        // converts exactly once, at sinc quality (1.95). `pending`
+        // below holds converted output the track has not accepted
+        // yet.
         val audioThread = thread(name = "emu-audio") {
             var pending = ByteArray(0)
             var lastDiagSampleNs = 0L
@@ -2431,7 +2450,8 @@ class EmulatorActivity : Activity(), TextureListener {
                     Thread.sleep(3)
                     continue
                 }
-                if (chunk != null && chunk.isNotEmpty()) {
+                val resampler = audioResampler
+                if (resampler == null && chunk != null && chunk.isNotEmpty()) {
                     audioCushion.feed(chunk)
                 }
                 val trackForLead = audioTrack
@@ -2450,7 +2470,11 @@ class EmulatorActivity : Activity(), TextureListener {
                 } else {
                     leadTrack
                 }
-                audioCushion.update(leadForCushion, System.nanoTime())
+                if (resampler != null) {
+                    audioCushion.update(leadForCushion, System.nanoTime(), resampler.pendingFrames())
+                } else {
+                    audioCushion.update(leadForCushion, System.nanoTime())
+                }
                 // Diagnostics sampling (see AudioDiag): a few
                 // times a second, turn the track's own
                 // presentation timestamp into the session's
@@ -2483,13 +2507,29 @@ class EmulatorActivity : Activity(), TextureListener {
                         leadMs, latencyMs, audioCushion.currentStretch, diagNowNs
                     )
                 }
-                if (pending.isEmpty()) {
-                    var converted = audioCushion.convert()
-                    val resampler = audioResampler
-                    if (resampler != null && converted.isNotEmpty()) {
-                        converted = resampler.convert(converted)
+                if (resampler != null) {
+                    // Dynamic rate control path (1.95): drained
+                    // PCM converts exactly once, through the
+                    // resampler, with the cushion's stretch applied
+                    // as its ratio. Convert every pass, not only
+                    // when pending drains, so no drained chunk is
+                    // ever skipped; the backlog trim below is the
+                    // same runaway guard the cushion queue has.
+                    resampler.setStretch(audioCushion.currentStretch)
+                    if (chunk != null && chunk.isNotEmpty()) {
+                        val out = resampler.convert(chunk)
+                        if (out.isNotEmpty()) {
+                            pending = if (pending.isEmpty()) out else pending + out
+                            if (pending.size > 131072) {
+                                var dropBytes = pending.size - 65536
+                                dropBytes -= dropBytes % 4
+                                pending = pending.copyOfRange(dropBytes, pending.size)
+                                Log.w(TAG, "audio: output backlog trimmed, track stalled")
+                            }
+                        }
                     }
-                    pending = converted
+                } else if (pending.isEmpty()) {
+                    pending = audioCushion.convert()
                 }
                 if (pending.isNotEmpty()) {
                     try {
