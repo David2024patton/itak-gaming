@@ -53,6 +53,16 @@ import kotlin.math.floor
  * stretch, underrun episodes are counted (with an estimate of the
  * starved time) and logged throttled, and a session summary lands
  * when the stretch releases or the cushion is reset after use.
+ *
+ * Two roles since 1.95. On the legacy path (cores whose track
+ * opens at the core rate) this class is converter and controller
+ * together, exactly as above: feed(), update(), convert(). On the
+ * resampled path (SNES, GBA) it is the controller only: the audio
+ * thread calls update() with the resampler's backlog as
+ * queuedFrames and hands currentStretch to AudioResampler, which
+ * applies the stretch inside its sinc conversion. The linear
+ * interpolation in convert() below no longer touches the SNES or
+ * GBA stream at all.
  */
 class AudioCushion {
 
@@ -242,8 +252,14 @@ class AudioCushion {
      * Advance the controller. Called on every audio-thread pass with
      * the current track lead (accepted minus played frames), so the
      * gains work in real time regardless of the pass cadence.
+     *
+     * queuedFrames is the conversion backlog the underrun test
+     * should look at: on the legacy path the caller leaves the
+     * default and this class's own queue is used; on the resampled
+     * path (controller-only role) the caller passes the
+     * resampler's backlog instead.
      */
-    fun update(leadFrames: Long, nowNs: Long) {
+    fun update(leadFrames: Long, nowNs: Long, queuedFrames: Int = -1) {
         if (lastUpdateNs == 0L) {
             lastUpdateNs = nowNs
             return
@@ -297,8 +313,15 @@ class AudioCushion {
             pos = floor(pos + 0.5)
         }
 
+        // A positive lead means converted audio reached the track,
+        // which is the same flow convert() arms on; saying so here
+        // keeps the accounting armed on the controller-only path
+        // too, where convert() never runs.
+        if (leadFrames > 0) armed = true
+
         // Underrun accounting.
-        val empty = leadFrames <= 0 && srcLen < 2
+        val queued = if (queuedFrames >= 0) queuedFrames else srcLen
+        val empty = leadFrames <= 0 && queued < 2
         if (armed && empty) {
             starvedMsEstimate += dt * 1000.0
             sessionStarvedMs += dt * 1000.0
