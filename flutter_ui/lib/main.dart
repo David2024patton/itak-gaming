@@ -1610,12 +1610,21 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
     final captured = await _captureController(player);
     if (captured == null || captured['id'] == null) return;
     // One controller belongs to one player: drop it from anyone else.
-    _controllerMap.removeWhere(
-      (key, v) => v is Map && v['id'] == captured['id'] && key != player,
-    );
+    // Identity is the permanent descriptor when both sides carry one;
+    // the numeric id alone changes on every re-pair (Terry, 2026-11-03).
+    final capDesc = captured['desc']?.toString() ?? '';
+    bool samePad(dynamic v) {
+      if (v is! Map) return false;
+      final d = v['desc']?.toString() ?? '';
+      if (capDesc.isNotEmpty && d.isNotEmpty) return d == capDesc;
+      return v['id'] == captured['id'];
+    }
+
+    _controllerMap.removeWhere((key, v) => samePad(v) && key != player);
     setState(() {
       _controllerMap[player] = {
         'id': captured['id'],
+        'desc': capDesc,
         'name': captured['name']?.toString() ?? 'Controller',
       };
     });
