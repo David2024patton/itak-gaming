@@ -126,7 +126,13 @@ class MainActivity : FlutterActivity() {
                 captureArmed = false
                 channel?.invokeMethod(
                     "controllerCaptured",
-                    mapOf("id" to event.deviceId, "name" to (dev?.name ?: "Controller")),
+                    mapOf(
+                        "id" to event.deviceId,
+                        "name" to (dev?.name ?: "Controller"),
+                        // The descriptor is the pad's permanent identity;
+                        // the numeric id changes on every re-pair.
+                        "desc" to (dev?.descriptor ?: ""),
+                    ),
                 )
                 return true
             }
@@ -325,7 +331,7 @@ class MainActivity : FlutterActivity() {
                             val gamepad = dev.sources and InputDevice.SOURCE_GAMEPAD != 0 ||
                                 dev.sources and InputDevice.SOURCE_JOYSTICK != 0
                             if (gamepad) {
-                                list.add(mapOf("id" to id, "name" to dev.name))
+                                list.add(mapOf("id" to id, "name" to dev.name, "desc" to dev.descriptor))
                             }
                         }
                         result.success(list)
