@@ -264,7 +264,7 @@ class DebugChuteWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, par
         if (!DebugChute.enabled(ctx)) return Result.success()
         // A "reason" in the input data means enqueueFull queued
         // this run: send the full report now, no ping round trip.
-        val reason = params.inputData.getString("reason")
+        val reason = inputData.getString("reason")
         return if (!reason.isNullOrBlank()) {
             if (DebugChute.sendFull(ctx, reason)) Result.success() else Result.retry()
         } else if (DebugChute.checkIn(ctx)) {
