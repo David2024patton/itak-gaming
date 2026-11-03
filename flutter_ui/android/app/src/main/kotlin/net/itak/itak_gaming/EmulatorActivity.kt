@@ -343,19 +343,25 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     // ----- Local multiplayer seats -----
-    // Controller assignments (player name -> deviceId) come from the
+    // Controller assignments (player name -> pad) come from the
     // itak_prefs "controller_map" JSON written by the player picker.
-    // Rules: an assigned pad drives only its owner's seat; seat 0
-    // belongs to the current player and stays reserved for their pad
-    // even while it is disconnected (nobody can steal the position);
-    // seat 1 exists only for a second local player with an assigned,
-    // connected pad (drop-in). An unassigned pad may fill seat 0 only
-    // when the current player has no pad assigned at all. The TV
+    // Rules: an assigned pad drives only its owner's seat. Pads are
+    // matched by their permanent descriptor, NOT the numeric
+    // deviceId: Android mints a fresh id on every re-pair, and the
+    // old id-only seating locked Terry out completely (2026-11-03:
+    // his re-paired pad's presses were all discarded while seat 0
+    // waited on a ghost). The stored numeric id remains as the
+    // fallback for assignments saved before descriptors existed.
+    // Seat 1 exists only for a second local player with an assigned,
+    // connected pad (drop-in). While the current player's pad is not
+    // connected, another pad may drive seat 0 for the session, so a
+    // missing or changed pad can never lock the player out. The TV
     // remote is menu/backup control for seat 0 unless the owner's pad
     // is connected and holding the seat.
     private var seatPlayers: List<String> = emptyList()
     private var seatCurrent: String = ""
     private val assignedPadByPlayer = mutableMapOf<String, Int>()
+    private val assignedDescByPlayer = mutableMapOf<String, String>()
     private val padSeats = mutableMapOf<Int, Int>() // deviceId -> slot
     private val connectedPads = mutableSetOf<Int>()
     private var fallbackPad: Int? = null
@@ -387,6 +393,7 @@ class EmulatorActivity : Activity(), TextureListener {
             .split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         seatCurrent = currentPlayer()
         assignedPadByPlayer.clear()
+        assignedDescByPlayer.clear()
         val mapJson = prefs.getString("controller_map", "") ?: ""
         if (mapJson.isNotEmpty()) {
             try {
@@ -395,6 +402,8 @@ class EmulatorActivity : Activity(), TextureListener {
                     val entry = obj.optJSONObject(key) ?: continue
                     val id = entry.optInt("id", -1)
                     if (id >= 0) assignedPadByPlayer[key] = id
+                    val desc = entry.optString("desc", "")
+                    if (desc.isNotEmpty()) assignedDescByPlayer[key] = desc
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "controller_map parse failed", e)
@@ -413,7 +422,23 @@ class EmulatorActivity : Activity(), TextureListener {
         )
     }
 
+    // Point each descriptor assignment at the pad's CURRENT
+    // deviceId, so a re-paired controller is recognized as itself.
+    private fun resolveAssignedPads() {
+        if (assignedDescByPlayer.isEmpty()) return
+        for ((player, desc) in assignedDescByPlayer) {
+            for (id in connectedPads) {
+                val dev = android.view.InputDevice.getDevice(id) ?: continue
+                if (dev.descriptor == desc) {
+                    assignedPadByPlayer[player] = id
+                    break
+                }
+            }
+        }
+    }
+
     private fun refreshSeats() {
+        resolveAssignedPads()
         padSeats.clear()
         assignedPadByPlayer[seatCurrent]?.let { padSeats[it] = 0 }
         for (p in seatPlayers) {
@@ -426,7 +451,8 @@ class EmulatorActivity : Activity(), TextureListener {
             }
             break
         }
-        if (assignedPadByPlayer[seatCurrent] == null && fallbackPad != null) {
+        val ownerPadNow = assignedPadByPlayer[seatCurrent]
+        if ((ownerPadNow == null || ownerPadNow !in connectedPads) && fallbackPad != null) {
             padSeats.putIfAbsent(fallbackPad!!, 0)
         }
         Log.i(TAG, "seats: pads=$padSeats connected=$connectedPads current=$seatCurrent")
@@ -446,17 +472,19 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         val id = event.deviceId
         padSeats[id]?.let { return it }
-        if (ownerPad == null) {
-            // No pad assigned to player 1: the first pad to play
-            // fills seat 0 for this session; later pads get no seat.
+        if (ownerPad == null || ownerPad !in connectedPads) {
+            // Player 1 has no pad assigned, or theirs is not
+            // connected: the first pad to play fills seat 0 for this
+            // session; later pads get no seat. A disconnected or
+            // re-paired pad must never lock the player out.
             if (fallbackPad == null) {
                 fallbackPad = id
                 padSeats[id] = 0
                 return 0
             }
-            return null
+            return if (fallbackPad == id) 0 else null
         }
-        // Player 1's seat is reserved for their assigned pad.
+        // Player 1's pad is connected and holding the seat.
         return null
     }
 
