@@ -25,7 +25,19 @@ import kotlin.math.sqrt
  * is the spec: itak-speed/resampler-proto/resample.py). For each
  * output sample, the position in input samples advances by the
  * exact rational step inRate/outRate using integer math only, so
- * there is zero drift. The kernel is 128 input taps of a Kaiser
+ * there is zero drift.
+ *
+ * Dynamic rate control (1.95): the step can be scaled by a
+ * stretch factor set from outside (see setStretch). The audio
+ * cushion's controller computes the stretch from the track lead,
+ * and applying it here, inside the sinc conversion, replaces the
+ * cushion's old separate linear-interpolation stretching stage:
+ * the drift and deficit correction now happens at full sinc
+ * quality instead of through a second, cheaper interpolator. The
+ * step division is carried fractionally, so a stretch parked at
+ * exactly 1.0 reproduces the original integer stepping
+ * bit-for-bit, and at any other setting the effective ratio is
+ * exact on average with no accumulating drift. The kernel is 128 input taps of a Kaiser
  * windowed sinc (beta 7.9) with cutoff at 0.98 of the lower
  * Nyquist, quantized to 4096 phases; every table row is
  * renormalized to sum to exactly 1.0, so DC gain is exact at every
@@ -65,6 +77,10 @@ class AudioResampler(private val inRate: Int, private val outRate: Int) {
         private const val KAISER_BETA = 7.9
 
         private const val BYTES_PER_FRAME = 4 // stereo int16
+
+        // Hard ceiling for the dynamic stretch, a safety net only:
+        // the cushion controller clamps itself to 1.08.
+        private const val STRETCH_LIMIT = 1.10
 
         /**
          * The shared kernel table, built once per process on first
@@ -140,12 +156,43 @@ class AudioResampler(private val inRate: Int, private val outRate: Int) {
     // Exact rational position of the next output, as n * inRate.
     private var acc = 0L
 
+    // Dynamic rate control state (1.95). `stretch` is the
+    // cushion controller's current factor: while it is above 1.0
+    // each output sample advances the input position by
+    // inRate/stretch instead of inRate, so the converted stream
+    // runs proportionally longer and the track's lead recovers.
+    // The division is carried fractionally in stepCarry, so the
+    // effective ratio is exact on average and a parked stretch of
+    // exactly 1.0 steps by whole inRate increments, identical to
+    // the fixed-ratio converter this class shipped as.
+    @Volatile private var stretch = 1.0
+    private var stepCarry = 0.0
+
+    /**
+     * Set the dynamic stretch factor (1.0 = the nominal ratio).
+     * Called by the audio thread on every pass with the cushion
+     * controller's current value; the controller slew-limits its
+     * own changes, so the ratio breathes smoothly.
+     */
+    fun setStretch(s: Double) {
+        stretch = if (s.isFinite()) s.coerceIn(1.0, STRETCH_LIMIT) else 1.0
+    }
+
+    /**
+     * Input frames that have arrived but that no output window
+     * has reached yet: the resampler's real backlog, used by the
+     * cushion controller's underrun accounting on this path.
+     */
+    fun pendingFrames(): Int =
+        ((baseIndex + len) - (acc / outRate) - HALF).toInt().coerceAtLeast(0)
+
     /** Drop all buffered input and restart the position. */
     fun reset() {
         head = 0
         len = HALF
         baseIndex = -HALF.toLong()
         acc = 0L
+        stepCarry = 0.0
         buf.fill(0, 0, HALF * 2)
     }
 
@@ -201,7 +248,14 @@ class AudioResampler(private val inRate: Int, private val outRate: Int) {
             out[o + 2] = (vr and 0xFF).toByte()
             out[o + 3] = ((vr shr 8) and 0xFF).toByte()
             outFrames++
-            acc += inRate
+            // Advance the position: inRate per output at a
+            // stretch of exactly 1.0 (the original integer
+            // stepping, bit-for-bit), inRate/stretch with the
+            // fraction carried while the cushion is engaged.
+            val stepTotal = inRate / stretch + stepCarry
+            val stepWhole = stepTotal.toLong()
+            stepCarry = stepTotal - stepWhole
+            acc += stepWhole
         }
         // Drop input frames no future window can reach: the next
         // window starts at (acc / outRate) - HALF.
