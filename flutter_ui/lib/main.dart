@@ -5029,43 +5029,104 @@ class _LogScreenState extends State<LogScreen> {
 const List<String> kSortNames = ['A to Z', 'Z to A', 'Most played', 'Recent'];
 
 // ---------------------------------------------------------------------------
-// PATRIOTS: livestreams you can watch in the app (David,
-// 2026-11-02, for Terry). A grid in the shape of the game grids:
-// one tile per channel. Opening the screen pulls each channel's
-// current YouTube livestream info (the stream's title and
-// picture, with a LIVE badge) from the channel's public live
-// page, best effort and without any account or key. Tapping a
-// tile plays the stream in the native player (StreamPlayer-
-// Activity): the stick has no YouTube app, so playback has to
-// live inside this app. A channel that is off air, or whose
-// info could not be pulled, still opens: the player falls back
-// to the channel's permanent live embed.
+// PATRIOTS: livestreams and shows you can watch in the app
+// (David, 2026-11-02, for Terry; catalog expansion the same
+// day). The panel mirrors the standalone Patriots app: a hero
+// row with Newsmax pinned first and the number one podcast
+// beside it, a recommended bar that only carries shows live
+// right now, the news networks, and the podcast catalog from
+// the Feedspot conservative list, every YouTube channel id
+// verified against the live channel. A flag banner sits at the
+// top, per David's ask. Opening a show pops its own window:
+// live status up top (a live show plays from there), then its
+// newest videos, most recent first, from the channel's public
+// RSS feed. Networks that are live still play in one tap, the
+// way Terry already knows. Playback lives in the native player
+// (StreamPlayerActivity) through the hosted embed page: the
+// stick has no YouTube app, and YouTube refuses embeds framed
+// any other way (errors 152 and 153, proven 2026-11-02).
+//
+// Live means broadcasting NOW. A scheduled premiere carries
+// live markers on its page too, but it is not watchable until
+// it starts, so an upcoming stream never counts as live (the
+// RSBN election-night edge, proven on the stick 2026-11-02).
 // ---------------------------------------------------------------------------
 
 class PatriotChannel {
   final String name;
   final String channelId;
   final Color color;
-  const PatriotChannel(this.name, this.channelId, this.color);
+  final int? rank;
+  final bool network;
+  const PatriotChannel(this.name, this.channelId, this.color,
+      {this.rank, this.network = false});
 }
 
-// Channel ids verified against at least two public sources
-// each on 2026-11-02 (the networks' own pages and channel
-// directories), never guessed.
-const List<PatriotChannel> kPatriotChannels = [
-  PatriotChannel('Newsmax', 'UCx6h-dWzJ5NpAlja1YsApdg', Color(0xFF0B5394)),
-  PatriotChannel('Fox News', 'UCXIJgqnII2ZOINSWNOGFThA', Color(0xFF14284B)),
+// The networks: ids verified against at least two public
+// sources each on 2026-11-02 (the networks' own pages and
+// channel directories), never guessed.
+const List<PatriotChannel> kPatriotNetworks = [
+  PatriotChannel('Newsmax', 'UCx6h-dWzJ5NpAlja1YsApdg', Color(0xFF0B5394),
+      network: true),
+  PatriotChannel('Fox News', 'UCXIJgqnII2ZOINSWNOGFThA', Color(0xFF14284B),
+      network: true),
   PatriotChannel(
-      'Right Side Broadcasting', 'UCHqC-yWZ1kri4YzwRSt6RGQ', Color(0xFF8E1414)),
-  PatriotChannel('NTD', 'UC8Ioh4atNDO5a0Vy2qFmauQ', Color(0xFF1B6B4A)),
+      'Right Side Broadcasting', 'UCHqC-yWZ1kri4YzwRSt6RGQ', Color(0xFF8E1414),
+      network: true),
+  PatriotChannel('NTD', 'UC8Ioh4atNDO5a0Vy2qFmauQ', Color(0xFF1B6B4A),
+      network: true),
   PatriotChannel(
-      'The Epoch Times', 'UCeLc4heXqG9dtL7jiPHMBfQ', Color(0xFF5E35B1)),
+      'The Epoch Times', 'UCeLc4heXqG9dtL7jiPHMBfQ', Color(0xFF5E35B1),
+      network: true),
 ];
 
-class _LiveInfo {
-  final String videoId;
-  final String title;
-  const _LiveInfo(this.videoId, this.title);
+// The podcasts: Feedspot conservative list order, channel ids
+// verified one by one against the live channels (2026-11-02).
+// Shows without a verified YouTube channel are not listed.
+const List<PatriotChannel> kPatriotPodcasts = [
+  PatriotChannel('The Ben Shapiro Show', 'UCnQC_G5Xsjhp9fEJKuIcrSw', Color(0xFF0B5394), rank: 1),
+  PatriotChannel('The Charlie Kirk Show', 'UCfaIu2jO-fppCQV_lchCRIQ', Color(0xFF8E1414), rank: 2),
+  PatriotChannel('The Dan Bongino Show', 'UCJuHKSaD0o7mX6jSbvisnvg', Color(0xFF1B6B4A), rank: 3),
+  PatriotChannel('Verdict with Ted Cruz', 'UCdlniljY9Zfz990G8WeOosg', Color(0xFF5E35B1), rank: 4),
+  PatriotChannel('The Megyn Kelly Show', 'UCzJXNzqz6VMHSNInQt_7q6w', Color(0xFF4A148C), rank: 5),
+  PatriotChannel('Louder with Crowder', 'UCIveFvW-ARp_B_RckhweNJw', Color(0xFF004D40), rank: 6),
+  PatriotChannel('The Michael Knowles Show', 'UCr4kgAUTFkGIwlWSodg43QA', Color(0xFF3E2723), rank: 7),
+  PatriotChannel('The Matt Walsh Show', 'UCO01ytfzgXYy4glnPJm4PPQ', Color(0xFF263238), rank: 8),
+  PatriotChannel('Relatable with Allie Beth Stuckey', 'UCx_2Vso6Qz76n-w5KV8DZcA', Color(0xFF880E4F), rank: 10),
+  PatriotChannel('The Glenn Beck Program', 'UCKgJEs_v0JB-6jWb8lIy9Xw', Color(0xFF1A237E), rank: 11),
+  PatriotChannel('The Andrew Klavan Show', 'UCyhEZKz-LOwgktptEOh6_Iw', Color(0xFF33691E), rank: 12),
+  PatriotChannel('Mark Levin Podcast', 'UCm0ZCU4Svnq9f46AOiYvONw', Color(0xFFBF360C), rank: 13),
+  PatriotChannel('The Tucker Carlson Show', 'UCjjBjVc0b1cIpNGEeZtS2lg', Color(0xFF0B5394), rank: 15),
+  PatriotChannel('The Rubin Report', 'UCJdKr0Bgd_5saZYqLCa9mng', Color(0xFF8E1414), rank: 16),
+  PatriotChannel('Fireside Chat with Dennis Prager | PragerU', 'UCZWlSUNDvCCS1hBiXV0zKcA', Color(0xFF1B6B4A), rank: 17),
+  PatriotChannel('THE SAVAGE NATION', 'UClB_g5V1v8vavPl2eOiT-1A', Color(0xFF5E35B1), rank: 18),
+  PatriotChannel('The Clay Travis and Buck Sexton Show', 'UCt6J-LE3g25VPn530Td8Ttw', Color(0xFF4A148C), rank: 19),
+  PatriotChannel('Timcast IRL', 'UCLwNTXWEjVd2qIHLcXxQWxA', Color(0xFF004D40), rank: 23),
+  PatriotChannel('Human Events Daily with Jack Posobiec', 'UCB9R8gxiilQKu9q2We6TyvQ', Color(0xFF3E2723), rank: 24),
+  PatriotChannel('Pat Gray Unleashed', 'UCSvlnWkA909f87KjcaSZyPQ', Color(0xFF263238), rank: 29),
+  PatriotChannel('The Liz Wheeler Show', 'UCXdOgiTcdHCpQOyDxgwHdDg', Color(0xFF880E4F), rank: 30),
+  PatriotChannel('The Gerry Callahan Show (Newsmax Podcasts)', 'UCx6h-dWzJ5NpAlja1YsApdg', Color(0xFF1A237E), rank: 32),
+  PatriotChannel('Brian Kilmeade Show (Fox News)', 'UCXIJgqnII2ZOINSWNOGFThA', Color(0xFF33691E), rank: 39),
+  PatriotChannel('Will Cain Country (Fox News)', 'UCXIJgqnII2ZOINSWNOGFThA', Color(0xFFBF360C), rank: 40),
+  PatriotChannel('Daily Signal', 'UCHqkXbgqrDrDVInBMSoGQgQ', Color(0xFF0B5394), rank: 44),
+  PatriotChannel('Making the Argument with Nick Freitas', 'UCPFzA28Hw9tYDxXAeidDk6w', Color(0xFF8E1414), rank: 47),
+  PatriotChannel('Rebel News Podcast', 'UCGy6uV7yqGWDeUWTZzT3ZEg', Color(0xFF1B6B4A), rank: 48),
+  PatriotChannel('Guy Benson Show (Fox News)', 'UCXIJgqnII2ZOINSWNOGFThA', Color(0xFF5E35B1), rank: 54),
+  PatriotChannel('Problematic Women (Daily Signal)', 'UCHqkXbgqrDrDVInBMSoGQgQ', Color(0xFF4A148C), rank: 61),
+  PatriotChannel('The Financial Guys', 'UC436qYliZLwInRGodwxpHmw', Color(0xFF004D40), rank: 84),
+  PatriotChannel('The NatCon Squad', 'UCTFA0FGIf6R1f_inJm9NJhA', Color(0xFF3E2723), rank: 91),
+  PatriotChannel('Saving Elephants | Millennials defending & expressing conservative values', 'UCyd6chbaypUd_s7ZJ2_5zBA', Color(0xFF263238), rank: 97),
+  PatriotChannel('Strictly Speaking with Bob Frantz', 'UC2O-Z6PoG1T49GSQ8PCCsLw', Color(0xFF880E4F), rank: 100),
+];
+
+class _LiveState {
+  bool live = false;
+  bool upcoming = false;
+  bool checked = false;
+  String? videoId;
+  String? title;
+  String? get thumb =>
+      videoId == null ? null : 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
 }
 
 String _htmlUnescape(String s) {
@@ -5078,12 +5139,14 @@ String _htmlUnescape(String s) {
       .replaceAll('&gt;', '>');
 }
 
-// One channel's live page. While a stream is live the page
-// names the broadcast (the open graph title) and its player
-// response carries the video id and an isLive flag; off air it
-// carries neither in usable form, and any failure at all just
-// means "no info", never an error on screen.
-Future<_LiveInfo?> _fetchLive(PatriotChannel ch) async {
+// One channel's live page, classified. While a stream is live
+// the page redirects to the watch page (that hop names the
+// video) and its player data carries isLive markers; a
+// scheduled stream carries isUpcoming instead and is reported
+// as upcoming, never live. Any failure just means "no info",
+// never an error on screen.
+Future<_LiveState> _fetchLiveState(PatriotChannel ch) async {
+  final info = _LiveState();
   final client = HttpClient();
   client.userAgent = 'Mozilla/5.0 (Linux; Android 14) '
       'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -5095,8 +5158,6 @@ Future<_LiveInfo?> _fetchLive(PatriotChannel ch) async {
     req.followRedirects = true;
     req.maxRedirects = 5;
     final resp = await req.close().timeout(const Duration(seconds: 12));
-    // A live channel's /live address redirects to the watch
-    // page, and that hop names the video directly.
     String? videoId;
     for (final r in resp.redirects) {
       final m = RegExp(r'[?&]v=([\w-]{11})').firstMatch(r.location.toString());
@@ -5110,72 +5171,160 @@ Future<_LiveInfo?> _fetchLive(PatriotChannel ch) async {
       if (buf.length > 1000000) break;
     }
     final html = buf.toString();
-    final isLive =
-        html.contains('"isLive":true') || html.contains('"isLiveNow":true');
-    if (!isLive) return null;
+    info.checked = true;
+    info.upcoming = html.contains('"isUpcoming":true');
+    info.live = !info.upcoming &&
+        (html.contains('"isLiveNow":true') || html.contains('"isLive":true'));
     if (videoId == null) {
       final m = RegExp(r'"videoId":"([\w-]{11})"').firstMatch(html);
       if (m != null) videoId = m.group(1);
     }
-    if (videoId == null) return null;
+    // og:title ships in both attribute orders depending on the
+    // page variant; the player JSON title is the last fallback.
     var title = '';
-    final t =
-        RegExp(r'<meta property="og:title" content="([^"]*)"').firstMatch(html);
-    if (t != null) title = _htmlUnescape(t.group(1)!);
-    return _LiveInfo(videoId, title);
+    var t = RegExp(r'<meta property="og:title" content="([^"]*)"')
+        .firstMatch(html);
+    t ??= RegExp(r'<meta content="([^"]*)" property="og:title"')
+        .firstMatch(html);
+    if (t != null) {
+      title = _htmlUnescape(t.group(1)!);
+    } else {
+      final vd =
+          RegExp(r'"videoDetails":\{[^}]*?"title":"((?:[^"\\]|\\.)*)"')
+              .firstMatch(html);
+      if (vd != null) title = _htmlUnescape(vd.group(1)!.replaceAll(r'\"', '"'));
+    }
+    if (title.isNotEmpty) info.title = title;
+    if (info.live || info.upcoming) info.videoId = videoId;
+    return info;
   } catch (_) {
-    return null;
+    // A failed check is still a check: screens settle on the
+    // "not live" wording instead of spinning forever.
+    info.checked = true;
+    return info;
   } finally {
     client.close(force: true);
   }
 }
 
-class PatriotsScreen extends StatefulWidget {
-  const PatriotsScreen({super.key});
-
-  @override
-  State<PatriotsScreen> createState() => _PatriotsScreenState();
+class _RssVideo {
+  final String videoId;
+  final String title;
+  final DateTime? published;
+  const _RssVideo(this.videoId, this.title, this.published);
+  String get thumb => 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
 }
 
-class _PatriotsScreenState extends State<PatriotsScreen> {
-  static const _channel = MethodChannel('net.itak/emu');
-  final Map<String, _LiveInfo?> _live = {};
-  bool _loading = true;
-  int _focused = 0;
+String _fmtDate(DateTime? d) {
+  if (d == null) return '';
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return '${months[d.month - 1]} ${d.day}, ${d.year}';
+}
+
+// A channel's newest videos from its public RSS feed: no key,
+// no account, most recent first by construction.
+Future<List<_RssVideo>> _fetchVideos(String channelId) async {
+  final client = HttpClient();
+  client.userAgent = 'Mozilla/5.0 (Linux; Android 14) '
+      'AppleWebKit/537.36 (KHTML, like Gecko) '
+      'Chrome/120.0.0.0 Safari/537.36';
+  try {
+    final req = await client
+        .getUrl(Uri.parse(
+            'https://www.youtube.com/feeds/videos.xml?channel_id=$channelId'))
+        .timeout(const Duration(seconds: 12));
+    final resp = await req.close().timeout(const Duration(seconds: 12));
+    final buf = StringBuffer();
+    await for (final chunk in resp.transform(utf8.decoder)) {
+      buf.write(chunk);
+      if (buf.length > 400000) break;
+    }
+    final out = <_RssVideo>[];
+    for (final block in buf.toString().split('<entry>').skip(1)) {
+      final id = RegExp(r'<yt:videoId>([^<]+)</yt:videoId>').firstMatch(block);
+      final title = RegExp(r'<title>([^<]*)</title>').firstMatch(block);
+      if (id == null || title == null) continue;
+      final pub = RegExp(r'<published>([^<]*)</published>').firstMatch(block);
+      out.add(_RssVideo(
+        id.group(1)!,
+        _htmlUnescape(title.group(1)!),
+        pub == null ? null : DateTime.tryParse(pub.group(1)!),
+      ));
+      if (out.length >= 12) break;
+    }
+    return out;
+  } catch (_) {
+    return const [];
+  } finally {
+    client.close(force: true);
+  }
+}
+
+// Drawn flag motif for the banner (code-drawn on purpose: no
+// emoji anywhere in this app, and no flag image to license).
+class _FlagPainter extends CustomPainter {
+  final double opacity;
+  const _FlagPainter({this.opacity = 1});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stripeH = size.height / 7;
+    for (var i = 0; i < 7; i++) {
+      final paint = Paint()
+        ..color = (i.isEven ? const Color(0xFFB22234) : Colors.white)
+            .withOpacity(opacity);
+      canvas.drawRect(
+          Rect.fromLTWH(0, i * stripeH, size.width, stripeH + 1), paint);
+    }
+    final cantonW = size.width * 0.42;
+    final cantonH = stripeH * 4;
+    canvas.drawRect(Rect.fromLTWH(0, 0, cantonW, cantonH),
+        Paint()..color = const Color(0xFF3C3B6E).withOpacity(opacity));
+    final dot = Paint()..color = Colors.white.withOpacity(opacity);
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 6; c++) {
+        canvas.drawCircle(
+          Offset(cantonW * (c + 0.5) / 6, cantonH * (r + 0.5) / 4),
+          size.height * 0.016 + 1,
+          dot,
+        );
+      }
+    }
+  }
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-  }
+  bool shouldRepaint(_FlagPainter old) => old.opacity != opacity;
+}
 
-  Future<void> _load() async {
-    final results = await Future.wait(kPatriotChannels.map(_fetchLive));
-    if (!mounted) return;
-    setState(() {
-      for (var i = 0; i < kPatriotChannels.length; i++) {
-        _live[kPatriotChannels[i].channelId] = results[i];
-      }
-      _loading = false;
-    });
-  }
+// One focusable PATRIOTS tile in the game grid's own language:
+// dark card, white focus border, glow in the show's color.
+class _PatriotTile extends StatefulWidget {
+  final PatriotChannel ch;
+  final _LiveState? state;
+  final String? artUrl;
+  final VoidCallback onTap;
+  final bool autofocus;
+  final String? tag;
+  const _PatriotTile({
+    required this.ch,
+    required this.state,
+    required this.artUrl,
+    required this.onTap,
+    this.autofocus = false,
+    this.tag,
+  });
 
-  Future<void> _play(PatriotChannel ch) async {
-    final info = _live[ch.channelId];
-    try {
-      await _channel.invokeMethod('playStream', {
-        'channelId': ch.channelId,
-        'videoId': info?.videoId,
-        'name': ch.name,
-      });
-    } catch (_) {
-      // The player could not open; the grid stays where it was.
-    }
-    // What is live may have changed while they watched.
-    if (mounted) _load();
-  }
+  @override
+  State<_PatriotTile> createState() => _PatriotTileState();
+}
 
-  Widget _tileFallback(PatriotChannel ch) {
+class _PatriotTileState extends State<_PatriotTile> {
+  bool _focused = false;
+
+  Widget _fallback() {
+    final ch = widget.ch;
     return Container(
       color: ch.color.withOpacity(0.25),
       child: Column(
@@ -5198,7 +5347,7 @@ class _PatriotsScreenState extends State<PatriotsScreen> {
     );
   }
 
-  Widget _liveBadge() {
+  Widget _badge() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -5225,40 +5374,50 @@ class _PatriotsScreenState extends State<PatriotsScreen> {
     );
   }
 
-  Widget _tile(int index) {
-    final ch = kPatriotChannels[index];
-    final info = _live[ch.channelId];
-    final focused = _focused == index;
+  @override
+  Widget build(BuildContext context) {
+    final ch = widget.ch;
+    final state = widget.state;
+    final live = state?.live == true;
+    final art = state?.thumb ?? widget.artUrl;
+    final line1 = live && (state?.title?.isNotEmpty ?? false)
+        ? state!.title!
+        : ch.name;
+    final line2 = live
+        ? ch.name
+        : state?.upcoming == true
+            ? 'Stream scheduled'
+            : state?.checked == true
+                ? 'Not live right now'
+                : 'Checking...';
     return Focus(
-      autofocus: index == 0,
-      onFocusChange: (hasFocus) {
-        if (hasFocus) setState(() => _focused = index);
-      },
+      autofocus: widget.autofocus,
+      onFocusChange: (f) => setState(() => _focused = f),
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent &&
             (event.logicalKey == LogicalKeyboardKey.enter ||
                 event.logicalKey == LogicalKeyboardKey.select ||
                 event.logicalKey == LogicalKeyboardKey.space ||
                 event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
-          _play(ch);
+          widget.onTap();
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
       },
       child: GestureDetector(
-        onTap: () => _play(ch),
+        onTap: widget.onTap,
         child: AnimatedScale(
-          scale: focused ? 1.09 : 1.0,
+          scale: _focused ? 1.06 : 1.0,
           duration: const Duration(milliseconds: 120),
           child: Container(
             decoration: BoxDecoration(
               color: const Color(0xFF1E1E2A),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: focused ? Colors.white : Colors.white10,
-                width: focused ? 3.5 : 1,
+                color: _focused ? Colors.white : Colors.white10,
+                width: _focused ? 3.5 : 1,
               ),
-              boxShadow: focused
+              boxShadow: _focused
                   ? [
                       BoxShadow(
                         color: ch.color.withOpacity(0.6),
@@ -5272,20 +5431,55 @@ class _PatriotsScreenState extends State<PatriotsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (widget.tag != null)
+                  Container(
+                    color: const Color(0xFF14141E),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Text(
+                      widget.tag!,
+                      maxLines: 1,
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                          color: Color(0xFF29D3EE)),
+                    ),
+                  ),
                 Expanded(
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      if (info != null)
+                      if (art != null)
                         Image.network(
-                          'https://i.ytimg.com/vi/${info.videoId}/hqdefault.jpg',
+                          art,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _tileFallback(ch),
+                          errorBuilder: (_, __, ___) => _fallback(),
                         )
                       else
-                        _tileFallback(ch),
-                      if (info != null)
-                        Positioned(top: 8, left: 8, child: _liveBadge()),
+                        _fallback(),
+                      if (live)
+                        Positioned(top: 8, left: 8, child: _badge()),
+                      if (ch.rank != null)
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.72),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              '#${ch.rank}',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -5297,20 +5491,18 @@ class _PatriotsScreenState extends State<PatriotsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        info != null && info.title.isNotEmpty
-                            ? info.title
-                            : ch.name,
+                        line1,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight:
-                              focused ? FontWeight.bold : FontWeight.normal,
+                              _focused ? FontWeight.bold : FontWeight.normal,
                         ),
                       ),
                       Text(
-                        info != null ? ch.name : 'Not live right now',
+                        line2,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
@@ -5326,9 +5518,138 @@ class _PatriotsScreenState extends State<PatriotsScreen> {
       ),
     );
   }
+}
+
+class PatriotsScreen extends StatefulWidget {
+  const PatriotsScreen({super.key});
+
+  @override
+  State<PatriotsScreen> createState() => _PatriotsScreenState();
+}
+
+class _PatriotsScreenState extends State<PatriotsScreen> {
+  static const _channel = MethodChannel('net.itak/emu');
+  final Map<String, _LiveState> _live = {};
+  final Map<String, String> _art = {};
+  bool _checking = true;
+
+  List<PatriotChannel> get _all => [...kPatriotNetworks, ...kPatriotPodcasts];
+  List<PatriotChannel> get _liveNow =>
+      _all.where((s) => _live[s.channelId]?.live == true).toList();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  /// Live checks land in waves (heroes and networks first, then
+  /// the podcasts), then a cover art wave fills the tiles of the
+  /// shows that are not live with their newest episode art.
+  Future<void> _load() async {
+    final waves = <List<PatriotChannel>>[
+      kPatriotNetworks,
+      kPatriotPodcasts.take(15).toList(),
+      kPatriotPodcasts.skip(15).toList(),
+    ];
+    for (final wave in waves) {
+      await Future.wait(wave.map((s) async {
+        final info = await _fetchLiveState(s);
+        if (!mounted) return;
+        setState(() => _live[s.channelId] = info);
+      }));
+      if (!mounted) return;
+    }
+    if (mounted) setState(() => _checking = false);
+    final need = _all.where((s) => _live[s.channelId]?.live != true).toList();
+    for (var i = 0; i < need.length; i += 6) {
+      await Future.wait(need.skip(i).take(6).map((s) async {
+        final videos = await _fetchVideos(s.channelId);
+        if (!mounted || videos.isEmpty) return;
+        setState(() => _art[s.channelId] = videos.first.thumb);
+      }));
+      if (!mounted) return;
+    }
+  }
+
+  Future<void> _play(PatriotChannel ch, {String? videoId}) async {
+    try {
+      await _channel.invokeMethod('playStream', {
+        'channelId': ch.channelId,
+        'videoId': videoId ?? _live[ch.channelId]?.videoId,
+        'name': ch.name,
+      });
+    } catch (_) {
+      // The player could not open; the screen stays where it was.
+    }
+    // What is live may have changed while they watched.
+    if (mounted) _load();
+  }
+
+  void _activate(PatriotChannel ch) {
+    // Podcasts always open their window (David's layout call);
+    // a network that is live plays in one tap, the way it has
+    // worked for Terry since 1.87. Everything else opens the
+    // show's window.
+    if (ch.network && _live[ch.channelId]?.live == true) {
+      _play(ch);
+      return;
+    }
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => PatriotShowScreen(show: ch)))
+        .then((_) {
+      if (mounted) _load();
+    });
+  }
+
+  Widget _section(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(40, 20, 40, 10),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+          text,
+          style: const TextStyle(
+              fontSize: 19, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+        ),
+      ),
+    );
+  }
+
+  Widget _banner() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(40, 14, 40, 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E2A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white10),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: const Stack(
+        children: [
+          Positioned.fill(
+            child: CustomPaint(painter: _FlagPainter(opacity: 0.15)),
+          ),
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Text(
+              'Livestreams and shows from YouTube. Live ones play; '
+              'the rest open to their newest videos. BACK returns here.',
+              style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final heroA = kPatriotNetworks.first;
+    final heroB = kPatriotPodcasts.first;
     return Scaffold(
       appBar: AppBar(
         title: const Text('PATRIOTS'),
@@ -5342,40 +5663,459 @@ class _PatriotsScreenState extends State<PatriotsScreen> {
             colors: [Color(0xFF22103F), Color(0xFF120826), Color(0xFF081426)],
           ),
         ),
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
+        child: ListView(
+          padding: const EdgeInsets.only(bottom: 28),
+          children: [
+            _banner(),
+            const SizedBox(height: 14),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(24, 6, 24, 4),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Livestreams from YouTube. Pick one to watch. '
-                        'BACK returns here.',
-                        style: TextStyle(fontSize: 17, color: Colors.white54),
+                  Expanded(
+                    child: SizedBox(
+                      height: 252,
+                      child: _PatriotTile(
+                        ch: heroA,
+                        state: _live[heroA.channelId],
+                        artUrl: _art[heroA.channelId],
+                        autofocus: true,
+                        tag: 'FEATURED NETWORK',
+                        onTap: () => _activate(heroA),
                       ),
                     ),
                   ),
-                  // Breathing room so the focused tile (which
-                  // scales up) never runs into the line above it.
-                  const SizedBox(height: 14),
+                  const SizedBox(width: 22),
                   Expanded(
-                    child: GridView.builder(
-                      padding: const EdgeInsets.fromLTRB(40, 8, 40, 24),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 4,
-                        crossAxisSpacing: 22,
-                        mainAxisSpacing: 22,
-                        childAspectRatio: 1.15,
+                    child: SizedBox(
+                      height: 252,
+                      child: _PatriotTile(
+                        ch: heroB,
+                        state: _live[heroB.channelId],
+                        artUrl: _art[heroB.channelId],
+                        tag: 'NUMBER ONE PODCAST',
+                        onTap: () => _activate(heroB),
                       ),
-                      itemCount: kPatriotChannels.length,
-                      itemBuilder: (context, index) => _tile(index),
                     ),
                   ),
                 ],
               ),
+            ),
+            _section('RECOMMENDED LIVE'),
+            if (_liveNow.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 40),
+                child: Text(
+                  _checking
+                      ? 'Checking who is live right now...'
+                      : 'No live streams right now. When a show in the lineup goes live, it shows up here first.',
+                  style: const TextStyle(fontSize: 16, color: Colors.white54),
+                ),
+              )
+            else
+              SizedBox(
+                height: 196,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 40),
+                  itemCount: _liveNow.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 22),
+                  itemBuilder: (_, i) => SizedBox(
+                    width: 300,
+                    child: _PatriotTile(
+                      ch: _liveNow[i],
+                      state: _live[_liveNow[i].channelId],
+                      artUrl: _art[_liveNow[i].channelId],
+                      onTap: () => _activate(_liveNow[i]),
+                    ),
+                  ),
+                ),
+              ),
+            _section('NEWS NETWORKS'),
+            SizedBox(
+              height: 196,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 40),
+                itemCount: kPatriotNetworks.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 22),
+                itemBuilder: (_, i) => SizedBox(
+                  width: 300,
+                  child: _PatriotTile(
+                    ch: kPatriotNetworks[i],
+                    state: _live[kPatriotNetworks[i].channelId],
+                    artUrl: _art[kPatriotNetworks[i].channelId],
+                    onTap: () => _activate(kPatriotNetworks[i]),
+                  ),
+                ),
+              ),
+            ),
+            _section('TOP PODCASTS'),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(40, 4, 40, 8),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+                crossAxisSpacing: 22,
+                mainAxisSpacing: 22,
+                childAspectRatio: 1.15,
+              ),
+              itemCount: kPatriotPodcasts.length,
+              itemBuilder: (context, index) {
+                final ch = kPatriotPodcasts[index];
+                return _PatriotTile(
+                  ch: ch,
+                  state: _live[ch.channelId],
+                  artUrl: _art[ch.channelId],
+                  onTap: () => _activate(ch),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One show's window: live status and a watch button up top,
+// then the newest videos, most recent first.
+// ---------------------------------------------------------------------------
+class PatriotShowScreen extends StatefulWidget {
+  final PatriotChannel show;
+  const PatriotShowScreen({super.key, required this.show});
+
+  @override
+  State<PatriotShowScreen> createState() => _PatriotShowScreenState();
+}
+
+class _PatriotShowScreenState extends State<PatriotShowScreen> {
+  static const _channel = MethodChannel('net.itak/emu');
+  _LiveState? _live;
+  List<_RssVideo> _videos = const [];
+  bool _videosLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final liveFuture = _fetchLiveState(widget.show);
+    final videosFuture = _fetchVideos(widget.show.channelId);
+    final live = await liveFuture;
+    if (mounted) setState(() => _live = live);
+    final videos = await videosFuture;
+    if (mounted) {
+      setState(() {
+        _videos = videos;
+        _videosLoaded = true;
+      });
+    }
+  }
+
+  Future<void> _playVideo(String? videoId) async {
+    try {
+      await _channel.invokeMethod('playStream', {
+        'channelId': widget.show.channelId,
+        'videoId': videoId,
+        'name': widget.show.name,
+      });
+    } catch (_) {
+      // The player could not open; the window stays where it was.
+    }
+  }
+
+  Widget _playButton(String label, VoidCallback onTap, {bool red = false}) {
+    return Focus(
+      autofocus: red,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.select ||
+                event.logicalKey == LogicalKeyboardKey.space ||
+                event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
+          onTap();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 13),
+          decoration: BoxDecoration(
+            color: red ? const Color(0xFFC62828) : const Color(0xFF1E1E2A),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.play_arrow, color: Colors.white, size: 22),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                    color: Colors.white),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final show = widget.show;
+    final live = _live;
+    final isLive = live?.live == true;
+    final art = live?.thumb ??
+        (_videos.isNotEmpty ? _videos.first.thumb : null);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(show.name),
+        backgroundColor: Colors.transparent,
+      ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF22103F), Color(0xFF120826), Color(0xFF081426)],
+          ),
+        ),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(40, 14, 40, 30),
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E2A),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white10),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(
+                    height: 300,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (art != null)
+                          Image.network(
+                            art,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                Container(color: show.color.withOpacity(0.25)),
+                          )
+                        else
+                          Container(color: show.color.withOpacity(0.25)),
+                        if (isLive)
+                          Positioned(
+                            top: 12,
+                            left: 12,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFC62828),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                'LIVE',
+                                style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          live == null
+                              ? 'Checking live status...'
+                              : isLive
+                                  ? (live.title ?? 'Live now')
+                                  : live.upcoming
+                                      ? 'A live stream is scheduled, but it has not started yet.'
+                                      : 'No live stream right now.',
+                          style: const TextStyle(
+                              fontSize: 19, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 12),
+                        if (isLive)
+                          _playButton(
+                            'WATCH LIVE',
+                            () => _playVideo(live!.videoId),
+                            red: true,
+                          )
+                        else if (_videos.isNotEmpty)
+                          _playButton(
+                            'PLAY NEWEST VIDEO',
+                            () => _playVideo(_videos.first.videoId),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                const Text(
+                  'VIDEOS',
+                  style: TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1),
+                ),
+                const SizedBox(width: 14),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E2A),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Text(
+                    'Most recent',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (!_videosLoaded)
+              const Text('Pulling the newest videos...',
+                  style: TextStyle(fontSize: 16, color: Colors.white54))
+            else if (_videos.isEmpty)
+              const Text('No videos came back for this channel.',
+                  style: TextStyle(fontSize: 16, color: Colors.white54))
+            else
+              ..._videos.map((v) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _videoRow(v),
+                  )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _videoRow(_RssVideo v) {
+    return _VideoRow(
+      video: v,
+      onTap: () => _playVideo(v.videoId),
+    );
+  }
+}
+
+class _VideoRow extends StatefulWidget {
+  final _RssVideo video;
+  final VoidCallback onTap;
+  const _VideoRow({required this.video, required this.onTap});
+
+  @override
+  State<_VideoRow> createState() => _VideoRowState();
+}
+
+class _VideoRowState extends State<_VideoRow> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final v = widget.video;
+    return Focus(
+      onFocusChange: (f) => setState(() => _focused = f),
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.select ||
+                event.logicalKey == LogicalKeyboardKey.space ||
+                event.logicalKey == LogicalKeyboardKey.gameButtonA)) {
+          widget.onTap();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E2A),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: _focused ? Colors.white : Colors.white10,
+              width: _focused ? 3 : 1,
+            ),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Row(
+            children: [
+              Image.network(
+                v.thumb,
+                width: 168,
+                height: 96,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 168,
+                  height: 96,
+                  color: const Color(0xFF3C3B6E),
+                  child: const Icon(Icons.play_arrow,
+                      color: Colors.white, size: 32),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        v.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        _fmtDate(v.published),
+                        style: const TextStyle(
+                            fontSize: 13, color: Colors.white54),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(right: 16),
+                child: Icon(Icons.play_circle_fill,
+                    color: Color(0xFFC62828), size: 30),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
