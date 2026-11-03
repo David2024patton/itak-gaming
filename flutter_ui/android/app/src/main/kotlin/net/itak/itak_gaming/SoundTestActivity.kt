@@ -655,15 +655,16 @@ class SoundTestActivity : Activity() {
     }
 
     // Game sound path test: the jingle's three notes as bright
-    // band-limited square tones, generated at 32,000 Hz (the SNES
-    // rate) and converted to this box's output rate by the same
-    // AudioResampler the emulator uses, then played on a track
-    // built by the same shared builder. Rich harmonics are the
-    // point: a conversion that adds scratch or buzz is obvious on
-    // square tones and invisible on the soft jingle above.
+    // band-limited square tones, generated at 32,040 Hz (the SNES
+    // rate the emulator runs at since 1.95) and converted to this
+    // box's output rate by the same AudioResampler the emulator
+    // uses, then played on a track built by the same shared
+    // builder. Rich harmonics are the point: a conversion that
+    // adds scratch or buzz is obvious on square tones and
+    // invisible on the soft jingle above.
 
-    private val gameNoteFrames = 19200 // 0.60 s at 32,000 Hz
-    private val gameGapFrames = 2560 // 0.08 s at 32,000 Hz
+    private val gameNoteFrames = 19200 // 0.60 s at 32,040 Hz
+    private val gameGapFrames = 2560 // 0.08 s at 32,040 Hz
 
     private fun gameToneFrames(): Int =
         noteFreqs.size * gameNoteFrames + (noteFreqs.size - 1) * gameGapFrames
@@ -675,7 +676,7 @@ class SoundTestActivity : Activity() {
         var idx = frame
         for (n in noteFreqs.indices) {
             if (idx < gameNoteFrames) {
-                val t = idx / 32000.0
+                val t = idx / 32040.0
                 var s = 0.0
                 var k = 1
                 while (k <= 15) {
@@ -721,7 +722,7 @@ class SoundTestActivity : Activity() {
                 }
                 playTrack = track
                 track.play()
-                val resampler = AudioResampler(32000, nativeRate)
+                val resampler = AudioResampler(32040, nativeRate)
                 val totalFrames = gameToneFrames()
                 val chunkFrames = 533 // about one video frame of audio
                 var frame = 0
