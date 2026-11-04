@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,28 +77,13 @@ type NativeCore interface {
 	Close()
 }
 
-// nativeCores maps a core file name (what the app passes to
-// LoadCore) to its adapter constructor.
-var nativeCores = map[string]func() NativeCore{
-	"libgo_gameboy.so": func() NativeCore { return &gameboyCore{} },
-	"libgo_nes.so":     func() NativeCore { return &nesCore{} },
-	"libgo_snes.so":    func() NativeCore { return &snesCore{} },
-	"libgo_genesis.so": func() NativeCore { return &genesisCore{} },
-	"libgo_gba.so":     func() NativeCore { return &gbaCore{} },
-	"libgo_ps1.so":     func() NativeCore { return &ps1Core{} },
-}
-
-// LoadNative returns a bridge over the bundled native core for
-// the given core path, or false when the path names no bundled
-// core (the caller then falls back to the .so bridge).
-func LoadNative(corePath string) (*NativeBridge, bool) {
-	base := filepath.Base(corePath)
-	ctor, ok := nativeCores[base]
-	if !ok {
-		return nil, false
-	}
-	return &NativeBridge{core: ctor(), name: base}, true
-}
+// The bundled Go core registry (the nativeCores map and
+// LoadNative) lives in native_registry.go, compiled only
+// under the gocores build tag, with a stub in
+// native_registry_off.go for normal builds: the shipped
+// app carries no Go cores (1.102), so LoadNative reports
+// no bundled core there and every game resolves to the
+// Rust adapter or the libretro bridge.
 
 // NativeBridge serves the same method set as Bridge (bridge.go)
 // over a NativeCore, so the mobile package drives either
