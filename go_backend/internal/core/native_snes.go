@@ -67,7 +67,7 @@ func (c *snesCore) FPS() float64 {
 }
 
 // SampleRate mirrors the shell's DSP output rate.
-func (c *snesCore) SampleRate() float64 { return 32000 }
+func (c *snesCore) SampleRate() float64 { return 32040 }
 
 // SetInput: the engine's button bit order matches the
 // libretro joypad order 1:1 (see the shell's pollPad).
