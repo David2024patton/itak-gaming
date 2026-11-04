@@ -62,14 +62,15 @@ const (
 	ButtonR      = core.ButtonR
 )
 
-// LoadCore selects the core for the given core path. Bundled
-// Go cores resolve to their native adapter (linked into this
-// binary, one Go runtime in the process); a Rust adapter
-// library (libitak_<system>.so) resolves to the Rust switch
-// adapter, which drives it through the bridge ABI behind the
-// same NativeBridge; anything else falls back to loading the
-// libretro .so at the path. A build chooses Go or Rust per
-// core by which file name it ships for that system.
+// LoadCore selects the core for the given core path. A Rust
+// adapter library (libitak_<system>.so) resolves to the Rust
+// switch adapter, which drives it through the bridge ABI
+// behind the same NativeBridge; anything else falls back to
+// loading the libretro .so at the path. Bundled Go cores
+// (libgo_<system>.so names) resolve to their native adapter
+// only in gocores-tagged reference builds: the shipped app
+// carries no Go cores (1.102), so in the app the LoadNative
+// step below is a stub that never matches.
 func LoadCore(path string) error {
 	if nb, ok := core.LoadNative(path); ok {
 		emu = nb
