@@ -198,7 +198,7 @@ func (a *APU) advanceTimer(i, cycles int) {
 }
 
 // DrainAudio returns the pending stereo samples
-// (interleaved L, R at 32000 Hz) and clears the buffer.
+// (interleaved L, R at 32040 Hz) and clears the buffer.
 // The backing array stays with the APU and later Steps
 // overwrite it, so a caller that keeps the samples past
 // the next Step must copy them; the shells all consume
