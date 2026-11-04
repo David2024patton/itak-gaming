@@ -1465,102 +1465,140 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                               borderRadius: BorderRadius.circular(12),
                               child: Material(
                                 color: const Color(0xFF1B1B28),
-                                child: InkWell(
-                                  autofocus: p == _currentPlayer,
-                                  onFocusChange: (f) {
-                                    if (f) {
-                                      setLocal(() => focusedRow = p);
-                                    }
-                                  },
-                                  onTap: () async {
-                                    Navigator.pop(ctx);
-                                    await _selectPlayer(
-                                        _players.indexOf(p));
-                                  },
-                                  focusColor:
-                                      Colors.white.withOpacity(0.22),
-                                  child: Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(14, 10, 6, 10),
+                                // The row body and its three buttons
+                                // are SIBLINGS. Buttons nested inside
+                                // the row's own InkWell could never
+                                // be reached with the D-pad:
+                                // directional focus does not enter
+                                // the focused row's own rectangle
+                                // (proven on David's TV, 2026-11-03:
+                                // RIGHT presses in Manage players
+                                // went nowhere).
                                 child: Row(
                                   children: [
-                                    PlayerAvatar(name: p, size: 46),
-                                    const SizedBox(width: 14),
                                     Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            PlayerInfoStore.displayOf(p),
-                                            style: const TextStyle(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.bold,
-                                            ),
+                                      child: InkWell(
+                                        autofocus: p == _currentPlayer,
+                                        onFocusChange: (f) {
+                                          if (f) {
+                                            setLocal(() => focusedRow = p);
+                                          }
+                                        },
+                                        onTap: () async {
+                                          Navigator.pop(ctx);
+                                          await _selectPlayer(
+                                              _players.indexOf(p));
+                                        },
+                                        focusColor:
+                                            Colors.white.withOpacity(0.22),
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(
+                                              14, 10, 14, 10),
+                                          child: Row(
+                                            children: [
+                                              PlayerAvatar(name: p, size: 46),
+                                              const SizedBox(width: 14),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      PlayerInfoStore
+                                                          .displayOf(p),
+                                                      style: const TextStyle(
+                                                        fontSize: 20,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                    Text(
+                                                      _playerSubtitle(p),
+                                                      style: const TextStyle(
+                                                        fontSize: 13.5,
+                                                        color: Colors.white54,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              SizedBox(
+                                                width: 130,
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.end,
+                                                  children: [
+                                                    Text(
+                                                      _fmtDuration(
+                                                          totals[p]?[0] ?? 0),
+                                                      style: const TextStyle(
+                                                          fontSize: 17),
+                                                    ),
+                                                    Text(
+                                                      '${totals[p]?[1] ?? 0} plays',
+                                                      style: const TextStyle(
+                                                        fontSize: 13,
+                                                        color: Colors.white54,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
                                           ),
-                                          Text(
-                                            _playerSubtitle(p),
-                                            style: const TextStyle(
-                                              fontSize: 13.5,
-                                              color: Colors.white54,
-                                            ),
-                                          ),
-                                        ],
+                                        ),
                                       ),
                                     ),
-                                    SizedBox(
-                                      width: 130,
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.end,
-                                        children: [
-                                          Text(
-                                            _fmtDuration(
-                                                totals[p]?[0] ?? 0),
-                                            style: const TextStyle(
-                                                fontSize: 17),
-                                          ),
-                                          Text(
-                                            '${totals[p]?[1] ?? 0} plays',
-                                            style: const TextStyle(
-                                              fontSize: 13,
-                                              color: Colors.white54,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    IconButton(
-                                      icon: const Icon(Icons.edit),
-                                      tooltip: 'Edit player',
-                                      focusColor: const Color(0xFF00E676)
-                                          .withOpacity(0.35),
-                                      onPressed: () =>
-                                          _editPlayer(p, refresh),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(Icons.face),
-                                      tooltip: 'Change picture',
-                                      focusColor: const Color(0xFF00E676)
-                                          .withOpacity(0.35),
-                                      onPressed: () async {
-                                        await showAvatarPicker(context, p);
-                                        refresh();
+                                    Focus(
+                                      onFocusChange: (f) {
+                                        if (f) {
+                                          setLocal(() => focusedRow = p);
+                                        }
                                       },
+                                      child: IconButton(
+                                        icon: const Icon(Icons.edit),
+                                        tooltip: 'Edit player',
+                                        focusColor: const Color(0xFF00E676)
+                                            .withOpacity(0.35),
+                                        onPressed: () =>
+                                            _editPlayer(p, refresh),
+                                      ),
                                     ),
-                                    IconButton(
-                                      icon: const Icon(Icons.delete,
-                                          color: Colors.redAccent),
-                                      tooltip: 'Remove',
-                                      focusColor: const Color(0xFF00E676)
-                                          .withOpacity(0.35),
-                                      onPressed: () =>
-                                          _confirmRemove(p, refresh),
+                                    Focus(
+                                      onFocusChange: (f) {
+                                        if (f) {
+                                          setLocal(() => focusedRow = p);
+                                        }
+                                      },
+                                      child: IconButton(
+                                        icon: const Icon(Icons.face),
+                                        tooltip: 'Change picture',
+                                        focusColor: const Color(0xFF00E676)
+                                            .withOpacity(0.35),
+                                        onPressed: () async {
+                                          await showAvatarPicker(context, p);
+                                          refresh();
+                                        },
+                                      ),
                                     ),
+                                    Focus(
+                                      onFocusChange: (f) {
+                                        if (f) {
+                                          setLocal(() => focusedRow = p);
+                                        }
+                                      },
+                                      child: IconButton(
+                                        icon: const Icon(Icons.delete,
+                                            color: Colors.redAccent),
+                                        tooltip: 'Remove',
+                                        focusColor: const Color(0xFF00E676)
+                                            .withOpacity(0.35),
+                                        onPressed: () =>
+                                            _confirmRemove(p, refresh),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
                                   ],
-                                ),
-                              ),
                                 ),
                               ),
                             ),
@@ -1719,89 +1757,107 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                         borderRadius: BorderRadius.circular(12),
                         child: Material(
                           color: const Color(0xFF1B1B28),
-                          child: InkWell(
-                            autofocus: p == _currentPlayer,
-                            onFocusChange: (f) {
-                              if (f) {
-                                setLocal(() => focusedRow = p);
-                              }
-                            },
-                            onTap: () async {
-                              Navigator.pop(ctx);
-                              await _selectPlayer(_players.indexOf(p));
-                            },
-                            focusColor: Colors.white.withOpacity(0.22),
-                            child: Padding(
-                              padding:
-                                  const EdgeInsets.fromLTRB(14, 10, 6, 10),
-                              child: Row(
-                          children: [
-                            PlayerAvatar(name: p, size: 46),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
-                                children: [
-                                    Text(
-                                      PlayerInfoStore.displayOf(p),
-                                      style: const TextStyle(
-                                        fontSize: 20,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                          // Row body and the Assign button are
+                          // siblings, the same D-pad reachability
+                          // fix as Manage players (2026-11-03).
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: InkWell(
+                                  autofocus: p == _currentPlayer,
+                                  onFocusChange: (f) {
+                                    if (f) {
+                                      setLocal(() => focusedRow = p);
+                                    }
+                                  },
+                                  onTap: () async {
+                                    Navigator.pop(ctx);
+                                    await _selectPlayer(_players.indexOf(p));
+                                  },
+                                  focusColor: Colors.white.withOpacity(0.22),
+                                  child: Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        14, 10, 14, 10),
+                                    child: Row(
+                                      children: [
+                                        PlayerAvatar(name: p, size: 46),
+                                        const SizedBox(width: 14),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                PlayerInfoStore.displayOf(p),
+                                                style: const TextStyle(
+                                                  fontSize: 20,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              Text(
+                                                p == _currentPlayer
+                                                    ? 'Playing now · tap to keep playing'
+                                                    : 'Tap to play as ${PlayerInfoStore.displayOf(p)}',
+                                                style: const TextStyle(
+                                                  fontSize: 13.5,
+                                                  color: Colors.white54,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    Text(
-                                      p == _currentPlayer
-                                          ? 'Playing now · tap to keep playing'
-                                          : 'Tap to play as ${PlayerInfoStore.displayOf(p)}',
-                                      style: const TextStyle(
-                                        fontSize: 13.5,
-                                        color: Colors.white54,
-                                      ),
-                                    ),
-                                ],
+                                  ),
+                                ),
                               ),
-                            ),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
+                              Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
                                   children: [
-                                    const Icon(Icons.sports_esports,
-                                        size: 18, color: Colors.white54),
-                                    const SizedBox(width: 6),
-                                    Container(
-                                      constraints:
-                                          const BoxConstraints(maxWidth: 170),
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.sports_esports,
+                                            size: 18, color: Colors.white54),
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          constraints: const BoxConstraints(
+                                              maxWidth: 170),
+                                          child: Text(
+                                            controllerLabelFor(p),
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                fontSize: 14.5),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    TextButton(
+                                      onFocusChange: (f) {
+                                        if (f) {
+                                          setLocal(() => focusedRow = p);
+                                        }
+                                      },
+                                      onPressed: () =>
+                                          _assignController(p, refresh),
                                       child: Text(
-                                        controllerLabelFor(p),
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                            fontSize: 14.5),
+                                        _controllerMap.containsKey(p)
+                                            ? 'Change controller'
+                                            : 'Assign controller',
+                                        style:
+                                            const TextStyle(fontSize: 14.5),
                                       ),
                                     ),
                                   ],
                                 ),
-                                TextButton(
-                                  onPressed: () =>
-                                      _assignController(p, refresh),
-                                  child: Text(
-                                    _controllerMap.containsKey(p)
-                                        ? 'Change controller'
-                                        : 'Assign controller',
-                                    style: const TextStyle(fontSize: 14.5),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                      ),
-                      ),
-                      ),
-                      ),
+                    ),
                 ],
               ),
             ),
