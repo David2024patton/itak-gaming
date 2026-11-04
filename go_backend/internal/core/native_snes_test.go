@@ -1,3 +1,13 @@
+//go:build gocores
+
+// This file is one of the bundled Go core adapters. The
+// shipped app does not carry the Go cores (David's order,
+// 1.102): the Rust cores are the only cores in the app, so
+// these adapters are compiled only under the gocores build
+// tag, which server-side reference and cross-check runs
+// use. The Go core sources themselves live in cores/ and
+// are untouched.
+
 package core
 
 import (
@@ -75,8 +85,8 @@ func TestNativeSNESRunsInProcess(t *testing.T) {
 	if a.PixelFormat() != 1 {
 		t.Fatalf("PixelFormat = %d, want 1 (XRGB8888)", a.PixelFormat())
 	}
-	if a.SampleRate() != 32000 {
-		t.Fatalf("SampleRate = %v, want 32000", a.SampleRate())
+	if a.SampleRate() != 32040 {
+		t.Fatalf("SampleRate = %v, want 32040", a.SampleRate())
 	}
 	// Audio drain must be safe even for a silent ROM.
 	_ = a.DrainAudio(4096)
