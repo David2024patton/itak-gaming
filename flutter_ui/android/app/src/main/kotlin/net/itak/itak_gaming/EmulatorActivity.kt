@@ -59,7 +59,7 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private lateinit var glView: EmuGLView
-    private var coreAssetName: String = "libgo_snes.so"
+    private var coreAssetName: String = "libitak_snes.so"
     private var audioTrack: AudioTrack? = null
     @Volatile private var running = false
     @Volatile private var paused = false
@@ -535,7 +535,7 @@ class EmulatorActivity : Activity(), TextureListener {
         )
         setContentView(rootFrame)
 
-        val coreAsset = intent.getStringExtra(EXTRA_CORE) ?: "libgo_snes.so"
+        val coreAsset = intent.getStringExtra(EXTRA_CORE) ?: "libitak_snes.so"
         coreAssetName = coreAsset
         romPath = intent.getStringExtra(EXTRA_ROM) ?: return finish()
         Log.i(TAG, "onCreate: core=$coreAsset rom=$romPath")
