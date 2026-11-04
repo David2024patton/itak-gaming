@@ -1,6 +1,6 @@
 // S-DSP: the SNES digital signal processor, modelled one
 // output sample at a time (one StepSample call is one
-// 1/32000 s tick). Register semantics, BRR decoding, the
+// 1/32040 s tick). Register semantics, BRR decoding, the
 // Gaussian interpolation kernel, the ADSR/GAIN envelope
 // rates, pitch modulation, noise generation and the echo
 // FIR all follow the published hardware documentation in
@@ -20,7 +20,7 @@ const (
 )
 
 // envRatePeriod is the published 32 entry envelope rate
-// table: the number of 32000 Hz sample ticks between two
+// table: the number of 32040 Hz sample ticks between two
 // envelope steps for a 5 bit rate value. Entry 31 is 0 in
 // the table; a period of 0 means a step on every tick, so
 // ratePeriod maps it to 1.
@@ -502,7 +502,7 @@ func noiseValue(pattern uint16) int {
 }
 
 // StepSample produces one stereo output sample at
-// 32000 Hz. Order per sample: KOFF and FLG reset are
+// 32040 Hz. Order per sample: KOFF and FLG reset are
 // applied, pending KON bits are consumed, the noise
 // clock runs, voices are processed in order 0..7 (so
 // pitch modulation sees the previous voice fresh OUTX),
