@@ -236,6 +236,8 @@ class AudioDiag {
         guardTrims: Long,
         peakStretch: Double,
         framesDelivered: Long,
+        outputTrims: Long,
+        outputTrimmedFrames: Long,
     ): JSONObject {
         active = false
         val o = JSONObject()
@@ -294,13 +296,16 @@ class AudioDiag {
         o.put("underrunEpisodes", underrunEpisodes)
         o.put("starvedMs", starvedMs)
         o.put("guardTrims", guardTrims)
+        o.put("outputTrims", outputTrims)
+        o.put("outputTrimmedFrames", outputTrimmedFrames)
         Log.i(
             TAG,
             "audio session end: game=$game" +
                 (if (latCount > 0) " latency avg=${"%.1f".format(latSum / latCount)}ms" +
                     " max=${"%.1f".format(latMax)}ms" else " latency unmeasured") +
                 (if (leadCount > 0) " lead avg=${"%.1f".format(leadSum / leadCount)}ms" else "") +
-                " underruns=$underrunEpisodes starved~${starvedMs.toInt()}ms"
+                " underruns=$underrunEpisodes starved~${starvedMs.toInt()}ms" +
+                " outputTrims=$outputTrims"
         )
         return o
     }
