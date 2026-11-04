@@ -1,0 +1,50 @@
+package core
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// writeGame writes a synthetic game image to a fresh temp
+// file and returns its path. Shared by the adapter tests
+// (the gocores-tagged native adapter tests and the Rust
+// adapter tests, which run in every build).
+func writeGame(t *testing.T, name string, data []byte) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// gbROM mirrors go-gameboy's cart test fixture: 32 KB ROM-only
+// cartridge with the boot logo, header checksum, and a spin
+// loop at the entry point.
+func gbROM() []byte {
+	data := make([]byte, 32768)
+	logo := [48]byte{
+		0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83,
+		0x00, 0x0C, 0x00, 0x0D, 0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+		0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99, 0xBB, 0xBB, 0x67, 0x63,
+		0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
+	}
+	copy(data[0x104:0x134], logo[:])
+	copy(data[0x134:], "TESTCART")
+	data[0x100] = 0x00 // nop
+	data[0x101] = 0xC3 // jp 0x0150
+	data[0x102] = 0x50 //
+	data[0x103] = 0x01 //
+	data[0x150] = 0x18 // jr -2 (spin)
+	data[0x151] = 0xFE //
+	data[0x147] = 0x00 // ROM only
+	data[0x148] = 0x00 // 32 KB
+	data[0x149] = 0x00 // no RAM
+	var chk uint8
+	for i := 0x134; i <= 0x14C; i++ {
+		chk = chk - data[i] - 1
+	}
+	data[0x14D] = chk
+	return data
+}
