@@ -2617,8 +2617,6 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
 // Settings.
 // ---------------------------------------------------------------------------
 
-const List<String> kFilterNames = ['Sharp', 'Smooth', 'Pixel Perfect'];
-const List<String> kDisplayNames = ['Smooth 60', 'Steady 30'];
 
 // ---------------------------------------------------------------------------
 // Online play: browse, create, and join lobbies on the iTaK lobby
@@ -4128,8 +4126,6 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   int _row = 0;
-  int _filter = 0;
-  int _display = 0;
   bool _swapAB = false;
   bool _autoArt = true;
   bool _autoSave = true;
@@ -4145,8 +4141,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final FocusNode _focusNode = FocusNode();
   final ScrollController _settingsScroll = ScrollController();
 
-  static const int _rowCount = 15;
-  // Picture, Display, Swap, Auto art, Auto-save, Friend alerts,
+  static const int _rowCount = 13;
+  // Swap, Auto art, Auto-save, Friend alerts,
   // Sound test, App updates, Logs, Space background, Intro video,
   // Debug reports, Send debug report now, Install code, Back
 
@@ -4160,8 +4156,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _load() async {
-    final f = await Prefs.getInt('filter_mode');
-    final d = await Prefs.getInt('display_mode');
     final sw = await Prefs.getInt('swap_ab');
     final a = await Prefs.get('art_autofetch');
     final asv = await Prefs.get('autosave');
@@ -4178,8 +4172,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {}
     if (!mounted) return;
     setState(() {
-      _filter = (f ?? 0).clamp(0, kFilterNames.length - 1);
-      _display = (d ?? 0).clamp(0, kDisplayNames.length - 1);
       _swapAB = (sw ?? 0) != 0;
       _autoArt = a != '0';
       _autoSave = asv != '0';
@@ -4260,36 +4252,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _adjust(int delta) {
     if (_row == 0) {
-      final v = (_filter + delta + kFilterNames.length) % kFilterNames.length;
-      setState(() => _filter = v);
-      Prefs.setInt('filter_mode', v);
-    } else if (_row == 1) {
-      final v = (_display + delta + kDisplayNames.length) % kDisplayNames.length;
-      setState(() => _display = v);
-      Prefs.setInt('display_mode', v);
-    } else if (_row == 2) {
       setState(() => _swapAB = !_swapAB);
       Prefs.setInt('swap_ab', _swapAB ? 1 : 0);
-    } else if (_row == 3) {
+    } else if (_row == 1) {
       setState(() => _autoArt = !_autoArt);
       Prefs.set('art_autofetch', _autoArt ? '1' : '0');
-    } else if (_row == 4) {
+    } else if (_row == 2) {
       setState(() => _autoSave = !_autoSave);
       Prefs.set('autosave', _autoSave ? '1' : '0');
-    } else if (_row == 5) {
+    } else if (_row == 3) {
       setState(() => _friendAlerts = !_friendAlerts);
       Prefs.set('friend_alerts', _friendAlerts ? '1' : '0');
-    } else if (_row == 9) {
+    } else if (_row == 7) {
       setState(() => _spaceBg = !_spaceBg);
       Prefs.set('space_bg', _spaceBg ? '1' : '0');
-    } else if (_row == 10) {
+    } else if (_row == 8) {
       setState(() => _introVideo = !_introVideo);
       Prefs.set('intro_video', _introVideo ? '1' : '0');
-    } else if (_row == 11) {
+    } else if (_row == 9) {
       setState(() => _debugChute = !_debugChute);
       Prefs.set('debug_chute', _debugChute ? '1' : '0');
     }
-    // Row 13 (Install code) is read-only: adjust does nothing.
+    // Row 11 (Install code) is read-only: adjust does nothing.
   }
 
   // Settings -> Send debug report now. The toggle gates it: with
@@ -4350,15 +4334,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 14) {
+      if (_row == 12) {
         Navigator.pop(context);
-      } else if (_row == 12) {
+      } else if (_row == 10) {
         _sendReportNow();
-      } else if (_row == 8) {
-        _openLogs();
-      } else if (_row == 7) {
-        _openUpdates();
       } else if (_row == 6) {
+        _openLogs();
+      } else if (_row == 5) {
+        _openUpdates();
+      } else if (_row == 4) {
         _openSoundTest();
       } else {
         _adjust(1);
@@ -4449,44 +4433,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _settingRow(
-                      index: 0,
-                      label: 'Picture',
-                    value: kFilterNames[_filter],
-                    hint: 'Sharp keeps pixels crisp, Smooth softens, Pixel Perfect is raw',
-                  ),
-                  _settingRow(
-                    index: 1,
-                    label: 'Display',
-                    value: kDisplayNames[_display],
-                    hint: 'Steady 30 draws an even 30 frames a second; the game always runs full speed',
-                  ),
-                  _settingRow(
-                    index: 2,
+                    index: 0,
                     label: 'Swap A and B buttons',
                     value: _swapAB ? 'On' : 'Off',
                     hint: 'Trade the two main buttons if a controller feels backwards',
                   ),
                   _settingRow(
-                    index: 3,
+                    index: 1,
                     label: 'Download box art',
                     value: _autoArt ? 'On' : 'Off',
                     hint: 'Fetches cover art automatically when a new game shows up',
                   ),
                   _settingRow(
-                    index: 4,
+                    index: 2,
                     label: 'Auto-save',
                     value: _autoSave ? 'On' : 'Off',
                     hint: 'Saves your game every minute and when you exit, so you never lose progress',
                   ),
                   _settingRow(
-                    index: 5,
+                    index: 3,
                     label: 'Friend alerts',
                     value: _friendAlerts ? 'On' : 'Off',
                     hint: 'A banner and a chime when a friend comes online or starts playing',
                   ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 6);
+                      setState(() => _row = 4);
                       _openSoundTest();
                     },
                     child: AnimatedContainer(
@@ -4498,8 +4470,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 6 ? Colors.white : Colors.white12,
-                          width: _row == 6 ? 3 : 1,
+                          color: _row == 4 ? Colors.white : Colors.white12,
+                          width: _row == 4 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
@@ -4532,7 +4504,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 7);
+                      setState(() => _row = 5);
                       _openUpdates();
                     },
                     child: AnimatedContainer(
@@ -4544,8 +4516,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 7 ? Colors.white : Colors.white12,
-                          width: _row == 7 ? 3 : 1,
+                          color: _row == 5 ? Colors.white : Colors.white12,
+                          width: _row == 5 ? 3 : 1,
                         ),
                       ),
                       child: Row(
@@ -4579,7 +4551,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 8);
+                      setState(() => _row = 6);
                       _openLogs();
                     },
                     child: AnimatedContainer(
@@ -4591,8 +4563,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 8 ? Colors.white : Colors.white12,
-                          width: _row == 8 ? 3 : 1,
+                          color: _row == 6 ? Colors.white : Colors.white12,
+                          width: _row == 6 ? 3 : 1,
                         ),
                       ),
                       child: Row(
@@ -4626,26 +4598,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   _settingRow(
-                    index: 9,
+                    index: 7,
                     label: 'Space background',
                     value: _spaceBg ? 'On' : 'Off',
                     hint: 'Fly through space behind the home screen: warp streaks, drifting stars and galaxies',
                   ),
                   _settingRow(
-                    index: 10,
+                    index: 8,
                     label: 'Intro video',
                     value: _introVideo ? 'On' : 'Off',
                     hint: 'Plays the iTaK intro when the app opens; press any button to skip it',
                   ),
                   _settingRow(
-                    index: 11,
+                    index: 9,
                     label: 'Debug reports',
                     value: _debugChute ? 'On' : 'Off',
                     hint: 'Sends this stick\'s app log and game speeds to our server so problems can be checked remotely',
                   ),
                   GestureDetector(
                     onTap: () {
-                      setState(() => _row = 12);
+                      setState(() => _row = 10);
                       _sendReportNow();
                     },
                     child: AnimatedContainer(
@@ -4657,8 +4629,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         color: const Color(0xFF1B1B28),
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
-                          color: _row == 12 ? Colors.white : Colors.white12,
-                          width: _row == 12 ? 3 : 1,
+                          color: _row == 10 ? Colors.white : Colors.white12,
+                          width: _row == 10 ? 3 : 1,
                         ),
                       ),
                       child: Row(
@@ -4695,7 +4667,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                   _settingRow(
-                    index: 13,
+                    index: 11,
                     label: 'Install code',
                     value: _installCodeShort,
                     hint: 'This stick\'s own code for debug reports: read it to whoever is checking a problem',
@@ -4712,8 +4684,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           color:
-                              _row == 14 ? Colors.white : Colors.white12,
-                          width: _row == 14 ? 3 : 1,
+                              _row == 12 ? Colors.white : Colors.white12,
+                          width: _row == 12 ? 3 : 1,
                         ),
                       ),
                       child: const Row(
@@ -4729,7 +4701,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Changes apply the next time a game starts. You can also change Picture and Display mid-game from the pause menu.',
+                      'Changes apply the next time a game starts.',
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 15, color: Colors.white54),
                     ),
