@@ -547,7 +547,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "launch" -> {
-                        val core = call.argument<String>("core") ?: "libgo_snes.so"
+                        val core = call.argument<String>("core") ?: "libitak_snes.so"
                         val rom = call.argument<String>("rom")
                         if (rom == null) {
                             result.error("NO_ROM", "rom path required", null)
