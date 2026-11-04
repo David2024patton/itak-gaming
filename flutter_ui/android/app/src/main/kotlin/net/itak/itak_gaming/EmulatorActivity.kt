@@ -67,6 +67,11 @@ class EmulatorActivity : Activity(), TextureListener {
 
     /** Stereo frames the AudioTrack has accepted; read by the game loop for audio sync. */
     @Volatile private var writtenFrames = 0L
+    // R4 (1.101): the converted-output backlog trim in the
+    // audio thread (the D1 discard) used to be counted
+    // nowhere; these counters surface it in AudioDiag.
+    @Volatile private var outputTrims = 0L
+    @Volatile private var outputTrimmedFrames = 0L
 
     /** Presentation-layer stream stretcher; see AudioCushion. */
     private val audioCushion = AudioCushion()
@@ -507,10 +512,12 @@ class EmulatorActivity : Activity(), TextureListener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.BLACK))
 
-        // Restore the saved picture filter and display mode.
+        // Picture and Display are fixed since 1.101 (Sharp
+        // picture, draw every frame); their settings were
+        // removed so nothing can conflict with the sound
+        // chain. The old filter_mode and display_mode prefs
+        // are simply never read again.
         val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
-        FilterSettings.mode = prefs.getInt("filter_mode", 0)
-        FilterSettings.displayMode = prefs.getInt("display_mode", 0)
         swapAB = prefs.getInt("swap_ab", 0) != 0
         Log.i(TAG, "swap_ab = $swapAB")
         autoSaveEnabled = prefs.getString("autosave", "1") != "0"
@@ -2238,20 +2245,12 @@ class EmulatorActivity : Activity(), TextureListener {
             audioResampler = null
             return
         }
-        if (coreRate == 32000) {
-            // The one core that declares 32,000 Hz is the SNES,
-            // and 32,000 is the nominal figure from the hardware
-            // divider math. Measured SNES sound oscillators run
-            // nearer 32,040 Hz (a ceramic resonator with loose
-            // tolerance), the value the emulator ecosystem
-            // standardized on after Snes9x's own scratchy-sound
-            // fix. Run everything downstream (conversion ratio,
-            // gate cap, cushion scaling) at 32,040 instead: at a
-            // fixed wrong ratio the audio buffer creeps until
-            // the correction lands as a pop.
-            Log.i(TAG, "audio rate adjusted: core reports 32000, using 32040 (measured SNES APU rate)")
-            coreRate = 32040
-        }
+        // The SNES core reports its measured hardware rate
+        // (32,040 Hz) itself since 1.101; the app-side rewrite
+        // that used to patch a reported 32,000 up to 32,040 is
+        // gone, because a rate patched in the app while the
+        // core still produced at 32,000 was a built-in
+        // 40 samples per second shortage.
         coreAudioRate = coreRate
         Log.i(TAG, "audio rate = $coreRate")
 
@@ -2259,12 +2258,11 @@ class EmulatorActivity : Activity(), TextureListener {
         // platform converts to the device rate on its documented
         // high-quality path; their tracks keep opening at the core
         // rate, exactly as before. The cores that declare a
-        // non-standard rate (SNES 32,000, GBA 32,768) used to hand
+        // non-standard rate (SNES 32,040, GBA 32,768) used to hand
         // that rate to the stick's mixer and inherit whatever
         // converter quality it chose. Those now convert inside the
         // app (AudioResampler) and the track opens at the device's
-        // own output rate. (The SNES figure below is the adjusted
-        // 32,040 from the block above.)
+        // own output rate.
         val nativeRate = EmuAudioOutput.deviceOutputRate(this)
         val useResampler = coreRate != nativeRate && coreRate != 44100
         trackAudioRate = if (useResampler) nativeRate else coreRate
@@ -2283,6 +2281,8 @@ class EmulatorActivity : Activity(), TextureListener {
         )
         audioTrack = EmuAudioOutput.buildTrack(trackAudioRate)
         audioCushion.reset()
+        outputTrims = 0L
+        outputTrimmedFrames = 0L
         audioTrack?.play()
         // Open the diagnostics session (see AudioDiag). The
         // buffer figure is the size the built track reports for
@@ -2538,6 +2538,8 @@ class EmulatorActivity : Activity(), TextureListener {
                                 var dropBytes = pending.size - 65536
                                 dropBytes -= dropBytes % 4
                                 pending = pending.copyOfRange(dropBytes, pending.size)
+                                outputTrims++
+                                outputTrimmedFrames += dropBytes / 4
                                 Log.w(TAG, "audio: output backlog trimmed, track stalled")
                             }
                         }
@@ -2632,11 +2634,9 @@ class EmulatorActivity : Activity(), TextureListener {
                 val elapsed = (System.nanoTime() - start) / 1_000_000
                 tRun += elapsed
                 frameCount++
-                // Steady 30 draws every other frame; the core still runs
-                // (and sounds) at full speed.
-                if (FilterSettings.displayMode == 0 || frameCount % 2L == 0L) {
-                    glView.requestRender()
-                }
+                // Draw every emulated frame (fixed since 1.101;
+                // the old Steady 30 draw toggle was removed).
+                glView.requestRender()
                 if (frameCount % 600 == 0L) {
                     Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
                     tRun = 0
@@ -2686,14 +2686,27 @@ class EmulatorActivity : Activity(), TextureListener {
             // wait instead of producing more. Without this the core
             // and the sound card drift apart by fractions of a percent
             // until the buffer starves (crackle) or floods (skips).
+            // Since 1.101 the gate parks until the lead drains to
+            // the cap, the shape the working emulators use
+            // (Snes9x S9xSyncSound, jgenesis audio sync): the old
+            // soft cap gave up after 12 ms and produced anyway, so
+            // on heavy scenes the lead sat over the cap for good
+            // and production ran unslaved. The 250 ms safety bound
+            // keeps a genuinely stalled track from freezing the
+            // game; hitting it is logged, and the deadline pacer
+            // above resyncs instead of fast-forwarding.
             val track = audioTrack
             if (track != null) {
-                var guard = 0
-                while (running && !paused && guard < 12) {
+                var parkedMs = 0
+                while (running && !paused) {
                     val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
                     if (writtenFrames - played <= audioGateCapFrames) break
+                    if (parkedMs >= 250) {
+                        Log.w(TAG, "audio gate: track stalled, producing anyway after 250 ms park")
+                        break
+                    }
                     Thread.sleep(1)
-                    guard++
+                    parkedMs++
                 }
             }
         }
@@ -2890,8 +2903,6 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         try { audioTrack?.pause() } catch (e: Exception) { /* ignore */ }
 
-        val filterName = FilterSettings.NAMES[FilterSettings.mode]
-        val displayName = FilterSettings.DISPLAY_NAMES[FilterSettings.displayMode]
         val cheatLabel =
             if (enabledCheats.isEmpty()) "Cheats" else "Cheats: ${enabledCheats.size} on"
         // Label/action pairs, so entries can slot in (Chat, online
@@ -2906,8 +2917,6 @@ class EmulatorActivity : Activity(), TextureListener {
                 keepPaused = true
                 window.decorView.postDelayed({ showChatPanel() }, 200)
             })
-            entries.add("Picture: $filterName" to { cycleFilter() })
-            entries.add("Display: $displayName" to { toggleDisplay() })
             entries.add("Leave" to {
                 try { Mobile.netplayStopWatch() } catch (e: Exception) { /* already gone */ }
                 finish()
@@ -2965,8 +2974,6 @@ class EmulatorActivity : Activity(), TextureListener {
             keepPaused = true
             window.decorView.postDelayed({ showCheats() }, 200)
         })
-        entries.add("Picture: $filterName" to { cycleFilter() })
-        entries.add("Display: $displayName" to { toggleDisplay() })
         // Exit Game appears at both ends of the menu on
         // purpose (David, 2026-10-15): top for a fast exit
         // from Resume, bottom where it has always been.
@@ -3277,21 +3284,6 @@ class EmulatorActivity : Activity(), TextureListener {
         }
     }
 
-    private fun cycleFilter() {
-        FilterSettings.mode = (FilterSettings.mode + 1) % FilterSettings.NAMES.size
-        getSharedPreferences("itak_prefs", MODE_PRIVATE)
-            .edit().putInt("filter_mode", FilterSettings.mode).apply()
-        Toast.makeText(this, "Picture: ${FilterSettings.NAMES[FilterSettings.mode]}", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun toggleDisplay() {
-        FilterSettings.displayMode = (FilterSettings.displayMode + 1) % FilterSettings.DISPLAY_NAMES.size
-        getSharedPreferences("itak_prefs", MODE_PRIVATE)
-            .edit().putInt("display_mode", FilterSettings.displayMode).apply()
-        Log.i(TAG, "display mode = ${FilterSettings.DISPLAY_NAMES[FilterSettings.displayMode]}")
-        Toast.makeText(this, "Display: ${FilterSettings.DISPLAY_NAMES[FilterSettings.displayMode]}", Toast.LENGTH_SHORT).show()
-    }
-
     // ---------- Keys ----------
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -3442,6 +3434,8 @@ class EmulatorActivity : Activity(), TextureListener {
                     totals.guardTrims,
                     totals.peakStretch,
                     writtenFrames,
+                    outputTrims,
+                    outputTrimmedFrames,
                 )
                 AudioDiag.saveLast(this, summary)
                 DebugChute.enqueueFull(this, "game_exit")
