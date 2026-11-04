@@ -1,1 +1,1 @@
-SNES games run faster again. Heavy scenes now hold close to the real hardware pace, and in the Zelda rain scene the sound gaps dropped from hundreds in two minutes to about two dozen. Your saves carry over and there is nothing to set up.
+The SNES sound is finished. The sound chip timing inside the core was rebuilt to match the real hardware, and in the Zelda rain scene the sound gaps dropped from hundreds to almost none. Games also run a touch faster. Your saves carry over and there is nothing to set up.
