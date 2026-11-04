@@ -6,11 +6,15 @@
 // $2140-$2143), and the master-clock line timing that ties
 // them together.
 //
-// The APU runs on its own 1.024 MHz oscillator, independent
-// of the master clock (21.477272 MHz on NTSC, 21.28137 MHz
-// on PAL). The machine advances it by exact ratio
+// The APU runs on its own oscillator, independent of the
+// master clock (21.477272 MHz on NTSC, 21.28137 MHz on
+// PAL). Measured hardware runs that oscillator at
+// 1.025280 MHz, not the nominal on-paper 1.024 MHz, and
+// working emulators use the measured rate, so this core
+// does too: the DSP output is 1025280 / 32 = 32040 Hz.
+// The machine advances it by exact ratio
 // accumulation: every master clock delta is multiplied by
-// 1024000 and divided by the region's master clock rate,
+// 1025280 and divided by the region's master clock rate,
 // with the remainder carried in apuRem, so the long-term
 // SPC rate is exact and save states resume the phase
 // bit-exactly (apuRem is part of the system block).
@@ -98,10 +102,12 @@ const (
 	linesPAL  = 312
 
 	// spcClock is the APU oscillator rate in cycles per
-	// second. The SPC700 runs on its own oscillator, so
-	// this is the same in both regions; only the master
-	// clock it is ratioed against changes.
-	spcClock = 1024000
+	// second: the measured hardware rate 1025280 (the
+	// nominal 1024000 is the on-paper figure). The SPC700
+	// runs on its own oscillator, so this is the same in
+	// both regions; only the master clock it is ratioed
+	// against changes.
+	spcClock = 1025280
 )
 
 // dmaChannel holds one DMA/HDMA channel's register file
@@ -289,9 +295,9 @@ func (s *System) PPU() *ppu.PPU { return s.ppu }
 func (s *System) APU() *apu.APU { return s.apu }
 
 // AudioBuffer drains the APU's pending stereo samples:
-// interleaved L, R int16 at 32000 Hz. A frame of runtime
-// produces about 534 samples (1068 values) on NTSC and
-// about 640 on PAL, matching the longer PAL frame. The
+// interleaved L, R int16 at 32040 Hz. A frame of runtime
+// produces about 533 samples (1066 values) on NTSC and
+// about 641 on PAL, matching the longer PAL frame. The
 // buffer is empty until the machine has run.
 func (s *System) AudioBuffer() []int16 { return s.apu.DrainAudio() }
 
