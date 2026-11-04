@@ -1,3 +1,13 @@
+//go:build gocores
+
+// This file is one of the bundled Go core adapters. The
+// shipped app does not carry the Go cores (David's order,
+// 1.102): the Rust cores are the only cores in the app, so
+// these adapters are compiled only under the gocores build
+// tag, which server-side reference and cross-check runs
+// use. The Go core sources themselves live in cores/ and
+// are untouched.
+
 package mobile
 
 import (
