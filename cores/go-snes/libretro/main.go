@@ -78,7 +78,7 @@ const (
 	regionNTSC         = 0
 	snesFPS            = 60.0988 // NTSC SNES frame rate
 	snesAspect         = 1.33333 // 4/3, the app convention for SNES
-	snesSampleRate     = 32000   // DSP output rate, stereo
+	snesSampleRate     = 32040   // DSP output rate, stereo
 	memSaveRAM         = 0
 	memSystemRAM       = 1
 )
