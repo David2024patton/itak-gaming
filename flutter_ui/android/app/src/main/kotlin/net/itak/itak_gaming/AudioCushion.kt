@@ -30,24 +30,46 @@ import kotlin.math.floor
  * involved; the core's production, content, saves and netplay state
  * are untouched.
  *
- * The controller is a band regulator on the track lead (frames the
- * track has accepted minus frames the DAC has played, the same
- * figure the game loop's audio gate uses). Below the band the
- * stretch pushes up, above it the stretch eases off, inside it the
- * stretch glides slowly back to 1.0. The band sits below the gate
- * cap on purpose: the gate's own sawtooth parks the average lead a
- * few hundred frames under the cap, and a point target at the cap
- * would fight that sawtooth. Constants were tuned against a
- * host-side simulation of this exact pipeline (game loop pacing,
- * gate, drain, track, DAC) driven by the TV's measured frame times:
- * baseline starved about 29,600 samples (roughly 0.93 s of audio,
- * in about 970 bursts) across the file-select stretch; with the
- * cushion it starved zero, holding at least ~700 frames of lead
- * throughout, at an average stretch of about 1.05 while engaged.
- * The cushion fully covers production deficits up to about 7.4
- * percent (the S_MAX clamp); beyond that it still stretches the
- * bank proportionally (an 18.5 ms/frame probe cut starvation from
- * about 2,210 ms to about 400 ms) but cannot hold the stream alone.
+ * The controller works on the track lead (frames the track has
+ * accepted minus frames the DAC has played, the same figure the
+ * game loop's audio gate uses).
+ *
+ * Controller law (1.96, replaces the band regulator). The shipped
+ * band law integrated the lead error with fixed gains, and a real
+ * session on David's TV (2026-11-03, Zelda intro) showed the
+ * result: the stretch hunted between about 1.02 and the 1.08
+ * clamp in a roughly four second cycle while the true deficit
+ * only needed about 1.03, a slow pitch warble with almost no
+ * actual starvation. The new law is a proportional tracker plus
+ * a fast guard. A one second mean of the lead maps linearly to
+ * the target stretch: at the 1,750 frame setpoint or above it
+ * the target is exactly 1.0, and the further the mean sits below
+ * the setpoint, the more stretch the target asks for. The
+ * operating point is a true equilibrium (at the matching stretch
+ * the lead holds at the crossing), and the stretch glides toward
+ * the target at 0.01 to 0.03 per second, so the pitch parks
+ * instead of hunting. While the instantaneous lead is under 900
+ * frames the guard takes over at the old push-up rate, bounded
+ * by the tracker target plus a small margin so a scene step
+ * cannot overshoot to the clamp; under 350 frames the bound
+ * lifts and each pass steps the stretch directly.
+ *
+ * Host simulation of this exact pipeline (game loop pacing,
+ * gate, drain, track, DAC; sim2 in the cushion retune rig)
+ * across healthy, steady 3 percent, file-select (4.5 percent
+ * for 21 s), scene-step, breathing, and 7.5 percent traces, at
+ * both the 32,040 Hz and 44,100 Hz shapes: healthy play never
+ * engages under either law; the tracker parks a steady 3
+ * percent deficit at 1.0309 against a theoretical need of 1.031
+ * with a stretch wander of 0.0002 (the band law: wander 0.032,
+ * parked high at about 1.04 to 1.06) and a pitch movement rate
+ * ten times slower; zero starved on every trace the band law
+ * passed. At a sustained 7.5 percent deficit both laws sit at
+ * the clamp and starve the same small amount: that is past what
+ * any 8 percent cushion can cover, and it is core speed, not
+ * tuning. The original no-cushion baseline on the file-select
+ * trace starved about 29,600 samples (roughly 0.93 s of audio);
+ * with the cushion it starves zero.
  *
  * Diagnostics: engaging and releasing are logged with the lead and
  * stretch, underrun episodes are counted (with an estimate of the
@@ -70,38 +92,35 @@ class AudioCushion {
         private const val TAG = "iTaKEmu"
 
         // Controller constants, in frames at the core's sample rate
-        // (the tuned case is SNES: 32,000 Hz, gate cap 2400 frames).
+        // (the tuned case is SNES: 32,040 Hz, gate cap 2400 frames).
         //
-        // 1.81 retune. The band has to clear the game loop's
-        // production lead sawtooth, and the sawtooth is one frame of
-        // production deep: 532 samples at the SNES rate (trough near
-        // 1,868) but about 736 at the 44,100 Hz the other five cores
-        // run at (trough near 1,664, sampled as low as 1,650 on the
-        // near-budget trace). The shipped band bottom (2,100 - 200 =
-        // 1,900) sat inside the 44,100 Hz sawtooth, so healthy NES,
-        // Game Boy and PS1 play tripped the correction and left the
-        // bit-exact path (stretch up to 1.0334 near budget on NES).
-        // A band bottom of 1,500 (1,800 - 300) clears every shipped
-        // core's trough. The six per-engine passes plus the combined
-        // matrix (build server: itak-speed/audio-cushion-*) verify
-        // every healthy trace back on the exact 1.0 path with zero
-        // engagement and zero starved samples on every deficit trace
-        // in the coverage class, the SNES file select included
-        // (minimum lead about 700 frames, average stretch about 1.05
-        // while engaged). The clamp rose from 1.06 to 1.08 because a
-        // sustained 5 percent deficit's jitter peaks (about 6.9
-        // percent instantaneous) exceed what 1.06 covers (5.7
-        // percent); the PS1 5 percent trace is the one that forces
-        // it. Riding the clamp costs about 1.3 semitones of pitch
-        // against 1.0 at the old clamp, and only while a screen is
-        // that far behind.
-        private const val LEAD_TARGET = 1800.0   // band center
-        private const val LEAD_BAND = 300.0      // band half-width
-        private const val GAIN_UP = 0.8          // push-up rate, 1/s
-        private const val GAIN_DN = 0.25         // ease-off rate, 1/s
-        private const val LEAK = 0.04            // glide to 1.0 in band, 1/s
+        // Tracker law (1.96, see the class doc for the evidence).
+        // The setpoint sits below every shipped core's healthy
+        // sawtooth mean (the gate parks the lead between the cap
+        // and one chunk under it: means near 2,130 at the SNES
+        // shape, near 2,030 at the 44,100 Hz shapes), so healthy
+        // play computes a target of exactly 1.0 and never engages,
+        // the same purity the 1.81 band retune was built to win.
+        // The gain maps a full setpoint of mean lead error to
+        // 0.12 of stretch, which puts the equilibrium lead for a
+        // sustained deficit inside the bank (about 1,300 frames
+        // at 3 percent, about 1,060 at 4.5 percent) with the guard
+        // thresholds below it. The clamp stays 1.08: a sustained
+        // 5 percent deficit's jitter peaks (about 6.9 percent
+        // instantaneous) exceed what 1.06 covers.
+        private const val LEAD_TARGET = 1750.0   // tracker setpoint (also the diag target)
+        private const val MEAN_TAU_S = 1.0       // lead mean time constant, s
+        private const val TRACK_GAIN = 0.12      // stretch per full setpoint of mean error
+        private const val SLEW = 0.01            // tracker glide, 1/s
+        private const val SLEW_NEAR = 0.03       // tracker glide while the lead is low, 1/s
+        private const val NEAR_LEAD = 1500.0     // below this the tracker glides faster
+        private const val GUARD_LEAD = 900.0     // guard engages below this lead
+        private const val GUARD_EXIT = 1100.0    // and holds until the lead recovers past this
+        private const val GUARD_RATE = 0.10      // guard push-up rate, 1/s (the shipped slew)
+        private const val GUARD_MARGIN = 0.01    // guard may exceed the tracker target by this
+        private const val CRIT_LEAD = 350.0      // emergency: bound lifts, direct step per pass
+        private const val CRIT_STEP = 0.02       // emergency step per update pass
         private const val STRETCH_MAX = 1.08     // hardest stretch
-        private const val STRETCH_SLEW = 0.10    // max |dstretch/dt|, 1/s
 
         // A stretch this close to 1.0 counts as released: at 32 kHz
         // it is a fraction of a percent of pitch, and parking the
@@ -127,7 +146,7 @@ class AudioCushion {
         // halves the engagement rate on periodic chatter.
         private const val RELEASE_DWELL_NS = 250_000_000L
         private const val DWELL_STRETCH_CAP = 1.001
-        private const val DWELL_EMERGENCY_LEAD = 1200.0 // LEAD_TARGET - 2 * LEAD_BAND
+        private const val DWELL_EMERGENCY_LEAD = 1200.0 // dwell lifts early below this lead
 
         // Runaway guard on the source queue, the same numbers the
         // audio thread always used: past 128 KB queued, keep only
@@ -155,6 +174,11 @@ class AudioCushion {
     private var engagedNs = 0L
     private var peakStretch = 1.0
     private var lastReleaseNs = 0L
+
+    // Tracker state (1.96): the lead mean and the guard latch.
+    private var meanLead = 0.0
+    private var hasMean = false
+    private var guarded = false
 
     // Underrun accounting: an underrun is the DAC demanding samples
     // while the track lead is empty and the cushion has nothing to
@@ -213,6 +237,9 @@ class AudioCushion {
         engaged = false
         peakStretch = 1.0
         lastReleaseNs = 0L
+        meanLead = 0.0
+        hasMean = false
+        guarded = false
         armed = false
         starving = false
         underrunEpisodes = 0
@@ -272,18 +299,46 @@ class AudioCushion {
         lastUpdateNs = nowNs
         if (dt <= 0.0) return
 
-        val err = LEAD_TARGET - leadFrames
-        val rate = when {
-            err > LEAD_BAND -> GAIN_UP * err / LEAD_TARGET
-            err < -LEAD_BAND -> GAIN_DN * err / LEAD_TARGET - LEAK * (stretch - 1.0)
-            else -> -LEAK * (stretch - 1.0)
+        // Tracker (1.96): the target stretch comes from the mean
+        // lead. At the setpoint or above it the target is exactly
+        // 1.0; the further the mean sits below the setpoint, the
+        // more stretch the target asks for, and the operating point
+        // is a true equilibrium (at the matching stretch the lead
+        // holds at the crossing), so the pitch parks at the need
+        // instead of hunting around it.
+        if (!hasMean) {
+            meanLead = leadFrames.toDouble()
+            hasMean = true
+        } else {
+            meanLead += (dt / MEAN_TAU_S) * (leadFrames - meanLead)
         }
-        var ds = rate * dt
-        val maxStep = STRETCH_SLEW * dt
-        if (ds > maxStep) ds = maxStep
-        if (ds < -maxStep) ds = -maxStep
+        val errFrac = ((LEAD_TARGET - meanLead) / LEAD_TARGET).coerceIn(0.0, 1.0)
+        val target = (1.0 + errFrac * TRACK_GAIN).coerceIn(1.0, STRETCH_MAX)
+
+        if (leadFrames < GUARD_LEAD) guarded = true
+        else if (leadFrames > GUARD_EXIT) guarded = false
+
         val was = stretch
-        stretch = (stretch + ds).coerceIn(1.0, STRETCH_MAX)
+        if (guarded) {
+            // Fast guard: the old push-up rate, bounded by the
+            // tracker target plus a small margin so a scene step
+            // cannot overshoot to the clamp. Below CRIT_LEAD the
+            // bound lifts and each pass steps the stretch directly.
+            val capNow = if (leadFrames < CRIT_LEAD) STRETCH_MAX else target + GUARD_MARGIN
+            if (leadFrames < CRIT_LEAD) {
+                stretch = (stretch + CRIT_STEP).coerceAtMost(STRETCH_MAX)
+            }
+            stretch = (stretch + GUARD_RATE * dt).coerceAtMost(capNow)
+            if (stretch > target && leadFrames > GUARD_LEAD) {
+                stretch = (stretch - SLEW * dt).coerceAtLeast(target)
+            }
+        } else if (stretch < target) {
+            val slew = if (leadFrames < NEAR_LEAD) SLEW_NEAR else SLEW
+            stretch = (stretch + slew * dt).coerceAtMost(target)
+        } else {
+            stretch = (stretch - SLEW * dt).coerceAtLeast(target)
+        }
+        stretch = stretch.coerceIn(1.0, STRETCH_MAX)
         // Release dwell: hold the stretch at the inaudible cap for
         // a beat after a release, unless the lead says the deficit
         // is real (see the constants for the evidence).
