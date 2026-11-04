@@ -381,10 +381,26 @@ class EmulatorActivity : Activity(), TextureListener {
         override fun onInputDeviceChanged(deviceId: Int) {}
     }
 
+    // A device is a gamepad only when it carries the FULL gamepad
+    // or joystick source value. Source values share bits (for
+    // example SOURCE_KEYBOARD 0x101 shares the 0x100 bit with
+    // SOURCE_GAMEPAD 0x401), so an "any bit set" test brands the TV
+    // remote (sources 0x81000311 on David's Philips), the IR
+    // receiver, and every keyboard as gamepads. That is what shut
+    // the TV remote out of in-game play: the remote's presses took
+    // the gamepad path, where the first-pad fallback could lock
+    // seat 0 to a phantom device and discard the remote entirely
+    // (David, 2026-11-03). The full-value test keeps remotes and
+    // keyboards on the remote path below, as the seat rules intend.
+    private fun isGamepadSources(sources: Int): Boolean =
+        (sources and android.view.InputDevice.SOURCE_GAMEPAD) ==
+            android.view.InputDevice.SOURCE_GAMEPAD ||
+        (sources and android.view.InputDevice.SOURCE_JOYSTICK) ==
+            android.view.InputDevice.SOURCE_JOYSTICK
+
     private fun isGamepadDevice(deviceId: Int): Boolean {
         val dev = android.view.InputDevice.getDevice(deviceId) ?: return false
-        return dev.sources and android.view.InputDevice.SOURCE_GAMEPAD != 0 ||
-            dev.sources and android.view.InputDevice.SOURCE_JOYSTICK != 0
+        return isGamepadSources(dev.sources)
     }
 
     private fun setupSeats() {
@@ -461,9 +477,7 @@ class EmulatorActivity : Activity(), TextureListener {
     // Which player slot an event drives, or null to ignore it.
     private fun slotFor(event: KeyEvent): Int? {
         val dev = event.device
-        val gamepad = dev != null &&
-            (dev.sources and android.view.InputDevice.SOURCE_GAMEPAD != 0 ||
-                dev.sources and android.view.InputDevice.SOURCE_JOYSTICK != 0)
+        val gamepad = dev != null && isGamepadSources(dev.sources)
         val ownerPad = assignedPadByPlayer[seatCurrent]
         if (!gamepad) {
             // Remote / keyboard: seat 0 backup, unless the owner's own
