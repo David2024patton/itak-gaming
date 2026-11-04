@@ -15,7 +15,7 @@ COMPLETE.**
 
 - `libretro`: the cgo c-shared shell over the `system`
   package (library name "iTaK GoSNES", extensions
-  sfc|smc, 256x224 XRGB8888, 60.0988 fps, 32000 Hz
+  sfc|smc, 256x224 XRGB8888, 60.0988 fps, 32040 Hz
   stereo, serialize passthrough to the machine state,
   SAVE_RAM and SYSTEM_RAM memory interfaces, joypad
   bits mapped 1:1). The desktop shell was driven through
@@ -107,7 +107,7 @@ S-DSP.**
   RAM-backed aux ports; the three timers with 8000 Hz
   and 64000 Hz stage rates and read-clear 4-bit output
   counters), and the DSP stepped once per output sample
-  at 32000 Hz: BRR sample decoding (all four filters,
+  at 32040 Hz: BRR sample decoding (all four filters,
   the range 13-15 sign collapse, end and loop handling
   with ENDX), Gaussian interpolation from the published
   512-entry table, ADSR and GAIN envelopes from the
@@ -117,7 +117,8 @@ S-DSP.**
   proofs, all derived from the documentation rather than
   another emulator: a looping BRR sine at pitch 0x385
   measures 439.00 Hz by zero crossings against 440.06
-  expected; timers count exactly 62 (T0, target 128) and
+  expected at the original 32000 Hz rate (440.55 at the
+  current 32040 Hz rate); timers count exactly 62 (T0, target 128) and
   640 (T2, target 100) increments in one simulated
   second; an echo impulse returns at exactly 512
   samples for EDL 1; and a hand-assembled tone program
@@ -128,7 +129,7 @@ S-DSP.**
   advances by exact ratio accumulation against the
   master clock (see the SNES-3 notes), and
   `AudioBuffer()` drains interleaved stereo samples at
-  32000 Hz (about 534 per frame). Save states are
+  32040 Hz (about 533 per frame). Save states are
   version 2 and carry the full APU (RAM, SPC state,
   SMP timers and latches, DSP registers and per-voice
   state, echo position, and the clock ratio remainder):
@@ -318,13 +319,16 @@ S-DSP.**
 
 ## SNES-3 audio model (the honesty notes)
 
-- **Clock ratio:** the SPC700 runs at exactly 1.024 MHz
-  against the 21.477272 MHz NTSC master clock, accumulated
-  as master clocks x 1024000 / 21477272 with the remainder
+- **Clock ratio:** the SPC700 runs at the measured
+  hardware rate of 1.025280 MHz against the 21.477272 MHz
+  NTSC master clock, accumulated
+  as master clocks x 1025280 / 21477272 with the remainder
   carried between calls and stored in save states, so the
-  long-term rate and the restore phase are exact. Real SPC
-  oscillators sit near, not on, 1.024 MHz; the documented
-  fixed rate is used.
+  long-term rate and the restore phase are exact. The
+  nominal on-paper rate is 1.024 MHz; measured SPC
+  oscillators run near 1.0253 MHz, and the working
+  emulators use the measured rate, giving a DSP output
+  of 32040 Hz.
 - **Sample-stepped DSP:** the DSP evaluates one output
   sample per 32 SPC cycles. SPC writes to DSP registers
   take effect at sample granularity, not at the exact SPC
