@@ -376,8 +376,11 @@ func TestEchoDelay512(t *testing.T) {
 // block (header 0x43: range 4, filter 0, end+loop; the
 // nibbles are 0,3,5,6,7,6,5,3,0,-3,-5,-6,-7,-6,-5,-3)
 // at pitch 901. One period is 16 source samples, so the
-// tone is 32000 * 901 / (4096 * 16) = 440.06 Hz. Count
-// positive zero crossings over 32000 output samples.
+// tone is 32040 * 901 / (4096 * 16) = 440.55 Hz. Count
+// positive zero crossings over 32000 output samples
+// (about one second at 32040 Hz, so the count lands
+// near 440, within two percent of the 440.06 figure
+// this test was written against).
 func TestPitch440(t *testing.T) {
 	d, ram := newTestDSP()
 	ram[0x0100] = 0x00
