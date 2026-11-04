@@ -412,7 +412,9 @@ class Artwork {
       final resp = await req.close();
       if (resp.statusCode != 200) return null;
       final bytes = <int>[];
-      await for (final chunk in resp) {
+      // A stalled body must not hang the caller forever: if no
+      // chunk arrives for 15 s the stream errors and we give up.
+      await for (final chunk in resp.timeout(const Duration(seconds: 15))) {
         bytes.addAll(chunk);
         if (bytes.length > 8 * 1024 * 1024) return null;
       }
@@ -1072,6 +1074,14 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
             const PlayerIdentity('', '', '', ''))
         : const PlayerIdentity('', '', '', '');
     String? error;
+    // Which field row currently holds the remote's focus. The rows
+    // paint their own focus ring from this (see field() below):
+    // InkWell's built-in focus color lands UNDER the row's opaque
+    // background, so without this the remote moved invisibly and
+    // the form looked dead (David, 2026-11-03, proven on his TV:
+    // down + center opened the City keyboard while no row on
+    // screen showed any sign of being selected).
+    var formFocus = '';
     if (!mounted) return null;
     final result = await showDialog<({String name, PlayerIdentity id})>(
       context: context,
@@ -1128,19 +1138,30 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
             VoidCallback onTap, {
             bool auto = false,
           }) {
+            final focused = formFocus == label;
             return Padding(
               padding: const EdgeInsets.only(top: 10),
               child: InkWell(
                 autofocus: auto,
                 borderRadius: BorderRadius.circular(10),
                 onTap: onTap,
+                onFocusChange: (f) {
+                  if (f) setLocal(() => formFocus = label);
+                },
                 child: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1B1B28),
+                    color: focused
+                        ? const Color(0xFF2E2E4A)
+                        : const Color(0xFF1B1B28),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white24),
+                    border: Border.all(
+                      color: focused
+                          ? const Color(0xFF00E676)
+                          : Colors.white24,
+                      width: focused ? 3 : 1,
+                    ),
                   ),
                   child: Row(
                     children: [
@@ -1349,6 +1370,10 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   Future<void> _managePlayers() async {
     // Play-time totals power the stats column of the table.
     final totals = <String, List<int>>{}; // name -> [seconds, plays]
+    // Row holding the remote's focus, painted as a thick green
+    // ring: InkWell's own focus color was a faint wash David could
+    // barely see on his TV (2026-11-03).
+    var focusedRow = '';
     try {
       final raw =
           await _channel.invokeMethod<String>('getLeaderboard') ?? '[]';
@@ -1424,10 +1449,16 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: p == _currentPlayer
+                                color: focusedRow == p
                                     ? const Color(0xFF00E676)
-                                    : Colors.white12,
-                                width: p == _currentPlayer ? 1.6 : 1,
+                                    : p == _currentPlayer
+                                        ? const Color(0xFF00E676)
+                                        : Colors.white12,
+                                width: focusedRow == p
+                                    ? 3
+                                    : p == _currentPlayer
+                                        ? 1.6
+                                        : 1,
                               ),
                             ),
                             child: ClipRRect(
@@ -1435,13 +1466,19 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                               child: Material(
                                 color: const Color(0xFF1B1B28),
                                 child: InkWell(
+                                  autofocus: p == _currentPlayer,
+                                  onFocusChange: (f) {
+                                    if (f) {
+                                      setLocal(() => focusedRow = p);
+                                    }
+                                  },
                                   onTap: () async {
                                     Navigator.pop(ctx);
                                     await _selectPlayer(
                                         _players.indexOf(p));
                                   },
                                   focusColor:
-                                      Colors.white.withOpacity(0.14),
+                                      Colors.white.withOpacity(0.22),
                                   child: Padding(
                                 padding:
                                     const EdgeInsets.fromLTRB(14, 10, 6, 10),
@@ -1497,12 +1534,16 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                                     IconButton(
                                       icon: const Icon(Icons.edit),
                                       tooltip: 'Edit player',
+                                      focusColor: const Color(0xFF00E676)
+                                          .withOpacity(0.35),
                                       onPressed: () =>
                                           _editPlayer(p, refresh),
                                     ),
                                     IconButton(
                                       icon: const Icon(Icons.face),
                                       tooltip: 'Change picture',
+                                      focusColor: const Color(0xFF00E676)
+                                          .withOpacity(0.35),
                                       onPressed: () async {
                                         await showAvatarPicker(context, p);
                                         refresh();
@@ -1512,6 +1553,8 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                                       icon: const Icon(Icons.delete,
                                           color: Colors.redAccent),
                                       tooltip: 'Remove',
+                                      focusColor: const Color(0xFF00E676)
+                                          .withOpacity(0.35),
                                       onPressed: () =>
                                           _confirmRemove(p, refresh),
                                     ),
@@ -1633,6 +1676,9 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
   }
 
   Future<void> _openPlayerPicker() async {
+    // Row holding the remote's focus, painted as a thick green
+    // ring, same fix as Manage players (2026-11-03).
+    var focusedRow = '';
     await showDialog<void>(
       context: context,
       barrierColor: Colors.black.withOpacity(0.82),
@@ -1657,10 +1703,16 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: p == _currentPlayer
+                          color: focusedRow == p
                               ? const Color(0xFF00E676)
-                              : Colors.white12,
-                          width: p == _currentPlayer ? 1.6 : 1,
+                              : p == _currentPlayer
+                                  ? const Color(0xFF00E676)
+                                  : Colors.white12,
+                          width: focusedRow == p
+                              ? 3
+                              : p == _currentPlayer
+                                  ? 1.6
+                                  : 1,
                         ),
                       ),
                       child: ClipRRect(
@@ -1668,11 +1720,17 @@ class _SystemSelectScreenState extends State<SystemSelectScreen>
                         child: Material(
                           color: const Color(0xFF1B1B28),
                           child: InkWell(
+                            autofocus: p == _currentPlayer,
+                            onFocusChange: (f) {
+                              if (f) {
+                                setLocal(() => focusedRow = p);
+                              }
+                            },
                             onTap: () async {
                               Navigator.pop(ctx);
                               await _selectPlayer(_players.indexOf(p));
                             },
-                            focusColor: Colors.white.withOpacity(0.14),
+                            focusColor: Colors.white.withOpacity(0.22),
                             child: Padding(
                               padding:
                                   const EdgeInsets.fromLTRB(14, 10, 6, 10),
@@ -8187,7 +8245,23 @@ class Avatars {
     return File('/sdcard/iTaK/avatars/${style}_$safe.png');
   }
 
-  static Future<File?> get(String style, String seed) async {
+  static final Map<String, Future<File?>> _inflight = {};
+
+  static Future<File?> get(String style, String seed) {
+    // One download per picture at a time: without this, every
+    // rebuild of a picker tile or avatar widget restarts the same
+    // download, and the picker fills with spinners that never land
+    // (David, 2026-11-03). Callers share the in-flight future; the
+    // disk cache check still runs first inside _fetch.
+    final key = '$style:$seed';
+    return _inflight.putIfAbsent(key, () {
+      final f = _fetch(style, seed);
+      f.whenComplete(() => _inflight.remove(key));
+      return f;
+    });
+  }
+
+  static Future<File?> _fetch(String style, String seed) async {
     final f = fileFor(style, seed);
     if (f.existsSync()) return f;
     final url =
@@ -8369,6 +8443,14 @@ class _AvatarPickerDialog extends StatefulWidget {
 
 class _AvatarPickerDialogState extends State<_AvatarPickerDialog> {
   int _style = 0;
+  int _focusIdx = -1;
+  // Stable futures per picture: a FutureBuilder handed a fresh
+  // future on every rebuild restarts its download each time, which
+  // is half of why tiles spun forever (2026-11-03).
+  final Map<String, Future<File?>> _tileFutures = {};
+
+  Future<File?> _tileFuture(String style, String seed) =>
+      _tileFutures.putIfAbsent('$style:$seed', () => Avatars.get(style, seed));
 
   List<String> get _seeds => [
         widget.playerName,
@@ -8408,36 +8490,70 @@ class _AvatarPickerDialogState extends State<_AvatarPickerDialog> {
                 itemCount: _seeds.length,
                 itemBuilder: (ctx, i) {
                   final seed = _seeds[i];
-                  return GestureDetector(
-                    onTap: () async {
-                      await Avatars.set(widget.playerName, style, seed);
-                      if (mounted) Navigator.pop(context);
-                    },
-                    child: FutureBuilder<File?>(
-                      future: Avatars.get(style, seed),
-                      builder: (ctx, snap) {
-                        final f = snap.data;
-                        if (f == null) {
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1B1B28),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              ),
-                            ),
-                          );
-                        }
-                        return ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.file(f, fit: BoxFit.cover),
-                        );
+                  final focused = _focusIdx == i;
+                  // Tiles are real focusable buttons on a LIGHT
+                  // backing. The old GestureDetector tiles could not
+                  // be reached with the TV remote at all (touch
+                  // only), and the transparent pictures rendered
+                  // straight onto the dark dialog, so dark hair and
+                  // dark features vanished (David, 2026-11-03).
+                  return Material(
+                    color: const Color(0xFFF2F3F7),
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      autofocus: i == 0,
+                      onFocusChange: (f) {
+                        if (f) setState(() => _focusIdx = i);
                       },
+                      onTap: () async {
+                        await Avatars.set(widget.playerName, style, seed);
+                        if (mounted) Navigator.pop(context);
+                      },
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: focused
+                                ? const Color(0xFF00E676)
+                                : Colors.transparent,
+                            width: 3.5,
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(9),
+                          child: FutureBuilder<File?>(
+                            future: _tileFuture(style, seed),
+                            builder: (ctx, snap) {
+                              final f = snap.data;
+                              if (f != null) {
+                                return Image.file(f, fit: BoxFit.cover);
+                              }
+                              if (snap.connectionState ==
+                                  ConnectionState.done) {
+                                // The picture could not be fetched:
+                                // show a placeholder, never an
+                                // endless spinner.
+                                return const Center(
+                                  child: Icon(
+                                    Icons.person,
+                                    size: 40,
+                                    color: Color(0xFF5A5A72),
+                                  ),
+                                );
+                              }
+                              return const Center(
+                                child: SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                     ),
                   );
                 },
