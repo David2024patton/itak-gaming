@@ -16,23 +16,6 @@ interface TextureListener {
     fun onSurfaceReady()
 }
 
-/** Picture filter shared between the pause menu and the renderer. */
-object FilterSettings {
-    val NAMES = arrayOf("Sharp", "Smooth", "Pixel Perfect")
-
-    /** 0 = Sharp (sharp bilinear), 1 = Smooth (linear), 2 = Pixel (nearest). */
-    @Volatile var mode: Int = 0
-
-    val DISPLAY_NAMES = arrayOf("Smooth 60", "Steady 30")
-
-    /**
-     * 0 = draw every emulated frame (60 draws/s), 1 = draw every other
-     * frame (an even 30 draws/s). Emulation and audio always run at the
-     * core's full rate either way; only the draw cadence changes.
-     */
-    @Volatile var displayMode: Int = 0
-}
-
 /**
  * OpenGL ES 2.0 view for emulator frames.
  *
@@ -61,7 +44,6 @@ class EmuRenderer(private val listener: TextureListener?) : GLSurfaceView.Render
     private var texSizeHandle = 0
     private var modeHandle = 0
     private var widthHandle = 0
-    private var lastFilterMode = -1
     private var viewW = 0
     private var viewH = 0
     private var texW = 0
@@ -122,17 +104,14 @@ class EmuRenderer(private val listener: TextureListener?) : GLSurfaceView.Render
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
         GLES20.glUniform1i(samplerHandle, 0)
 
-        // Picture filter: Sharp = sharp-bilinear remap in the shader,
-        // Smooth = plain linear, Pixel = nearest texel sampling.
-        val mode = FilterSettings.mode
+        // Picture is fixed to Sharp (the sharp-bilinear remap in
+        // the shader) since 1.101: the Picture and Display
+        // settings were removed and baked in, so the shader mode
+        // is always 0 and the magnification filter stays LINEAR,
+        // as set at surface creation.
         GLES20.glUniform2f(texSizeHandle, w.toFloat(), h.toFloat())
-        GLES20.glUniform1f(modeHandle, mode.toFloat())
+        GLES20.glUniform1f(modeHandle, 0f)
         GLES20.glUniform1f(widthHandle, 0.35f)
-        if (mode != lastFilterMode) {
-            lastFilterMode = mode
-            val mag = if (mode == 2) GLES20.GL_NEAREST else GLES20.GL_LINEAR
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, mag)
-        }
 
         val buf = ByteBuffer.wrap(rgba)
         if (w != texW || h != texH) {
