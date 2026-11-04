@@ -219,7 +219,16 @@ class AudioResampler(private val inRate: Int, private val outRate: Int) {
 
         val lastAvailable = baseIndex + len - 1
         // Estimate the output size, then trim to what was produced.
-        val estOut = ((len.toLong() * outRate) / inRate).toInt() + 2
+        // The estimate must use the hard stretch ceiling (11/10 =
+        // STRETCH_LIMIT), not the nominal ratio: while the cushion
+        // has the stretch engaged, each output consumes FEWER input
+        // samples, so one chunk yields up to STRETCH_LIMIT times
+        // more outputs than the nominal count. Sizing by the nominal
+        // ratio overflowed this array in the audio thread and
+        // killed the game (crash on David's TV, 2026-11-03:
+        // ArrayIndexOutOfBoundsException, array length 25312,
+        // written at index 25312, stretch 1.0204 at stream start).
+        val estOut = ((len.toLong() * outRate * 11) / (inRate * 10)).toInt() + 8
         val out = ByteArray(estOut * BYTES_PER_FRAME)
         var outFrames = 0
         val tab = table
