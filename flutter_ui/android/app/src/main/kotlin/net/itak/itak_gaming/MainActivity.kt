@@ -116,12 +116,25 @@ class MainActivity : FlutterActivity() {
     @Volatile
     private var captureArmed = false
 
+    // A device is a gamepad only when it carries the FULL gamepad
+    // or joystick source value. Source values share bits (SOURCE_
+    // KEYBOARD 0x101 shares 0x100 with SOURCE_GAMEPAD 0x401), so an
+    // "any bit set" test brands the TV remote (sources 0x81000311 on
+    // David's Philips) as a gamepad: it could be captured as a
+    // player's controller, listed as one, and announced as one.
+    // Same fix as EmulatorActivity's seat routing (2026-11-03).
+    private fun isGamepad(dev: InputDevice?): Boolean {
+        if (dev == null) return false
+        return (dev.sources and InputDevice.SOURCE_GAMEPAD) ==
+            InputDevice.SOURCE_GAMEPAD ||
+            (dev.sources and InputDevice.SOURCE_JOYSTICK) ==
+                InputDevice.SOURCE_JOYSTICK
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (captureArmed && event.action == KeyEvent.ACTION_DOWN) {
             val dev = event.device
-            val gamepad = dev != null &&
-                (dev.sources and InputDevice.SOURCE_GAMEPAD != 0 ||
-                    dev.sources and InputDevice.SOURCE_JOYSTICK != 0)
+            val gamepad = isGamepad(dev)
             if (gamepad && event.keyCode != KeyEvent.KEYCODE_BACK) {
                 captureArmed = false
                 channel?.invokeMethod(
@@ -145,9 +158,7 @@ class MainActivity : FlutterActivity() {
     private val deviceListener = object : InputManager.InputDeviceListener {
         override fun onInputDeviceAdded(deviceId: Int) {
             val dev = InputDevice.getDevice(deviceId) ?: return
-            val gamepad = dev.sources and InputDevice.SOURCE_GAMEPAD != 0 ||
-                dev.sources and InputDevice.SOURCE_JOYSTICK != 0
-            if (!gamepad) return
+            if (!isGamepad(dev)) return
             val now = System.currentTimeMillis()
             if (now - lastControllerPromptMs < 4000) return
             lastControllerPromptMs = now
@@ -328,9 +339,7 @@ class MainActivity : FlutterActivity() {
                         val list = mutableListOf<Map<String, Any>>()
                         for (id in InputDevice.getDeviceIds()) {
                             val dev = InputDevice.getDevice(id) ?: continue
-                            val gamepad = dev.sources and InputDevice.SOURCE_GAMEPAD != 0 ||
-                                dev.sources and InputDevice.SOURCE_JOYSTICK != 0
-                            if (gamepad) {
+                            if (isGamepad(dev)) {
                                 list.add(mapOf("id" to id, "name" to dev.name, "desc" to dev.descriptor))
                             }
                         }
