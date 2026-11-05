@@ -280,6 +280,34 @@ func TestGAINBentIncreaseKnee(t *testing.T) {
 	}
 }
 
+// GAIN linear decrease: hardware (fullsnes) subtracts
+// 0x20 per envelope tick, the mirror of linear increase.
+// The old build-spec step of 8 made decays run 4x too
+// slow. Rate 31 steps every sample: from the direct-gain
+// level 0x7F0, one tick must land on 0x7D0 and ten ticks
+// on 0x6B0. The pre-fix step of 8 lands on 0x7E8 / 0x770
+// instead, so this test fails on the unfixed core.
+func TestGAINLinearDecreaseStep(t *testing.T) {
+	d, ram := newTestDSP()
+	setupToneVoice(d, ram)
+	d.WriteReg(0x05, 0x00) // ADSR1 bit 7 clear: GAIN mode
+	d.WriteReg(0x07, 0x7F) // direct gain: env = 0x7F0
+	d.WriteReg(0x4C, 0x01) // KON voice 0
+	stepDSP(d, 1)
+	if got := d.Envelope(0); got != 0x7F0 {
+		t.Fatalf("env after direct gain settle = %#x, want 0x7f0", got)
+	}
+	d.WriteReg(0x07, 0x9F) // GAIN: custom, mode 0 linear decrease, rate 31
+	stepDSP(d, 1)
+	if got := d.Envelope(0); got != 0x7D0 {
+		t.Fatalf("env after 1 decrease tick = %#x, want 0x7d0 (0x20 step)", got)
+	}
+	stepDSP(d, 9)
+	if got := d.Envelope(0); got != 0x6B0 {
+		t.Fatalf("env after 10 decrease ticks = %#x, want 0x6b0", got)
+	}
+}
+
 // Noise: with FLG rate 31 the LFSR clocks every sample.
 // The first states from the reset pattern 4000h, applying
 // the documented rule (shift right, feedback = bit0 XOR
