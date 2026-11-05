@@ -571,23 +571,36 @@ func (d *DSP) StepSample() (l, r int16) {
 		base := vi * 16
 		termL := out * int(int8(d.regs[base+0])) >> 7
 		termR := out * int(int8(d.regs[base+1])) >> 7
-		sumL += termL
-		sumR += termR
+		// Hardware clamps both sums to 16 bits after
+		// every voice, not once at the end.
+		sumL = int(clamp16(sumL + termL))
+		sumR = int(clamp16(sumR + termR))
 		if eon>>uint(vi)&1 != 0 {
 			// Echo input is the voice output summed dry:
 			// post envelope, with VxVOL applied, before the
 			// master volume (per the echo chapter reading).
-			echoInL += termL
-			echoInR += termR
+			echoInL = int(clamp16(echoInL + termL))
+			echoInR = int(clamp16(echoInR + termR))
 		}
 	}
 
 	firL, firR := d.stepEcho(echoInL, echoInR, flg)
 
-	// Main mix: voice sums plus the echo FIR output scaled
-	// by EVOL, the whole then scaled by MVOL.
-	outL := (sumL + firL*int(int8(d.regs[0x1C]))>>7) * int(int8(d.regs[0x0C])) >> 7
-	outR := (sumR + firR*int(int8(d.regs[0x3C]))>>7) * int(int8(d.regs[0x2C])) >> 7
+	// Main mix (hardware form): the dry voice sum is
+	// scaled by MVOL and the echo FIR output by EVOL, each
+	// product truncated to 16 bits on its own, then the
+	// two are added. Register map: MVOLL 0x0C, MVOLR
+	// 0x1C, EVOLL 0x2C, EVOLR 0x3C. (An earlier form of
+	// this code folded the echo into the dry sum before
+	// scaling and read 0x1C/0x2C swapped, which scaled
+	// the left echo by the right master volume and the
+	// right master by the left echo volume.)
+	mainL := int(int16(sumL * int(int8(d.regs[0x0C])) >> 7))
+	echoL := int(int16(firL * int(int8(d.regs[0x2C])) >> 7))
+	outL := mainL + echoL
+	mainR := int(int16(sumR * int(int8(d.regs[0x1C])) >> 7))
+	echoR := int(int16(firR * int(int8(d.regs[0x3C])) >> 7))
+	outR := mainR + echoR
 	if flg&0x40 != 0 { // FLG mute: internal processing continues, output zero.
 		outL, outR = 0, 0
 	}
