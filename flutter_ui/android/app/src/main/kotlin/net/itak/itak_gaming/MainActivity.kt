@@ -27,6 +27,7 @@ import java.io.FileWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import org.json.JSONObject
 import kotlin.concurrent.thread
 import kotlin.math.PI
 import kotlin.math.sin
@@ -180,6 +181,114 @@ class MainActivity : FlutterActivity() {
         // Debug chute: schedule the periodic check-in worker and
         // one immediate check-in for this launch (DebugChute.kt).
         DebugChute.enqueue(this)
+        repairStatsLabels()
+    }
+
+    // ----- Play stats rename merge and label repair (1.111) -----
+    // A rename used to move the stats file only when the
+    // destination did not exist, silently. Any earlier session
+    // under the new name creates that file (the session writer
+    // persists at launch), the move was skipped forever, and
+    // the player's history stayed behind under the old name:
+    // that is how Terry's play history detached on the Missouri
+    // stick in Nov 2026. A rename now MERGES instead: plays and
+    // seconds sum per game, last takes the later time, and the
+    // file's name field is set to the new name.
+    private fun relabelStatsFile(f: File, playerName: String) {
+        if (!f.exists()) return
+        try {
+            val obj = JSONObject(f.readText())
+            if (obj.optString("name", "") != playerName) {
+                obj.put("name", playerName)
+                f.writeText(obj.toString())
+                android.util.Log.i("iTaKApp", "stats: relabeled " + f.name + " to " + playerName)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("iTaKApp", "stats: relabel failed for " + f.name, e)
+        }
+    }
+
+    private fun mergeStatsOnRename(oldStats: File, newStats: File, newName: String) {
+        if (!oldStats.exists()) {
+            relabelStatsFile(newStats, newName)
+            return
+        }
+        if (!newStats.exists()) {
+            newStats.parentFile?.mkdirs()
+            if (oldStats.renameTo(newStats)) {
+                android.util.Log.i("iTaKApp", "rename stats: moved " + oldStats.name + " -> " + newStats.name)
+                relabelStatsFile(newStats, newName)
+                return
+            }
+            // renameTo failed: fall through to read-merge-write.
+        }
+        try {
+            val oldObj = try { JSONObject(oldStats.readText()) } catch (e: Exception) { JSONObject() }
+            val newObj = try { JSONObject(newStats.readText()) } catch (e: Exception) { JSONObject() }
+            val oldGames = oldObj.optJSONObject("games") ?: JSONObject()
+            val newGames = newObj.optJSONObject("games") ?: JSONObject()
+            val keys = oldGames.keys()
+            while (keys.hasNext()) {
+                val rom = keys.next()
+                val o = oldGames.optJSONObject(rom) ?: continue
+                val nw = newGames.optJSONObject(rom)
+                if (nw == null) {
+                    newGames.put(rom, o)
+                } else {
+                    nw.put("plays", nw.optInt("plays", 0) + o.optInt("plays", 0))
+                    nw.put("seconds", nw.optInt("seconds", 0) + o.optInt("seconds", 0))
+                    nw.put("last", maxOf(nw.optLong("last", 0), o.optLong("last", 0)))
+                }
+            }
+            newObj.put("games", newGames)
+            newObj.put("name", newName)
+            newStats.parentFile?.mkdirs()
+            newStats.writeText(newObj.toString())
+            oldStats.delete()
+            android.util.Log.i("iTaKApp", "rename stats: merged " + oldStats.name + " into " + newStats.name)
+        } catch (e: Exception) {
+            android.util.Log.w("iTaKApp", "rename stats: merge failed", e)
+        }
+    }
+
+    // One consistency pass per launch: a stats file whose name
+    // field names someone who is not a current player, while
+    // the file name itself matches exactly one current player,
+    // is that player's file wearing a stale label (the window
+    // between a rename and the next session under the new
+    // name). Relabel it so the Leaderboard and Manage players
+    // show the history right away. Counters are never touched.
+    private fun repairStatsLabels() {
+        try {
+            val prefs = getSharedPreferences("itak_prefs", MODE_PRIVATE)
+            val players = (prefs.getString("players", "") ?: "")
+                .split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+            if (players.isEmpty()) return
+            val sanitize = { s: String -> s.replace(Regex("[^A-Za-z0-9_-]"), "_") }
+            val byBase = players.groupBy { sanitize(it) }
+            val playerNames = players.toSet()
+            val dir = File(filesDir, "stats")
+            val files = dir.listFiles() ?: return
+            for (f in files) {
+                if (!f.name.endsWith(".json")) continue
+                val owners = byBase[f.name.removeSuffix(".json")] ?: continue
+                if (owners.size != 1) continue
+                val owner = owners[0]
+                try {
+                    val obj = JSONObject(f.readText())
+                    val inner = obj.optString("name", "")
+                    if (inner != owner && inner !in playerNames) {
+                        obj.put("name", owner)
+                        f.writeText(obj.toString())
+                        android.util.Log.i("iTaKApp", "stats repair: relabeled " + inner + " -> " + owner + " in " + f.name)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("iTaKApp", "stats repair: skipped " + f.name, e)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("iTaKApp", "stats repair failed", e)
+        }
     }
 
     // ----- Debug log capture (Settings -> Logs) -----
@@ -463,10 +572,10 @@ class MainActivity : FlutterActivity() {
                                 }
                                 val oldStats = File(filesDir, "stats/${sanitize(oldName)}.json")
                                 val newStats = File(filesDir, "stats/${sanitize(newName)}.json")
-                                if (oldStats.exists() && !newStats.exists()) {
-                                    oldStats.renameTo(newStats)
-                                }
-                            } catch (e: Exception) { /* best effort */ }
+                                mergeStatsOnRename(oldStats, newStats, newName)
+                            } catch (e: Exception) {
+                                android.util.Log.w("iTaKApp", "renamePlayerFiles failed", e)
+                            }
                             result.success(true)
                         } else {
                             result.error("BAD_ARGS", "old and new required", null)
