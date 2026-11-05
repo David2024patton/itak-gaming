@@ -3250,14 +3250,17 @@ class EmulatorActivity : Activity(), TextureListener {
         val f = if (primary.exists() && primary.length() > 0) primary
             else legacySaveFile().takeIf { it.exists() && it.length() > 0 }
             ?: return
+        val bak = File(f.parentFile, f.name + ".bak")
+        val hasBackup = bak.exists() && bak.length() > 0
         resumeChoicePending = true
         Log.i(TAG, "resume prompt: saved game found for ${currentPlayer()} (${f.length()} bytes)")
-        AlertDialog.Builder(this, R.style.ItakDialogTheme)
+        val builder = AlertDialog.Builder(this, R.style.ItakDialogTheme)
             .setTitle("Continue where you left off?")
             .setMessage(
                 "You have a saved game. Continue picks up right " +
                     "where you left off. Start fresh begins from " +
-                    "the beginning of the game."
+                    "the beginning of the game." +
+                    if (hasBackup) " A backup of an earlier save also exists." else ""
             )
             .setPositiveButton("Continue") { _, _ ->
                 resumeChoicePending = false
@@ -3270,13 +3273,40 @@ class EmulatorActivity : Activity(), TextureListener {
                 Log.i(TAG, "resume prompt: start fresh chosen")
             }
             .setCancelable(false)
-            .show()
+        if (hasBackup) {
+            builder.setNeutralButton("Restore backup") { _, _ ->
+                try {
+                    bak.copyTo(f, overwrite = true)
+                    Log.i(TAG, "resume prompt: backup restored over save")
+                    resumeChoicePending = false
+                    doLoad()
+                } catch (e: Exception) {
+                    Log.w(TAG, "resume prompt: could not restore backup", e)
+                    Toast.makeText(this@EmulatorActivity, "Restore failed", Toast.LENGTH_SHORT).show()
+                    resumeChoicePending = false
+                }
+            }
+        }
+        val dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus()
+        }
+        dialog.show()
     }
 
     /** One-off safety copy next to a save the player chose to leave behind. */
     private fun keepSaveBackup(f: File) {
         try {
             val bak = File(f.parentFile, f.name + ".bak")
+            // Write-once: an existing backup is never overwritten.
+            // A second Start fresh in a row would otherwise replace
+            // the backup of the save the player actually had with a
+            // copy of the fresh session that replaced it, destroying
+            // the only way back (the 2026-11-04 TV save loss).
+            if (bak.exists() && bak.length() > 0) {
+                Log.i(TAG, "resume prompt: earlier backup kept, not overwritten")
+                return
+            }
             f.copyTo(bak, overwrite = true)
             Log.i(TAG, "resume prompt: previous save kept at ${bak.absolutePath}")
         } catch (e: Exception) {
