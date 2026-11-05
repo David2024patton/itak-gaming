@@ -13,6 +13,89 @@ void main() {
   runApp(const ITaKGamingApp());
 }
 
+/// The app's own navigator, so the root BACK handler can raise
+/// its popup through the navigator the MaterialApp created.
+final GlobalKey<NavigatorState> _appNavigatorKey =
+    GlobalKey<NavigatorState>();
+
+/// The channel MainActivity answers on (restart requests ride it).
+const MethodChannel _appChannel = MethodChannel('net.itak/emu');
+
+/// BACK at the app root asks first (David, 2026-11-04): leave to
+/// the TV home screen, restart the app, or stay. Focus starts on
+/// Stay, so a stray OK press can never close the app.
+void _showExitAppPopup() {
+  final nav = _appNavigatorKey.currentState;
+  if (nav == null) return;
+  showDialog<void>(
+    context: nav.context,
+    builder: (dialogContext) {
+      return Dialog(
+        backgroundColor: const Color(0xFF232338),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(28, 24, 28, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Leave the app?',
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Close iTaK Gaming and go back to the TV home '
+                'screen, or restart the app.',
+                style: TextStyle(fontSize: 17, color: Colors.white70),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    autofocus: true,
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child:
+                        const Text('Stay', style: TextStyle(fontSize: 17)),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(dialogContext).pop();
+                      SystemNavigator.pop();
+                    },
+                    child: const Text('Exit to TV home',
+                        style: TextStyle(fontSize: 17)),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      Navigator.of(dialogContext).pop();
+                      try {
+                        await _appChannel.invokeMethod('restartApp');
+                      } catch (_) {
+                        // A failed restart request just leaves
+                        // the app as it is; never crash the popup.
+                      }
+                    },
+                    child: const Text('Restart the app',
+                        style: TextStyle(fontSize: 17)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
 class ITaKGamingApp extends StatelessWidget {
   const ITaKGamingApp({super.key});
 
@@ -20,12 +103,27 @@ class ITaKGamingApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'iTaK Gaming',
+      navigatorKey: _appNavigatorKey,
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0A0A14),
         primaryColor: const Color(0xFF00E676),
       ),
-      home: const IntroGate(),
+      // The exit popup's PopScope lives inside the home route
+      // (wrapping the IntroGate) on purpose: a PopScope outside
+      // the MaterialApp never sees the root route's pop, and
+      // BACK then finishes the activity with no popup at all
+      // (proven on David's TV). Inside the home route it sees
+      // only root pops; dialogs and pushed routes take BACK
+      // themselves first.
+      home: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (bool didPop, Object? result) {
+          if (didPop) return;
+          _showExitAppPopup();
+        },
+        child: const IntroGate(),
+      ),
     );
   }
 }
