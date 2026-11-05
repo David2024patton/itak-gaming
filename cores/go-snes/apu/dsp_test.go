@@ -181,7 +181,7 @@ func setupToneVoice(d *DSP, ram []byte) {
 	d.WriteReg(0x03, 0x10)                 // PITCHH: pitch 0x1000
 	d.WriteReg(0x04, 0x00)                 // SRCN
 	d.WriteReg(0x0C, 0x7F)                 // MVOLL
-	d.WriteReg(0x2C, 0x7F)                 // MVOLR
+	d.WriteReg(0x1C, 0x7F)                 // MVOLR
 	d.WriteReg(0x6C, 0x20)                 // FLG: echo writes off
 }
 
@@ -327,8 +327,8 @@ func TestEchoDelay512(t *testing.T) {
 	d.WriteReg(0x05, 0x00) // GAIN mode
 	d.WriteReg(0x07, 0x7F) // direct gain 0x7F0
 	d.WriteReg(0x0C, 0x7F) // MVOLL
-	d.WriteReg(0x2C, 0x7F) // MVOLR
-	d.WriteReg(0x1C, 0x7F) // EVOLL
+	d.WriteReg(0x1C, 0x7F) // MVOLR
+	d.WriteReg(0x2C, 0x7F) // EVOLL
 	d.WriteReg(0x3C, 0x7F) // EVOLR
 	d.WriteReg(0x0D, 0x00) // EFB 0
 	d.WriteReg(0x4D, 0x01) // EON voice 0
@@ -397,7 +397,7 @@ func TestPitch440(t *testing.T) {
 	d.WriteReg(0x05, 0x8F) // ADSR on, DR=0, AR=15 (fast attack, slow decay)
 	d.WriteReg(0x06, 0xE0) // SL=7, SR=0
 	d.WriteReg(0x0C, 0x7F)
-	d.WriteReg(0x2C, 0x7F)
+	d.WriteReg(0x1C, 0x7F)
 	d.WriteReg(0x6C, 0x20) // FLG: echo writes off
 	d.WriteReg(0x4C, 0x01)
 
@@ -415,4 +415,81 @@ func TestPitch440(t *testing.T) {
 		t.Fatalf("measured %d crossings in 1 s (%.2f Hz), want within 2%% of 440.06", crossings, hz)
 	}
 	t.Logf("pitch test: %d crossings, %.2f Hz", crossings, hz)
+}
+
+// Mix register map: MVOLL 0x0C, MVOLR 0x1C, EVOLL 0x2C,
+// EVOLR 0x3C, and each channel's output may depend only
+// on its own two volumes (out = dry*MVOL + echo*EVOL,
+// products truncated separately). Drives the
+// TestEchoDelay512 impulse setup with feedback on and
+// proves the independence: zeroing one register must
+// change only its own channel's output. (The swapped
+// register mix this guards against passed every older
+// test because they set all four volumes equal.)
+func TestDSPMixRegisterMap(t *testing.T) {
+	run := func(mvolL, mvolR, evolL, evolR byte) [][2]int16 {
+		d, ram := newTestDSP()
+		ram[0x1000] = 0x00
+		ram[0x1001] = 0x20
+		ram[0x1002] = 0x00
+		ram[0x1003] = 0x20
+		putBlock(ram, 0x2000, 0xC1, [8]byte{0, 0, 0, 0, 0x70, 0, 0, 0})
+		d.WriteReg(0x5D, 0x10) // DIR = 0x1000
+		d.WriteReg(0x00, 0x7F)
+		d.WriteReg(0x01, 0x7F)
+		d.WriteReg(0x02, 0x00)
+		d.WriteReg(0x03, 0x10) // pitch 0x1000
+		d.WriteReg(0x04, 0x00)
+		d.WriteReg(0x05, 0x00) // GAIN mode
+		d.WriteReg(0x07, 0x7F) // direct gain 0x7F0
+		d.WriteReg(0x0C, mvolL) // MVOLL
+		d.WriteReg(0x1C, mvolR) // MVOLR
+		d.WriteReg(0x2C, evolL) // EVOLL
+		d.WriteReg(0x3C, evolR) // EVOLR
+		d.WriteReg(0x0D, 0x40) // EFB: feedback on
+		d.WriteReg(0x4D, 0x01) // EON voice 0
+		d.WriteReg(0x6D, 0x40) // ESA = 0x4000
+		d.WriteReg(0x7D, 0x01) // EDL 1: 512 frames
+		d.WriteReg(0x7F, 0x40) // FIR7: single tap readback
+		d.WriteReg(0x6C, 0x00) // FLG: echo writes on
+		d.WriteReg(0x4C, 0x01) // KON
+		out := make([][2]int16, 1400)
+		for i := range out {
+			l, r := d.StepSample()
+			out[i] = [2]int16{l, r}
+		}
+		return out
+	}
+	base := run(0x60, 0x50, 0x40, 0x30)
+	anyL, anyR := false, false
+	for _, s := range base {
+		if s[0] != 0 {
+			anyL = true
+		}
+		if s[1] != 0 {
+			anyR = true
+		}
+	}
+	if !anyL || !anyR {
+		t.Fatal("baseline run is silent in a channel")
+	}
+	check := func(name string, variant [][2]int16, changedChannel int) {
+		t.Helper()
+		changed := false
+		for i := range base {
+			if variant[i][1-changedChannel] != base[i][1-changedChannel] {
+				t.Fatalf("%s: channel %d output changed when it must not", name, 1-changedChannel)
+			}
+			if variant[i][changedChannel] != base[i][changedChannel] {
+				changed = true
+			}
+		}
+		if !changed {
+			t.Fatalf("%s: channel %d output did not change when it must", name, changedChannel)
+		}
+	}
+	check("MVOLL zeroed", run(0x00, 0x50, 0x40, 0x30), 0)
+	check("MVOLR zeroed", run(0x60, 0x00, 0x40, 0x30), 1)
+	check("EVOLL zeroed", run(0x60, 0x50, 0x00, 0x30), 0)
+	check("EVOLR zeroed", run(0x60, 0x50, 0x40, 0x00), 1)
 }
