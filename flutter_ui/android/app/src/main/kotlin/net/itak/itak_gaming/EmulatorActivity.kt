@@ -29,6 +29,7 @@ import android.widget.TextView
 import android.widget.Toast
 import mobile.Mobile
 import java.io.File
+import java.util.Locale
 import kotlin.concurrent.thread
 
 /**
@@ -78,6 +79,19 @@ class EmulatorActivity : Activity(), TextureListener {
 
     /** Session audio diagnostics; see AudioDiag. */
     private val audioDiag = AudioDiag()
+
+    // Live values for the debug stats overlay (1.107): the game
+    // loop and the audio thread publish into these as they run,
+    // and the overlay updater reads them a couple of times a
+    // second. They are written from worker threads, hence
+    // volatile; nothing in the game or audio path reads them.
+    @Volatile private var diagFrameAvgMs = 0.0
+    @Volatile private var diagFrameTotal = 0L
+    @Volatile private var diagTargetFps = 0.0
+    @Volatile private var diagLeadMs = 0.0
+    @Volatile private var diagLatencyMs = -1.0
+    @Volatile private var diagCoreRate = 0
+    @Volatile private var diagTrackRate = 0
 
     /** The rate the core produces audio at, and the rate the track runs at. */
     private var coreAudioRate = 0
@@ -160,6 +174,85 @@ class EmulatorActivity : Activity(), TextureListener {
     private var readyButton: Button? = null
     private var myName: String = ""
     private var rootFrameRef: FrameLayout? = null
+
+    // ----- Debug stats overlay (1.107) -----
+    // A small live readout over the game, toggled from the
+    // pause menu and remembered across launches. It exists to
+    // make sound and speed problems visible on the screen
+    // while they happen: frame rate, frame cost, the audio
+    // rates, the track lead and latency, the cushion stretch,
+    // and the session underrun totals.
+    private var debugOverlay: TextView? = null
+    private val debugHandler = Handler(Looper.getMainLooper())
+    private var debugLastFrames = 0L
+    private var debugLastTimeNs = 0L
+    private var debugMeasuredFps = 0.0
+
+    private fun debugStatsOn(): Boolean =
+        getSharedPreferences("itak_prefs", MODE_PRIVATE)
+            .getBoolean("debug_stats_overlay", false)
+
+    private fun setDebugStats(on: Boolean) {
+        getSharedPreferences("itak_prefs", MODE_PRIVATE)
+            .edit().putBoolean("debug_stats_overlay", on).apply()
+        debugOverlay?.visibility = if (on) View.VISIBLE else View.GONE
+        if (on) startDebugUpdater() else stopDebugUpdater()
+    }
+
+    private val debugUpdater = object : Runnable {
+        override fun run() {
+            val tv = debugOverlay
+            if (tv == null || tv.visibility != View.VISIBLE) return
+            val nowNs = System.nanoTime()
+            if (debugLastTimeNs > 0L) {
+                val dtSec = (nowNs - debugLastTimeNs) / 1_000_000_000.0
+                if (dtSec > 0) {
+                    debugMeasuredFps =
+                        (diagFrameTotal - debugLastFrames) / dtSec
+                }
+            }
+            debugLastFrames = diagFrameTotal
+            debugLastTimeNs = nowNs
+            tv.text = buildDebugStatsText()
+            debugHandler.postDelayed(this, 500)
+        }
+    }
+
+    private fun startDebugUpdater() {
+        debugHandler.removeCallbacks(debugUpdater)
+        debugLastFrames = diagFrameTotal
+        debugLastTimeNs = 0L
+        debugHandler.post(debugUpdater)
+    }
+
+    private fun stopDebugUpdater() {
+        debugHandler.removeCallbacks(debugUpdater)
+    }
+
+    private fun buildDebugStatsText(): String {
+        val totals = audioCushion.diagTotals()
+        val latency =
+            if (diagLatencyMs < 0) "--"
+            else String.format(Locale.US, "%.0f", diagLatencyMs)
+        return String.format(
+            Locale.US,
+            "FPS %.1f  (target %.2f)\n" +
+                "FRAME %.2f ms avg\n" +
+                "AUDIO %d Hz -> %d Hz\n" +
+                "LEAD %.0f ms  LATENCY %s ms\n" +
+                "STRETCH %+.2f %%  PEAK %+.2f %%\n" +
+                "UNDERRUNS %d  STARVED %.0f ms\n" +
+                "TRIMS %d  GUARD %d",
+            debugMeasuredFps, diagTargetFps,
+            diagFrameAvgMs,
+            diagCoreRate, diagTrackRate,
+            diagLeadMs, latency,
+            (audioCushion.currentStretch - 1.0) * 100.0,
+            (totals.peakStretch - 1.0) * 100.0,
+            totals.underrunEpisodes, totals.starvedMs,
+            outputTrims, totals.guardTrims
+        )
+    }
 
     // ----- Seats and rotation (host referee, PROTOCOL.md 4.9) -----
     // The Members list under the player lines: rebuilt only when
@@ -534,6 +627,33 @@ class EmulatorActivity : Activity(), TextureListener {
             )
         )
         setContentView(rootFrame)
+
+        // Debug stats overlay (1.107): created hidden unless
+        // the remembered pref says on. It sits over the game
+        // in the top-left corner and never takes touches, so
+        // the game underneath keeps every key and tap.
+        val overlay = TextView(this)
+        overlay.typeface = Typeface.MONOSPACE
+        overlay.textSize = 11f
+        overlay.setTextColor(Color.WHITE)
+        overlay.setBackgroundColor(0xB0000000.toInt())
+        val density = resources.displayMetrics.density
+        val padPx = (12 * density).toInt()
+        overlay.setPadding(padPx, padPx, padPx, padPx)
+        overlay.isClickable = false
+        overlay.isFocusable = false
+        val overlayParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        overlayParams.gravity = Gravity.TOP or Gravity.START
+        val marginPx = (10 * density).toInt()
+        overlayParams.setMargins(marginPx, marginPx, marginPx, marginPx)
+        overlay.visibility =
+            if (debugStatsOn()) View.VISIBLE else View.GONE
+        rootFrame.addView(overlay, overlayParams)
+        debugOverlay = overlay
+        if (debugStatsOn()) startDebugUpdater()
 
         val coreAsset = intent.getStringExtra(EXTRA_CORE) ?: "libitak_snes.so"
         coreAssetName = coreAsset
@@ -2297,6 +2417,8 @@ class EmulatorActivity : Activity(), TextureListener {
             } catch (e: Exception) {
                 "unknown"
             }
+            diagCoreRate = coreRate
+            diagTrackRate = trackAudioRate
             audioDiag.begin(
                 system = coreAssetName.removePrefix("libgo_").removePrefix("libitak_")
                     .removeSuffix(".so"),
@@ -2383,6 +2505,7 @@ class EmulatorActivity : Activity(), TextureListener {
         var frameCount = 0L
         var tRun = 0L
         Log.i(TAG, "gameLoop start fps=$fps")
+        diagTargetFps = fps
 
         // Watch session: hold until the room join lands (it does
         // not wait on the match itself; WatchStep just reports no
@@ -2520,6 +2643,8 @@ class EmulatorActivity : Activity(), TextureListener {
                     audioDiag.sample(
                         leadMs, latencyMs, audioCushion.currentStretch, diagNowNs
                     )
+                    diagLeadMs = leadMs
+                    diagLatencyMs = latencyMs
                 }
                 if (resampler != null) {
                     // Dynamic rate control path (1.95): drained
@@ -2634,11 +2759,18 @@ class EmulatorActivity : Activity(), TextureListener {
                 val elapsed = (System.nanoTime() - start) / 1_000_000
                 tRun += elapsed
                 frameCount++
+                // The debug overlay FPS meter reads the
+                // running total; publish it every frame (the
+                // 600-frame log point alone is far too coarse
+                // for a twice-a-second readout).
+                diagFrameTotal = frameCount
                 // Draw every emulated frame (fixed since 1.101;
                 // the old Steady 30 draw toggle was removed).
                 glView.requestRender()
                 if (frameCount % 600 == 0L) {
                     Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
+                    diagFrameAvgMs = tRun / 600.0
+                    diagFrameTotal = frameCount
                     tRun = 0
                 }
             }
@@ -2968,6 +3100,14 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         entries.add("Save Game" to { doSave() })
         entries.add("Load Game" to { doLoad() })
+        entries.add((if (debugStatsOn()) "Debug stats: On" else "Debug stats: Off") to {
+            val nowOn = !debugStatsOn()
+            setDebugStats(nowOn)
+            Toast.makeText(
+                this, if (nowOn) "Debug stats on" else "Debug stats off",
+                Toast.LENGTH_SHORT
+            ).show()
+        })
         entries.add(cheatLabel to {
             // Keep the game parked while the cheat picker
             // is open; its own dismiss resumes play.
@@ -3423,6 +3563,7 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     override fun onDestroy() {
+        debugHandler.removeCallbacks(debugUpdater)
         uiHandler.removeCallbacks(roomTicker)
         uiHandler.removeCallbacks(pauseTicker)
         uiHandler.removeCallbacks(chatTicker)
