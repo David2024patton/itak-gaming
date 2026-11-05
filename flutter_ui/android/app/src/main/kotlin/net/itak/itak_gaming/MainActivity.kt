@@ -5,6 +5,7 @@ import android.content.Intent
 import android.hardware.input.InputManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
@@ -27,6 +28,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import kotlin.concurrent.thread
+import kotlin.math.PI
+import kotlin.math.sin
 
 class MainActivity : FlutterActivity() {
 
@@ -380,6 +383,18 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     }
+                    // Settings -> Sound test popup: run the same
+                    // sound delay measurement the native sound
+                    // test screen runs and hand the result text
+                    // back to Dart, so the popup can show it
+                    // without opening the full screen. Takes
+                    // about three seconds on a worker thread.
+                    "measureSoundDelay" -> {
+                        thread {
+                            val text = measureSoundDelayBlocking()
+                            mainHandler.post { result.success(text) }
+                        }
+                    }
                     // PATRIOTS screen: play one channel's YouTube
                     // livestream in the native stream player. The
                     // video id is the live broadcast Dart pulled
@@ -616,6 +631,76 @@ class MainActivity : FlutterActivity() {
     // The bytes land in update.apk.part first and are renamed to
     // update.apk only after the size and SHA-256 both check out,
     // so a partial file can never reach the installer.
+    // The sound delay measurement from the sound test screen
+    // (SoundTestActivity.measureDelay), callable from Dart so the
+    // Settings sound popup can show the result without opening
+    // the full screen: open a track exactly the way a game does
+    // (EmuAudioOutput), feed it a soft tone for a few seconds, and
+    // read the track's own presentation timestamps to learn how
+    // many milliseconds of sound sit between the app and the
+    // speaker. Blocking; call from a worker thread. Returns the
+    // same result text the native screen shows.
+    private fun measureSoundDelayBlocking(): String {
+        var track: AudioTrack? = null
+        try {
+            val rate = EmuAudioOutput.deviceOutputRate(this)
+            track = EmuAudioOutput.buildTrack(rate)
+            val t = track
+            val bufFrames = try { t.bufferSizeInFrames } catch (e: Exception) { 0 }
+            t.play()
+            // A soft 220 Hz tone, written in quarter-second
+            // chunks for about three seconds.
+            val chunkFrames = rate / 4
+            val pcm = ByteArray(chunkFrames * 4)
+            var frame = 0
+            val samples = mutableListOf<Double>()
+            val ts = AudioTimestamp()
+            var written = 0L
+            val started = System.nanoTime()
+            while ((System.nanoTime() - started) / 1_000_000 < 3000) {
+                for (i in 0 until chunkFrames) {
+                    val s = (sin(2.0 * PI * 220.0 * (frame + i) / rate) * 0.2 * 32767).toInt()
+                    val o = i * 4
+                    pcm[o] = (s and 0xFF).toByte()
+                    pcm[o + 1] = ((s shr 8) and 0xFF).toByte()
+                    pcm[o + 2] = (s and 0xFF).toByte()
+                    pcm[o + 3] = ((s shr 8) and 0xFF).toByte()
+                }
+                frame += chunkFrames
+                val n = t.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                if (n > 0) written += n / 4
+                try {
+                    if (t.getTimestamp(ts)) {
+                        val inFlight = written - ts.framePosition
+                        if (inFlight >= 0) samples.add(inFlight * 1000.0 / rate)
+                    }
+                } catch (e: Exception) { /* keep measuring */ }
+            }
+            val routed = try {
+                val dev = t.routedDevice
+                if (dev != null) dev.productName.toString() else "unknown"
+            } catch (e: Exception) {
+                "unknown"
+            }
+            return if (samples.size >= 3) {
+                val sorted = samples.sorted()
+                val median = sorted[sorted.size / 2]
+                val bufMs = if (rate > 0) bufFrames * 1000.0 / rate else 0.0
+                "Sound delay on this box: about ${"%.0f".format(median)} ms.\n" +
+                    "Track runs at $rate Hz, its buffer is " +
+                    "${"%.0f".format(bufMs)} ms, output to $routed."
+            } else {
+                "The track would not report its timing on this " +
+                    "box, so the delay could not be measured here."
+            }
+        } catch (e: Exception) {
+            return "The delay measurement failed on this box."
+        } finally {
+            try { track?.stop() } catch (e: Exception) { /* already stopped */ }
+            try { track?.release() } catch (e: Exception) { /* already released */ }
+        }
+    }
+
     private fun downloadAndInstall(
         dlUrl: String,
         wantSha: String,
