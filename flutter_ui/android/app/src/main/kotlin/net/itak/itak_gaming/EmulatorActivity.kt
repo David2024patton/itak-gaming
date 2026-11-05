@@ -234,7 +234,7 @@ class EmulatorActivity : Activity(), TextureListener {
         val latency =
             if (diagLatencyMs < 0) "--"
             else String.format(Locale.US, "%.0f", diagLatencyMs)
-        return String.format(
+        val base = String.format(
             Locale.US,
             "FPS %.1f  (target %.2f)\n" +
                 "FRAME %.2f ms avg\n" +
@@ -252,6 +252,45 @@ class EmulatorActivity : Activity(), TextureListener {
             totals.underrunEpisodes, totals.starvedMs,
             outputTrims, totals.guardTrims
         )
+        // Sound chip registers (1.108): when the loaded core
+        // offers the itak_dsp_regs debug export, append the
+        // S-DSP register file under the delivery stats: the
+        // master and echo volumes, the echo feedback and
+        // delay, the FIR coefficients, the key state, and a
+        // pitch, volume, and envelope readout per voice.
+        val regs = try { Mobile.dspRegs() } catch (e: Exception) { null }
+        if (regs == null || regs.size != 128) return base
+        fun u(i: Int): Int = regs[i].toInt() and 0xFF
+        fun sg(i: Int): Int = regs[i].toInt()
+        fun pitch(v: Int): Int {
+            val b = v * 16
+            return ((u(b + 3) and 0x3F) shl 8) or u(b + 2)
+        }
+        var dsp = String.format(
+            Locale.US,
+            "\nDSP FLG %02X MVOL %+d/%+d EVOL %+d/%+d" +
+                "\nECHO FB %+d DLY %d ESA %02X DIR %02X" +
+                "\nFIR %+d %+d %+d %+d %+d %+d %+d %+d" +
+                "\nKON %02X KOF %02X ENDX %02X PMON %02X NON %02X",
+            u(0x6C), sg(0x0C), sg(0x1C), sg(0x2C), sg(0x3C),
+            sg(0x0D), u(0x7D), u(0x6D), u(0x5D),
+            sg(0x0F), sg(0x1F), sg(0x2F), sg(0x3F),
+            sg(0x4F), sg(0x5F), sg(0x6F), sg(0x7F),
+            u(0x4C), u(0x5C), u(0x7C), u(0x2D), u(0x3D)
+        )
+        for (i in 0..3) {
+            val a = 2 * i
+            val b = 2 * i + 1
+            dsp += String.format(
+                Locale.US,
+                "\nV%d P%04X V%+d/%+d E%02X O%+d  V%d P%04X V%+d/%+d E%02X O%+d",
+                a, pitch(a), sg(a * 16), sg(a * 16 + 1),
+                u(a * 16 + 8), sg(a * 16 + 9),
+                b, pitch(b), sg(b * 16), sg(b * 16 + 1),
+                u(b * 16 + 8), sg(b * 16 + 9)
+            )
+        }
+        return base + dsp
     }
 
     // ----- Seats and rotation (host referee, PROTOCOL.md 4.9) -----
