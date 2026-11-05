@@ -395,6 +395,34 @@ class MainActivity : FlutterActivity() {
                             mainHandler.post { result.success(text) }
                         }
                     }
+                    // App root BACK popup (1.109): restart the
+                    // app. CLEAR_TASK finishes the current task
+                    // and a fresh MainActivity becomes the root:
+                    // new Flutter engine, new Dart state, back at
+                    // the home screen. The process itself is NOT
+                    // killed: every kill-after-launch shape was
+                    // proven broken on David's TV, because the
+                    // relaunch lands in this same still-living
+                    // process and the delayed kill then removes
+                    // the newborn activity too ("app died, no
+                    // saved state"); an alarm-scheduled relaunch
+                    // never fired at all, inexact alarms being
+                    // batched.
+                    "restartApp" -> {
+                        val launch = android.content.Intent(
+                            this, MainActivity::class.java
+                        )
+                        launch.addFlags(
+                            android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                                android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        )
+                        try {
+                            startActivity(launch)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    }
                     // PATRIOTS screen: play one channel's YouTube
                     // livestream in the native stream player. The
                     // video id is the live broadcast Dart pulled
