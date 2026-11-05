@@ -53,6 +53,7 @@ typedef uint32_t (*itakrs_audio_drain_fn)(void*, int16_t*, uint32_t);
 typedef void (*itakrs_set_buttons_fn)(void*, uint32_t, uint32_t);
 typedef size_t (*itakrs_state_size_fn)(void*);
 typedef int32_t (*itakrs_save_state_fn)(void*, uint8_t*, size_t, size_t*);
+typedef int32_t (*itakrs_dsp_regs_fn)(void*, uint8_t*, size_t, size_t*);
 typedef int32_t (*itakrs_load_state_fn)(void*, const uint8_t*, size_t);
 typedef int32_t (*itakrs_cheat_supported_fn)(void*);
 typedef void (*itakrs_cheat_reset_fn)(void*);
@@ -78,6 +79,7 @@ typedef struct {
     itakrs_set_buttons_fn set_buttons;
     itakrs_state_size_fn state_size;
     itakrs_save_state_fn save_state;
+    itakrs_dsp_regs_fn dsp_regs;
     itakrs_load_state_fn load_state;
     itakrs_cheat_supported_fn cheat_supported;
     itakrs_cheat_reset_fn cheat_reset;
@@ -128,6 +130,11 @@ static ItakRsCore* itakrs_bind(const char* path, char* err, size_t errcap) {
     ITAKRS_SYM(vt, cheat_supported, "itak_cheat_supported");
     ITAKRS_SYM(vt, cheat_reset, "itak_cheat_reset");
     ITAKRS_SYM(vt, cheat_set, "itak_cheat_set");
+    // Optional debug surface, not part of ABI 1.0: bound
+    // when the adapter offers it, left NULL when it does
+    // not. Absence is not an error; cores without the
+    // export keep working unchanged.
+    vt->dsp_regs = (itakrs_dsp_regs_fn)itakrs_dl_sym(vt->dl, "itak_dsp_regs");
     return vt;
 }
 
@@ -156,6 +163,10 @@ static void itakrs_set_buttons(ItakRsCore* vt, void* h, uint32_t player, uint32_
 static size_t itakrs_state_size(ItakRsCore* vt, void* h) { return vt->state_size(h); }
 static int32_t itakrs_save_state(ItakRsCore* vt, void* h, uint8_t* out, size_t cap, size_t* written) { return vt->save_state(h, out, cap, written); }
 static int32_t itakrs_load_state(ItakRsCore* vt, void* h, const uint8_t* data, size_t len) { return vt->load_state(h, data, len); }
+// The dsp_regs wrapper returns -1 when the adapter does
+// not offer the optional export, so the Go side can tell
+// "not offered" apart from a real adapter status.
+static int32_t itakrs_dsp_regs(ItakRsCore* vt, void* h, uint8_t* out, size_t cap, size_t* written) { if (!vt->dsp_regs) return -1; return vt->dsp_regs(h, out, cap, written); }
 static int32_t itakrs_cheat_supported(ItakRsCore* vt, void* h) { return vt->cheat_supported(h); }
 static void itakrs_cheat_reset(ItakRsCore* vt, void* h) { vt->cheat_reset(h); }
 static int32_t itakrs_cheat_set(ItakRsCore* vt, void* h, uint32_t index, const char* code) { return vt->cheat_set(h, index, code); }
@@ -565,6 +576,30 @@ func (c *rustCore) SaveState() ([]byte, error) {
 		return nil, c.statusErr("itak_save_state", st)
 	}
 	return buf[:int(written)], nil
+}
+
+// DspRegs returns the sound chip's 128-byte register file
+// through the adapter's optional itak_dsp_regs debug
+// export. It returns nil when the core failed to
+// construct, when no game is loaded, when the adapter
+// does not offer the export, or when the call itself
+// fails: this is a diagnostic surface, and callers treat
+// nil as "not offered".
+func (c *rustCore) DspRegs() []byte {
+	if c.err != nil || c.h == nil || !c.loaded {
+		return nil
+	}
+	buf := make([]byte, 128)
+	var written C.size_t
+	st := C.itakrs_dsp_regs(c.vt, c.h,
+		(*C.uint8_t)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), &written)
+	if st != 0 {
+		return nil
+	}
+	if int(written) > len(buf) {
+		written = C.size_t(len(buf))
+	}
+	return buf[:int(written)]
 }
 
 func (c *rustCore) LoadState(data []byte) error {
