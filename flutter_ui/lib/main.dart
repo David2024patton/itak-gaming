@@ -4134,6 +4134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _introVideo = true;
   bool _debugChute = true;
   String _installCodeShort = '';
+  String _installCode = '';
   bool _sendingReport = false;
   String _versionName = '';
   bool _checkingUpdate = false;
@@ -4146,12 +4147,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Sound test, App updates, Logs, Space background, Intro video,
   // Debug reports, Send debug report now, Install code, Back
 
+  // One real focus node per row (the app's per-row focus pattern,
+  // as in Manage players): D-pad traversal moves between these
+  // nodes, and _row follows the focus via onFocusChange, so the
+  // highlight and the actual focus can never split apart. Before
+  // this, the rows were plain GestureDetectors under a single
+  // KeyboardListener node spanning the whole body, and an UP press
+  // let framework traversal throw focus to the AppBar back button.
+  // See SETTINGS_FOCUS_FIX.md.
+  final List<FocusNode> _rowFocus = List<FocusNode>.generate(
+    _rowCount,
+    (i) => FocusNode(debugLabel: 'settings-row-$i'),
+  );
+
   @override
   void initState() {
     super.initState();
     _load();
+    // The KeyboardListener node must never be a traversal target:
+    // it wraps the whole body, so if traversal lands on it, the
+    // next UP throws focus out of the list to the AppBar back
+    // button (the 2026-11-04 bug). It still receives key events as
+    // an ancestor of whichever row holds focus. Focus starts on
+    // row 0's own node instead.
+    _focusNode.skipTraversal = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusNode.requestFocus();
+      _rowFocus[0].requestFocus();
     });
   }
 
@@ -4179,24 +4200,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _spaceBg = sb != '0';
       _introVideo = iv != '0';
       _debugChute = dc != '0';
+      _installCode = code;
       _installCodeShort = code.length >= 8 ? code.substring(0, 8) : code;
       _versionName = ai?['versionName']?.toString() ?? '';
     });
-  }
-
-  void _openLogs() {
-    appLog('opened the Logs screen');
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const LogScreen()),
-    );
-  }
-
-  Future<void> _openSoundTest() async {
-    appLog('opened the Sound test screen');
-    try {
-      await _logChannel.invokeMethod('soundTest');
-    } catch (_) {}
   }
 
   Future<void> _openUpdates() async {
@@ -4231,6 +4238,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _focusNode.dispose();
+    for (final node in _rowFocus) {
+      node.dispose();
+    }
     _settingsScroll.dispose();
     super.dispose();
   }
@@ -4250,51 +4260,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  void _adjust(int delta) {
-    if (_row == 0) {
-      setState(() => _swapAB = !_swapAB);
-      Prefs.setInt('swap_ab', _swapAB ? 1 : 0);
-    } else if (_row == 1) {
-      setState(() => _autoArt = !_autoArt);
-      Prefs.set('art_autofetch', _autoArt ? '1' : '0');
-    } else if (_row == 2) {
-      setState(() => _autoSave = !_autoSave);
-      Prefs.set('autosave', _autoSave ? '1' : '0');
-    } else if (_row == 3) {
-      setState(() => _friendAlerts = !_friendAlerts);
-      Prefs.set('friend_alerts', _friendAlerts ? '1' : '0');
-    } else if (_row == 7) {
-      setState(() => _spaceBg = !_spaceBg);
-      Prefs.set('space_bg', _spaceBg ? '1' : '0');
-    } else if (_row == 8) {
-      setState(() => _introVideo = !_introVideo);
-      Prefs.set('intro_video', _introVideo ? '1' : '0');
-    } else if (_row == 9) {
-      setState(() => _debugChute = !_debugChute);
-      Prefs.set('debug_chute', _debugChute ? '1' : '0');
+  // Toggle rows: their popup titles, current values, and how a
+  // picked value is applied (state + pref, exactly what the old
+  // inline _adjust wrote). There is no inline cycling any more:
+  // activation opens the row's popup (2026-11-04 popup rework).
+  String _toggleLabel(int index) {
+    switch (index) {
+      case 0:
+        return 'Swap A and B buttons';
+      case 1:
+        return 'Download box art';
+      case 2:
+        return 'Auto-save';
+      case 3:
+        return 'Friend alerts';
+      case 7:
+        return 'Space background';
+      case 8:
+        return 'Intro video';
+      case 9:
+        return 'Debug reports';
+      default:
+        return 'Setting';
     }
-    // Row 11 (Install code) is read-only: adjust does nothing.
   }
 
-  // Settings -> Send debug report now. The toggle gates it: with
-  // reports off the row says so plainly instead of sending.
-  Future<void> _sendReportNow() async {
-    if (_sendingReport) return;
-    if (!_debugChute) {
-      await _reportDialog('Debug reports are off',
-          'Turn Debug reports on above if you want this stick to send its app log and game speeds to our server.');
-      return;
+  bool _rowValue(int index) {
+    switch (index) {
+      case 0:
+        return _swapAB;
+      case 1:
+        return _autoArt;
+      case 2:
+        return _autoSave;
+      case 3:
+        return _friendAlerts;
+      case 7:
+        return _spaceBg;
+      case 8:
+        return _introVideo;
+      case 9:
+        return _debugChute;
+      default:
+        return false;
     }
-    setState(() => _sendingReport = true);
-    final ok = await DebugChute.sendReport('manual');
-    if (mounted) setState(() => _sendingReport = false);
-    if (!mounted) return;
-    await _reportDialog(
-      ok ? 'Report sent' : 'Report failed',
-      ok
-          ? 'The app log and game speeds from this stick are on our server now.'
-          : 'The report did not reach the server. Check the internet connection and try again.',
-    );
+  }
+
+  void _setRowValue(int index, bool value) {
+    switch (index) {
+      case 0:
+        setState(() => _swapAB = value);
+        Prefs.setInt('swap_ab', value ? 1 : 0);
+        break;
+      case 1:
+        setState(() => _autoArt = value);
+        Prefs.set('art_autofetch', value ? '1' : '0');
+        break;
+      case 2:
+        setState(() => _autoSave = value);
+        Prefs.set('autosave', value ? '1' : '0');
+        break;
+      case 3:
+        setState(() => _friendAlerts = value);
+        Prefs.set('friend_alerts', value ? '1' : '0');
+        break;
+      case 7:
+        setState(() => _spaceBg = value);
+        Prefs.set('space_bg', value ? '1' : '0');
+        break;
+      case 8:
+        setState(() => _introVideo = value);
+        Prefs.set('intro_video', value ? '1' : '0');
+        break;
+      case 9:
+        setState(() => _debugChute = value);
+        Prefs.set('debug_chute', value ? '1' : '0');
+        break;
+    }
   }
 
   Future<void> _reportDialog(String title, String body) async {
@@ -4307,6 +4349,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: Text(body),
         actions: [
           TextButton(
+            autofocus: true,
             onPressed: () => Navigator.pop(ctx),
             child:
                 const Text('OK', style: TextStyle(color: Color(0xFF00E676))),
@@ -4316,37 +4359,337 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ----------------------------------------------------------------
+  // Row activation: every row opens a popup box in the app's dialog
+  // style (dark card, green affirmative, BACK closes), opened with
+  // a default choice focused; closing returns focus to the row
+  // that opened it. Owner, 2026-11-04: make the settings like the
+  // rest, rows that pop up like a box when you click them.
+  // ----------------------------------------------------------------
+
+  void _restoreRowFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _rowFocus[_row].requestFocus();
+    });
+  }
+
+  Future<void> _activateRow(int index) async {
+    switch (index) {
+      case 12:
+        Navigator.pop(context);
+        return;
+      case 0:
+      case 1:
+      case 2:
+      case 3:
+      case 7:
+      case 8:
+      case 9:
+        await _openTogglePopup(index);
+        break;
+      case 4:
+        await _openSoundPopup();
+        break;
+      case 5:
+        await _openUpdatesPopup();
+        break;
+      case 6:
+        await _openLogsPopup();
+        break;
+      case 10:
+        await _openSendReportPopup();
+        break;
+      case 11:
+        await _reportDialog(
+          'Install code',
+          'This stick\'s own code for debug reports:\n\n'
+              '${_installCode.isEmpty ? _installCodeShort : _installCode}',
+        );
+        break;
+    }
+    _restoreRowFocus();
+  }
+
+  Future<void> _openTogglePopup(int index) async {
+    final current = _rowValue(index);
+    final picked = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: Text(_toggleLabel(index)),
+        content: Text('Now: ${current ? 'On' : 'Off'}',
+            style: const TextStyle(fontSize: 18)),
+        actions: [
+          TextButton(
+            autofocus: !current,
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Off',
+                style: TextStyle(
+                    color:
+                        !current ? const Color(0xFF00E676) : Colors.white70,
+                    fontWeight:
+                        !current ? FontWeight.bold : FontWeight.normal)),
+          ),
+          TextButton(
+            autofocus: current,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('On',
+                style: TextStyle(
+                    color:
+                        current ? const Color(0xFF00E676) : Colors.white70,
+                    fontWeight:
+                        current ? FontWeight.bold : FontWeight.normal)),
+          ),
+        ],
+      ),
+    );
+    if (picked != null && picked != current) {
+      _setRowValue(index, picked);
+    }
+  }
+
+  // The Sound test popup carries the DEBUG card from the old
+  // native sound test screen: measure the sound delay on this box
+  // (one channel call running the same measurement the native
+  // screen runs) and send a debug report on the spot. The speaker
+  // and microphone level-bar tests stay on the native screen,
+  // which this popup no longer opens.
+  Future<void> _openSoundPopup() async {
+    appLog('opened the Sound test popup');
+    var measuring = false;
+    var sending = false;
+    var delayText = 'Plays a soft tone through the game sound path and '
+        'measures how far the sound trails behind, in milliseconds.';
+    var reportText = 'Sends the full report, the latest game '
+        'session\'s sound measurements included, to the debug server.';
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          backgroundColor: const Color(0xFF262640),
+          title: const Text('Sound test'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(delayText, style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 14),
+              Text(reportText, style: const TextStyle(fontSize: 16)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              autofocus: true,
+              onPressed: measuring
+                  ? null
+                  : () async {
+                      setLocal(() {
+                        measuring = true;
+                        delayText = 'Measuring...';
+                      });
+                      String result;
+                      try {
+                        result = await _logChannel
+                                .invokeMethod<String>('measureSoundDelay') ??
+                            'The delay measurement failed on this box.';
+                      } catch (_) {
+                        result = 'The delay measurement failed on this box.';
+                      }
+                      if (ctx.mounted) {
+                        setLocal(() {
+                          measuring = false;
+                          delayText = result;
+                        });
+                      }
+                    },
+              child: Text(measuring ? 'Measuring...' : 'Measure sound delay',
+                  style: const TextStyle(color: Color(0xFF00E676))),
+            ),
+            TextButton(
+              onPressed: sending
+                  ? null
+                  : () async {
+                      setLocal(() {
+                        sending = true;
+                        reportText = 'Sending...';
+                      });
+                      final ok = await DebugChute.sendReport('manual');
+                      if (ctx.mounted) {
+                        setLocal(() {
+                          sending = false;
+                          reportText = ok
+                              ? 'Debug report sent, with the latest game '
+                                  'session\'s sound measurements inside.'
+                              : 'The report did not reach the server. '
+                                  'Check the internet connection and try again.';
+                        });
+                      }
+                    },
+              child: const Text('Send debug report now',
+                  style: TextStyle(color: Colors.white70)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close',
+                  style: TextStyle(color: Colors.white70)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // The App updates popup shows the installed build and offers the
+  // check; the check itself runs the exact flow the row always ran
+  // (_openUpdates and its own result dialogs, unchanged).
+  Future<void> _openUpdatesPopup() async {
+    final go = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF262640),
+        title: const Text('App updates'),
+        content: Text(
+            'Installed: iTaK Gaming '
+            '${_versionName.isEmpty ? '(unknown)' : _versionName}\n\n'
+            'Check the iTaK server for a newer build.',
+            style: const TextStyle(fontSize: 17)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child:
+                const Text('Close', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Check for updates',
+                style: TextStyle(color: Color(0xFF00E676))),
+          ),
+        ],
+      ),
+    );
+    if (go == true && mounted) await _openUpdates();
+  }
+
+  Future<void> _openLogsPopup() async {
+    appLog('opened the Logs popup');
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => const _LogsPopup(),
+    );
+  }
+
+  // Settings -> Send debug report now, as a popup: confirm, show
+  // the send running, then show its real result in the same box.
+  // The Debug reports toggle gates it exactly as before.
+  Future<void> _openSendReportPopup() async {
+    if (!_debugChute) {
+      await _reportDialog('Debug reports are off',
+          'Turn Debug reports on above if you want this stick to send its app log and game speeds to our server.');
+      return;
+    }
+    var phase = 0; // 0 ask, 1 sending, 2 sent, 3 failed
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.8),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          var title = 'Send debug report now';
+          var body = 'Upload the app log and game speeds to our server '
+              'right now?';
+          List<Widget> actions = [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            ),
+            TextButton(
+              autofocus: true,
+              onPressed: () async {
+                setLocal(() => phase = 1);
+                setState(() => _sendingReport = true);
+                final ok = await DebugChute.sendReport('manual');
+                if (mounted) setState(() => _sendingReport = false);
+                if (ctx.mounted) setLocal(() => phase = ok ? 2 : 3);
+              },
+              child: const Text('Send',
+                  style: TextStyle(color: Color(0xFF00E676))),
+            ),
+          ];
+          if (phase == 1) {
+            body = 'Sending...';
+            actions = const [];
+          } else if (phase == 2) {
+            title = 'Report sent';
+            body = 'The app log and game speeds from this stick are '
+                'on our server now.';
+            actions = [
+              TextButton(
+                autofocus: true,
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK',
+                    style: TextStyle(color: Color(0xFF00E676))),
+              ),
+            ];
+          } else if (phase == 3) {
+            title = 'Report failed';
+            body = 'The report did not reach the server. Check the '
+                'internet connection and try again.';
+            actions = [
+              TextButton(
+                autofocus: true,
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK',
+                    style: TextStyle(color: Color(0xFF00E676))),
+              ),
+            ];
+          }
+          return AlertDialog(
+            backgroundColor: const Color(0xFF262640),
+            title: Text(title),
+            content: Text(body, style: const TextStyle(fontSize: 17)),
+            actions: actions,
+          );
+        },
+      ),
+    );
+  }
+
+  // Wraps one settings row in its own focus node. When focus lands
+  // on the row (D-pad traversal, a tap, or the initial request),
+  // _row follows it and the list scrolls the row into view, so the
+  // white highlight ring and the framework's focus are always the
+  // same row.
+  Widget _focusableRow(int index, Widget child) {
+    return Focus(
+      focusNode: _rowFocus[index],
+      onFocusChange: (focused) {
+        if (focused && _row != index) {
+          setState(() => _row = index);
+          _ensureRowVisible();
+        }
+      },
+      child: child,
+    );
+  }
+
   void _onKey(KeyEvent event) {
     if (event is! KeyDownEvent) return;
     // Dialogs above this screen own the remote while they are up.
     if (ModalRoute.of(context)?.isCurrent != true) return;
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _row = (_row - 1 + _rowCount) % _rowCount);
-      _ensureRowVisible();
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _row = (_row + 1) % _rowCount);
-      _ensureRowVisible();
-    } else if (key == LogicalKeyboardKey.arrowLeft) {
-      _adjust(-1);
-    } else if (key == LogicalKeyboardKey.arrowRight) {
-      _adjust(1);
-    } else if (key == LogicalKeyboardKey.enter ||
+    // UP/DOWN belong to focus traversal now: the rows are real
+    // focus nodes and _row follows the focus (see _focusableRow).
+    // LEFT/RIGHT no longer cycle a value inline; activation opens
+    // the row's popup instead (2026-11-04 popup rework).
+    if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.space) {
-      if (_row == 12) {
-        Navigator.pop(context);
-      } else if (_row == 10) {
-        _sendReportNow();
-      } else if (_row == 6) {
-        _openLogs();
-      } else if (_row == 5) {
-        _openUpdates();
-      } else if (_row == 4) {
-        _openSoundTest();
-      } else {
-        _adjust(1);
-      }
+      _activateRow(_row);
     }
   }
 
@@ -4357,10 +4700,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String hint,
   }) {
     final focused = _row == index;
-    return GestureDetector(
+    return _focusableRow(
+      index,
+      GestureDetector(
       onTap: () {
         setState(() => _row = index);
-        _adjust(1);
+        _activateRow(index);
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
@@ -4402,6 +4747,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const Icon(Icons.chevron_right, color: Colors.white54),
           ],
         ),
+      ),
       ),
     );
   }
@@ -4456,146 +4802,152 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: _friendAlerts ? 'On' : 'Off',
                     hint: 'A banner and a chime when a friend comes online or starts playing',
                   ),
-                  GestureDetector(
-                    onTap: () {
-                      setState(() => _row = 4);
-                      _openSoundTest();
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      margin: const EdgeInsets.symmetric(vertical: 7),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 22, vertical: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1B1B28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: _row == 4 ? Colors.white : Colors.white12,
-                          width: _row == 4 ? 3 : 1,
+                  _focusableRow(4,
+                    GestureDetector(
+                      onTap: () {
+                        setState(() => _row = 4);
+                        _activateRow(4);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        margin: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 22, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1B1B28),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _row == 4 ? Colors.white : Colors.white12,
+                            width: _row == 4 ? 3 : 1,
+                          ),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.graphic_eq),
+                            SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Sound test',
+                                      style: TextStyle(
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.bold)),
+                                  Text(
+                                      'Measure the sound delay on this box, and send a debug report',
+                                      style: TextStyle(
+                                          fontSize: 15, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            Text(
+                              'Open',
+                              style: TextStyle(
+                                  fontSize: 19, color: Color(0xFF00E676)),
+                            ),
+                          ],
                         ),
                       ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.graphic_eq),
-                          SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Sound test',
-                                    style: TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.bold)),
-                                Text(
-                                    'Play a test sound and watch the bars: speaker and microphone checks',
-                                    style: TextStyle(
-                                        fontSize: 15, color: Colors.white54)),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            'Open',
-                            style: TextStyle(
-                                fontSize: 19, color: Color(0xFF00E676)),
-                          ),
-                        ],
-                      ),
-                    ),
+                    )
                   ),
-                  GestureDetector(
-                    onTap: () {
-                      setState(() => _row = 5);
-                      _openUpdates();
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      margin: const EdgeInsets.symmetric(vertical: 7),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 22, vertical: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1B1B28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: _row == 5 ? Colors.white : Colors.white12,
-                          width: _row == 5 ? 3 : 1,
+                  _focusableRow(5,
+                    GestureDetector(
+                      onTap: () {
+                        setState(() => _row = 5);
+                        _activateRow(5);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        margin: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 22, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1B1B28),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _row == 5 ? Colors.white : Colors.white12,
+                            width: _row == 5 ? 3 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.system_update),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('App updates',
+                                      style: TextStyle(
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.bold)),
+                                  Text('Check the iTaK server for a newer build',
+                                      style: TextStyle(
+                                          fontSize: 15, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            Text(
+                              _checkingUpdate
+                                  ? 'Checking...'
+                                  : 'Version $_versionName',
+                              style: const TextStyle(
+                                  fontSize: 19, color: Color(0xFF00E676)),
+                            ),
+                          ],
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.system_update),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('App updates',
-                                    style: TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.bold)),
-                                Text('Check the iTaK server for a newer build',
-                                    style: TextStyle(
-                                        fontSize: 15, color: Colors.white54)),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            _checkingUpdate
-                                ? 'Checking...'
-                                : 'Version $_versionName',
-                            style: const TextStyle(
-                                fontSize: 19, color: Color(0xFF00E676)),
-                          ),
-                        ],
-                      ),
-                    ),
+                    )
                   ),
-                  GestureDetector(
-                    onTap: () {
-                      setState(() => _row = 6);
-                      _openLogs();
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      margin: const EdgeInsets.symmetric(vertical: 7),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 22, vertical: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1B1B28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: _row == 6 ? Colors.white : Colors.white12,
-                          width: _row == 6 ? 3 : 1,
+                  _focusableRow(6,
+                    GestureDetector(
+                      onTap: () {
+                        setState(() => _row = 6);
+                        _activateRow(6);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        margin: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 22, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1B1B28),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _row == 6 ? Colors.white : Colors.white12,
+                            width: _row == 6 ? 3 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.terminal),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Logs',
+                                      style: TextStyle(
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.bold)),
+                                  Text(
+                                      'Everything the app does, written down for debugging',
+                                      style: TextStyle(
+                                          fontSize: 15, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            Text(
+                              _logSize <= 0
+                                  ? 'View'
+                                  : '${(_logSize / 1024).toStringAsFixed(0)} KB',
+                              style: const TextStyle(
+                                  fontSize: 19, color: Color(0xFF00E676)),
+                            ),
+                          ],
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.terminal),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Logs',
-                                    style: TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.bold)),
-                                Text(
-                                    'Everything the app does, written down for debugging',
-                                    style: TextStyle(
-                                        fontSize: 15, color: Colors.white54)),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            _logSize <= 0
-                                ? 'View'
-                                : '${(_logSize / 1024).toStringAsFixed(0)} KB',
-                            style: const TextStyle(
-                                fontSize: 19, color: Color(0xFF00E676)),
-                          ),
-                        ],
-                      ),
-                    ),
+                    )
                   ),
                   _settingRow(
                     index: 7,
@@ -4615,56 +4967,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: _debugChute ? 'On' : 'Off',
                     hint: 'Sends this stick\'s app log and game speeds to our server so problems can be checked remotely',
                   ),
-                  GestureDetector(
-                    onTap: () {
-                      setState(() => _row = 10);
-                      _sendReportNow();
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      margin: const EdgeInsets.symmetric(vertical: 7),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 22, vertical: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1B1B28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: _row == 10 ? Colors.white : Colors.white12,
-                          width: _row == 10 ? 3 : 1,
+                  _focusableRow(10,
+                    GestureDetector(
+                      onTap: () {
+                        setState(() => _row = 10);
+                        _activateRow(10);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        margin: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 22, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1B1B28),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _row == 10 ? Colors.white : Colors.white12,
+                            width: _row == 10 ? 3 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.cloud_upload),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Send debug report now',
+                                      style: TextStyle(
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.bold)),
+                                  Text(
+                                      'Upload the app log and game speeds to our server right now',
+                                      style: TextStyle(
+                                          fontSize: 15, color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                            Text(
+                              !_debugChute
+                                  ? 'Off'
+                                  : (_sendingReport ? 'Sending...' : 'Send'),
+                              style: TextStyle(
+                                  fontSize: 19,
+                                  color: _debugChute
+                                      ? const Color(0xFF00E676)
+                                      : Colors.white38),
+                            ),
+                          ],
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.cloud_upload),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Send debug report now',
-                                    style: TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.bold)),
-                                Text(
-                                    'Upload the app log and game speeds to our server right now',
-                                    style: TextStyle(
-                                        fontSize: 15, color: Colors.white54)),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            !_debugChute
-                                ? 'Off'
-                                : (_sendingReport ? 'Sending...' : 'Send'),
-                            style: TextStyle(
-                                fontSize: 19,
-                                color: _debugChute
-                                    ? const Color(0xFF00E676)
-                                    : Colors.white38),
-                          ),
-                        ],
-                      ),
-                    ),
+                    )
                   ),
                   _settingRow(
                     index: 11,
@@ -4672,32 +5026,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: _installCodeShort,
                     hint: 'This stick\'s own code for debug reports: read it to whoever is checking a problem',
                   ),
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 120),
-                      margin: const EdgeInsets.symmetric(vertical: 7),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 22, vertical: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1B1B28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color:
-                              _row == 12 ? Colors.white : Colors.white12,
-                          width: _row == 12 ? 3 : 1,
+                  _focusableRow(12,
+                    GestureDetector(
+                      onTap: () => _activateRow(12),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        margin: const EdgeInsets.symmetric(vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 22, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1B1B28),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color:
+                                _row == 12 ? Colors.white : Colors.white12,
+                            width: _row == 12 ? 3 : 1,
+                          ),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.arrow_back),
+                            SizedBox(width: 12),
+                            Text('Back',
+                                style: TextStyle(
+                                    fontSize: 22, fontWeight: FontWeight.bold)),
+                          ],
                         ),
                       ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.arrow_back),
-                          SizedBox(width: 12),
-                          Text('Back',
-                              style: TextStyle(
-                                  fontSize: 22, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
+                    )
                   ),
                     const SizedBox(height: 10),
                     const Text(
@@ -4712,6 +5068,105 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings -> Logs popup: the app log inside a scrollable popup
+// box (owner, 2026-11-04) instead of opening the full LogScreen.
+// Same source (the readLog channel) and the same page step as the
+// LogScreen; its buttons are real buttons, so the D-pad walks
+// them and BACK closes the box back to the Logs row.
+// ---------------------------------------------------------------------------
+class _LogsPopup extends StatefulWidget {
+  const _LogsPopup();
+
+  @override
+  State<_LogsPopup> createState() => _LogsPopupState();
+}
+
+class _LogsPopupState extends State<_LogsPopup> {
+  final ScrollController _scroll = ScrollController();
+  String _text = 'Loading...';
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final data =
+          await _logChannel.invokeMethod<Map<dynamic, dynamic>>('readLog');
+      if (!mounted) return;
+      setState(() {
+        _text = (data?['text'] ?? '').toString();
+        if (_text.isEmpty) _text = '(The log is empty.)';
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) {
+          _scroll.jumpTo(_scroll.position.maxScrollExtent);
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _text = 'Could not read the log: $e');
+    }
+  }
+
+  void _page(int dir) {
+    if (!_scroll.hasClients) return;
+    final pos = _scroll.position;
+    _scroll.jumpTo((pos.pixels + dir * 320).clamp(0.0, pos.maxScrollExtent));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF262640),
+      title: const Text('Logs'),
+      content: SizedBox(
+        width: 780,
+        height: 420,
+        child: SingleChildScrollView(
+          controller: _scroll,
+          child: Text(
+            _text,
+            style: const TextStyle(fontSize: 13.5, height: 1.35),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => _page(-1),
+          child:
+              const Text('Page up', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          onPressed: () => _page(1),
+          child:
+              const Text('Page down', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          onPressed: _refresh,
+          child:
+              const Text('Refresh', style: TextStyle(color: Colors.white70)),
+        ),
+        TextButton(
+          autofocus: true,
+          onPressed: () => Navigator.pop(context),
+          child:
+              const Text('Close', style: TextStyle(color: Color(0xFF00E676))),
+        ),
+      ],
     );
   }
 }
