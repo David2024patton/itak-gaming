@@ -92,6 +92,18 @@ class EmulatorActivity : Activity(), TextureListener {
     @Volatile private var diagLatencyMs = -1.0
     @Volatile private var diagCoreRate = 0
     @Volatile private var diagTrackRate = 0
+    // Input mirror for the debug stats overlay (1.109): the
+    // buttons seat 0 is holding right now, as a bitmask in
+    // libretro order, plus the most recent press or release.
+    // Written from the key handlers; read by the overlay only.
+    @Volatile private var diagInputMask = 0
+    @Volatile private var diagLastInput = "-"
+    // Fast-forward (1.109): flipped from the pause menu. While
+    // on, the game loop runs unpaced and the audio thread
+    // discards what the core produces, feeding the track
+    // silence instead, so the return to normal speed is
+    // seamless. Local play only: netplay and watching ignore it.
+    @Volatile private var fastForward = false
 
     /** The rate the core produces audio at, and the rate the track runs at. */
     private var coreAudioRate = 0
@@ -229,6 +241,46 @@ class EmulatorActivity : Activity(), TextureListener {
         debugHandler.removeCallbacks(debugUpdater)
     }
 
+    /** Display name for one button bit, as the overlay and logs use it. */
+    private fun buttonName(btn: Long): String = when (btn) {
+        Mobile.ButtonA -> "A"
+        Mobile.ButtonB -> "B"
+        Mobile.ButtonX -> "X"
+        Mobile.ButtonY -> "Y"
+        Mobile.ButtonL -> "L"
+        Mobile.ButtonR -> "R"
+        Mobile.ButtonSelect -> "SELECT"
+        Mobile.ButtonStart -> "START"
+        Mobile.ButtonUp -> "UP"
+        Mobile.ButtonDown -> "DOWN"
+        Mobile.ButtonLeft -> "LEFT"
+        Mobile.ButtonRight -> "RIGHT"
+        else -> "?"
+    }
+
+    /** The buttons the input mirror shows held, joined in a fixed order. */
+    private fun heldButtonNames(): String {
+        val m = diagInputMask
+        if (m == 0) return "-"
+        val names = ArrayList<String>()
+        fun bit(b: Long, n: String) {
+            if (m and (1 shl b.toInt()) != 0) names.add(n)
+        }
+        bit(Mobile.ButtonUp, "UP")
+        bit(Mobile.ButtonDown, "DOWN")
+        bit(Mobile.ButtonLeft, "LEFT")
+        bit(Mobile.ButtonRight, "RIGHT")
+        bit(Mobile.ButtonA, "A")
+        bit(Mobile.ButtonB, "B")
+        bit(Mobile.ButtonX, "X")
+        bit(Mobile.ButtonY, "Y")
+        bit(Mobile.ButtonL, "L")
+        bit(Mobile.ButtonR, "R")
+        bit(Mobile.ButtonSelect, "SELECT")
+        bit(Mobile.ButtonStart, "START")
+        return names.joinToString("+")
+    }
+
     private fun buildDebugStatsText(): String {
         val totals = audioCushion.diagTotals()
         val latency =
@@ -237,20 +289,22 @@ class EmulatorActivity : Activity(), TextureListener {
         val base = String.format(
             Locale.US,
             "FPS %.1f  (target %.2f)\n" +
-                "FRAME %.2f ms avg\n" +
+                "FRAME %.2f ms avg  #%d\n" +
                 "AUDIO %d Hz -> %d Hz\n" +
                 "LEAD %.0f ms  LATENCY %s ms\n" +
                 "STRETCH %+.2f %%  PEAK %+.2f %%\n" +
                 "UNDERRUNS %d  STARVED %.0f ms\n" +
-                "TRIMS %d  GUARD %d",
+                "TRIMS %d  GUARD %d\n" +
+                "INPUT %s  LAST %s",
             debugMeasuredFps, diagTargetFps,
-            diagFrameAvgMs,
+            diagFrameAvgMs, diagFrameTotal,
             diagCoreRate, diagTrackRate,
             diagLeadMs, latency,
             (audioCushion.currentStretch - 1.0) * 100.0,
             (totals.peakStretch - 1.0) * 100.0,
             totals.underrunEpisodes, totals.starvedMs,
-            outputTrims, totals.guardTrims
+            outputTrims, totals.guardTrims,
+            heldButtonNames(), diagLastInput
         )
         // Sound chip registers (1.108): when the loaded core
         // offers the itak_dsp_regs debug export, append the
@@ -2205,7 +2259,9 @@ class EmulatorActivity : Activity(), TextureListener {
             Toast.makeText(this, "No games found in this folder", Toast.LENGTH_SHORT).show()
             return
         }
-        // Park the game exactly like the pause menu does.
+        // Park the game exactly like the pause menu does. The
+        // stream is not paused: the audio thread feeds it
+        // silence while the game is parked (1.109).
         pickerOpen = true
         paused = true
         var waited = 0
@@ -2213,7 +2269,6 @@ class EmulatorActivity : Activity(), TextureListener {
             Thread.sleep(5)
             waited += 5
         }
-        try { audioTrack?.pause() } catch (e: Exception) { /* ignore */ }
         if (pickerOverlay == null) buildGamePicker(games)
         pickerOverlay?.visibility = View.VISIBLE
         pickerGrid?.requestFocus()
@@ -2226,7 +2281,6 @@ class EmulatorActivity : Activity(), TextureListener {
         pickerOverlay?.visibility = View.GONE
         pickerOpen = false
         paused = false
-        try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
     }
 
     private fun buildGamePicker(games: List<File>) {
@@ -2609,12 +2663,52 @@ class EmulatorActivity : Activity(), TextureListener {
         // converts exactly once, at sinc quality (1.95). `pending`
         // below holds converted output the track has not accepted
         // yet.
+        // Fed to the track whenever no game sound is being
+        // written (menu up, fast-forward): 4096 stereo frames of
+        // silence, so the track's bank never drains. See the
+        // paused branch in the audio thread.
+        val silenceChunk = ByteArray(16384)
         val audioThread = thread(name = "emu-audio") {
             var pending = ByteArray(0)
             var lastDiagSampleNs = 0L
             while (running) {
-                if (paused) {
-                    Thread.sleep(20)
+                if (paused || (fastForward && !netplay && !watching)) {
+                    // Menu up or fast-forward: no game sound is
+                    // produced in either state, but the track is
+                    // never paused and never left idle. It is fed
+                    // silence at its own rate, so its bank stays
+                    // full and game sound returning is a plain
+                    // content swap in the same stream. Idling or
+                    // pausing the track let the TV's audio
+                    // hardware disable it for underrun, and the
+                    // restart churn on the way back was the lag
+                    // and jitter David reported around the pause
+                    // menu (2026-11-04; an ordering-only fix that
+                    // paused the track earlier was tried first
+                    // and the churn survived it). Fast-forward
+                    // also keeps the core drained so its audio
+                    // queue never backs up; the drained sound is
+                    // thrown away.
+                    if (!paused) Mobile.drainAudio()
+                    val feedTrack = audioTrack
+                    if (feedTrack != null) {
+                        val n = try {
+                            feedTrack.write(
+                                silenceChunk, 0, silenceChunk.size,
+                                AudioTrack.WRITE_NON_BLOCKING
+                            )
+                        } catch (e: Exception) {
+                            0
+                        }
+                        if (n > 0) {
+                            writtenFrames += n / 4
+                            Thread.sleep(1)
+                        } else {
+                            Thread.sleep(3)
+                        }
+                    } else {
+                        Thread.sleep(if (paused) 20 else 2)
+                    }
                     continue
                 }
                 val chunk = Mobile.drainAudio()
@@ -2843,7 +2937,11 @@ class EmulatorActivity : Activity(), TextureListener {
             // A plain sleep(frameMs) truncated 16.64ms to 16ms and only
             // sleep() overshoot kept the rate near 60.
             nextDeadline += frameNanos
-            var waitNs = (nextDeadline - System.nanoTime()).toLong()
+            var waitNs = if (fastForward && !netplay && !watching) {
+                0L
+            } else {
+                (nextDeadline - System.nanoTime()).toLong()
+            }
             if (waitNs < -50_000_000L) {
                 // Fell far behind (long pause, hiccup): resync.
                 nextDeadline = System.nanoTime().toDouble()
@@ -2867,7 +2965,7 @@ class EmulatorActivity : Activity(), TextureListener {
             // game; hitting it is logged, and the deadline pacer
             // above resyncs instead of fast-forwarding.
             val track = audioTrack
-            if (track != null) {
+            if (track != null && !(fastForward && !netplay && !watching)) {
                 var parkedMs = 0
                 while (running && !paused) {
                     val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
@@ -3059,6 +3157,11 @@ class EmulatorActivity : Activity(), TextureListener {
     private fun showPauseMenu() {
         if (menuOpen) return
         menuOpen = true
+        // The stream is NOT paused with the game (1.109): the
+        // audio thread feeds the track silence while the menu
+        // is up, so the track never underruns and never gets
+        // disabled by the TV's audio hardware. (Pausing it, in
+        // either order, still ended in underrun restarts.)
         paused = true
         // Tell the other player we paused, so their side waits
         // instead of declaring the connection lost.
@@ -3072,7 +3175,6 @@ class EmulatorActivity : Activity(), TextureListener {
             Thread.sleep(5)
             waited += 5
         }
-        try { audioTrack?.pause() } catch (e: Exception) { /* ignore */ }
 
         val cheatLabel =
             if (enabledCheats.isEmpty()) "Cheats" else "Cheats: ${enabledCheats.size} on"
@@ -3144,6 +3246,13 @@ class EmulatorActivity : Activity(), TextureListener {
             setDebugStats(nowOn)
             Toast.makeText(
                 this, if (nowOn) "Debug stats on" else "Debug stats off",
+                Toast.LENGTH_SHORT
+            ).show()
+        })
+        entries.add((if (fastForward) "Fast-forward: On" else "Fast-forward: Off") to {
+            fastForward = !fastForward
+            Toast.makeText(
+                this, if (fastForward) "Fast-forward on" else "Fast-forward off",
                 Toast.LENGTH_SHORT
             ).show()
         })
@@ -3224,11 +3333,12 @@ class EmulatorActivity : Activity(), TextureListener {
 
     private fun resumeFromMenu() {
         menuOpen = false
+        // The stream never stopped (silence feed), so there is
+        // nothing to restart here: production just resumes.
         paused = false
         if (netplay) {
             try { Mobile.netplaySetPaused(false) } catch (e: Exception) { /* ignore */ }
         }
-        try { audioTrack?.play() } catch (e: Exception) { /* ignore */ }
     }
 
     // Exit asks first, so a stray press cannot end a game by
@@ -3550,11 +3660,24 @@ class EmulatorActivity : Activity(), TextureListener {
                 // local player; the engine feeds the mask to the
                 // right slot on both boxes.
                 localMask = localMask or (1 shl btn.toInt())
+                diagInputMask = localMask
+                diagLastInput = "${buttonName(btn)} down"
                 return true
             }
             val slot = slotFor(event)
             if (slot != null) {
                 Mobile.setButton(slot.toLong(), btn, true)
+                if (slot == 0) {
+                    diagInputMask = diagInputMask or (1 shl btn.toInt())
+                }
+                diagLastInput = "${buttonName(btn)} down"
+                Log.i(TAG, "input: seat $slot ${buttonName(btn)} down")
+            } else {
+                // A press with no seat is silently dropped by
+                // the seat rules; log it, because "the remote
+                // does nothing" reports live here (1.109).
+                diagLastInput = "${buttonName(btn)} (no seat)"
+                Log.i(TAG, "input: ${buttonName(btn)} down had no seat, dropped")
             }
             return true
         }
@@ -3590,11 +3713,21 @@ class EmulatorActivity : Activity(), TextureListener {
             }
             if (netplay) {
                 localMask = localMask and (1 shl btn.toInt()).inv()
+                diagInputMask = localMask
+                diagLastInput = "${buttonName(btn)} up"
                 return true
             }
             val slot = slotFor(event)
             if (slot != null) {
                 Mobile.setButton(slot.toLong(), btn, false)
+                if (slot == 0) {
+                    diagInputMask = diagInputMask and (1 shl btn.toInt()).inv()
+                }
+                diagLastInput = "${buttonName(btn)} up"
+                Log.i(TAG, "input: seat $slot ${buttonName(btn)} up")
+            } else {
+                diagLastInput = "${buttonName(btn)} (no seat)"
+                Log.i(TAG, "input: ${buttonName(btn)} up had no seat, dropped")
             }
             return true
         }
