@@ -551,6 +551,11 @@ func (b *Bridge) CheatsSupported() bool {
 	return bool(C.core_cheats_supported(b.handle))
 }
 
+// DspRegs returns nil: the libretro .so bridge has no sound
+// chip register surface. The debug export exists only on the
+// Rust switch adapter (see NativeBridge.DspRegs).
+func (b *Bridge) DspRegs() []byte { return nil }
+
 // ApplyCheats replaces the core's cheat list with the given codes and
 // returns how many entries were set. Multi-part codes joined with '+'
 // are registered as separate entries, the way cheat managers hand
