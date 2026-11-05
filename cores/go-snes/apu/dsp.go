@@ -343,8 +343,8 @@ func (d *DSP) stepEnvelope(vi int) {
 		}
 		voice.envCounter = 0
 		switch (gain >> 5) & 0x03 {
-		case 0: // linear decrease
-			voice.env -= 8
+		case 0: // linear decrease (hardware subtracts 0x20 per tick, fullsnes)
+			voice.env -= 0x20
 			if voice.env < 0 {
 				voice.env = 0
 			}
