@@ -292,6 +292,23 @@ func (b *NativeBridge) SaveState() ([]byte, error) {
 	return b.core.SaveState()
 }
 
+// DspRegs returns the sound chip's register file when the
+// loaded core offers the optional debug export: the Rust
+// switch adapter does, through itak_dsp_regs. Every other
+// core answers nil. This is a diagnostic surface, and
+// callers treat nil as "not offered".
+func (b *NativeBridge) DspRegs() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.core == nil {
+		return nil
+	}
+	if dc, ok := b.core.(interface{ DspRegs() []byte }); ok {
+		return dc.DspRegs()
+	}
+	return nil
+}
+
 // LoadState restores an emulation state.
 func (b *NativeBridge) LoadState(data []byte) error {
 	if len(data) == 0 {
