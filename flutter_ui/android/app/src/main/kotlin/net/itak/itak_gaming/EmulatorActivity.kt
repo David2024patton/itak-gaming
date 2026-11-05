@@ -211,6 +211,20 @@ class EmulatorActivity : Activity(), TextureListener {
         if (on) startDebugUpdater() else stopDebugUpdater()
     }
 
+    // Debug control (1.110): when on, key presses injected by
+    // David's test bench take seat 0, so a game can be driven
+    // and proven end to end without a physical controller.
+    // Off by default, flipped only from the pause menu.
+    private fun debugInputOn(): Boolean =
+        getSharedPreferences("itak_prefs", MODE_PRIVATE)
+            .getBoolean("debug_input", false)
+
+    private fun setDebugInput(on: Boolean) {
+        getSharedPreferences("itak_prefs", MODE_PRIVATE)
+            .edit().putBoolean("debug_input", on).apply()
+        Log.i(TAG, "debug control: " + if (on) "on" else "off")
+    }
+
     private val debugUpdater = object : Runnable {
         override fun run() {
             val tv = debugOverlay
@@ -667,6 +681,12 @@ class EmulatorActivity : Activity(), TextureListener {
 
     // Which player slot an event drives, or null to ignore it.
     private fun slotFor(event: KeyEvent): Int? {
+        // Debug control (1.110): injected test presses arrive
+        // from the virtual device, whose id is always -1. No
+        // physical device ever has that id, so with the toggle
+        // on the test bench takes seat 0 and real controllers
+        // are untouched either way.
+        if (event.deviceId == -1 && debugInputOn()) return 0
         val dev = event.device
         val gamepad = dev != null && isGamepadSources(dev.sources)
         val ownerPad = assignedPadByPlayer[seatCurrent]
@@ -3253,6 +3273,14 @@ class EmulatorActivity : Activity(), TextureListener {
             fastForward = !fastForward
             Toast.makeText(
                 this, if (fastForward) "Fast-forward on" else "Fast-forward off",
+                Toast.LENGTH_SHORT
+            ).show()
+        })
+        entries.add((if (debugInputOn()) "Debug control: On" else "Debug control: Off") to {
+            val nowOn = !debugInputOn()
+            setDebugInput(nowOn)
+            Toast.makeText(
+                this, if (nowOn) "Debug control on" else "Debug control off",
                 Toast.LENGTH_SHORT
             ).show()
         })
