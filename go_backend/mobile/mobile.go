@@ -30,6 +30,7 @@ type emuFace interface {
 	SaveState() ([]byte, error)
 	LoadState(data []byte) error
 	CheatsSupported() bool
+	DspRegs() []byte
 	ApplyCheats(codes []string) int
 	ClearCheats()
 	Close()
@@ -231,6 +232,15 @@ func CheatsSupported() bool {
 		return false
 	}
 	return emu.CheatsSupported()
+}
+
+// DspRegs returns the sound chip's 128-byte register file
+// when the loaded core offers the debug export, else nil.
+func DspRegs() []byte {
+	if emu == nil {
+		return nil
+	}
+	return emu.DspRegs()
 }
 
 // ApplyCheats replaces the core's cheat list. Codes arrive newline
