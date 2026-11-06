@@ -352,6 +352,45 @@ func TestFIRPartialWrapAndClamp(t *testing.T) {
 	}
 }
 
+// Echo write scale: the stored echo word is the
+// feedback sum itself, clamped to 16 bits with the
+// low bit cleared, at the voice-sum scale (blargg
+// SPC_DSP echo clocks 26 and 29, jgenesis
+// write_to_echo_buffer). The >> 1 on the read side
+// is the hardware's 15-bit storage loss. The old
+// form clamped to 15 bits and shifted the sum left,
+// storing exactly twice the hardware word, so every
+// recirculation came back doubled.
+func TestEchoWriteScale(t *testing.T) {
+	d, ram := newTestDSP()
+	d.WriteReg(0x7D, 0x01) // EDL 1
+	d.WriteReg(0x7F, 0x40) // FIR7: single tap readback
+	// Phase A: no feedback (EFB 0). A dry send of
+	// 8192 must be stored as 8192, not 16384.
+	d.stepEcho(8192, 0, 0)
+	stored := int(int16(uint16(ram[0]) | uint16(ram[1])<<8))
+	if stored != 8192 {
+		t.Fatalf("stored echo = %d, want 8192", stored)
+	}
+	// Phase B: feedback and the low-bit mask. Seed
+	// the read word 8192: it enters the history as
+	// 4096, the single tap passes it through, and
+	// EFB 0x40 feeds back (4096 * 64) >> 7 = 2048.
+	// A dry send of 8193 makes the sum 10241,
+	// stored masked to 10240. The old form
+	// stores 20482.
+	d, ram = newTestDSP()
+	d.WriteReg(0x7D, 0x01)
+	d.WriteReg(0x7F, 0x40)
+	d.WriteReg(0x0D, 0x40) // EFB
+	ram[0], ram[1] = 0x00, 0x20
+	d.stepEcho(8193, 0, 0)
+	stored = int(int16(uint16(ram[0]) | uint16(ram[1])<<8))
+	if stored != 10240 {
+		t.Fatalf("stored echo = %d, want 10240", stored)
+	}
+}
+
 // Noise: with FLG rate 31 the LFSR clocks every sample.
 // The first states from the reset pattern 4000h, applying
 // the documented rule (shift right, feedback = bit0 XOR
@@ -512,19 +551,19 @@ func TestDSPMixRegisterMap(t *testing.T) {
 		d.WriteReg(0x02, 0x00)
 		d.WriteReg(0x03, 0x10) // pitch 0x1000
 		d.WriteReg(0x04, 0x00)
-		d.WriteReg(0x05, 0x00) // GAIN mode
-		d.WriteReg(0x07, 0x7F) // direct gain 0x7F0
+		d.WriteReg(0x05, 0x00)  // GAIN mode
+		d.WriteReg(0x07, 0x7F)  // direct gain 0x7F0
 		d.WriteReg(0x0C, mvolL) // MVOLL
 		d.WriteReg(0x1C, mvolR) // MVOLR
 		d.WriteReg(0x2C, evolL) // EVOLL
 		d.WriteReg(0x3C, evolR) // EVOLR
-		d.WriteReg(0x0D, 0x40) // EFB: feedback on
-		d.WriteReg(0x4D, 0x01) // EON voice 0
-		d.WriteReg(0x6D, 0x40) // ESA = 0x4000
-		d.WriteReg(0x7D, 0x01) // EDL 1: 512 frames
-		d.WriteReg(0x7F, 0x40) // FIR7: single tap readback
-		d.WriteReg(0x6C, 0x00) // FLG: echo writes on
-		d.WriteReg(0x4C, 0x01) // KON
+		d.WriteReg(0x0D, 0x40)  // EFB: feedback on
+		d.WriteReg(0x4D, 0x01)  // EON voice 0
+		d.WriteReg(0x6D, 0x40)  // ESA = 0x4000
+		d.WriteReg(0x7D, 0x01)  // EDL 1: 512 frames
+		d.WriteReg(0x7F, 0x40)  // FIR7: single tap readback
+		d.WriteReg(0x6C, 0x00)  // FLG: echo writes on
+		d.WriteReg(0x4C, 0x01)  // KON
 		out := make([][2]int16, 1400)
 		for i := range out {
 			l, r := d.StepSample()
