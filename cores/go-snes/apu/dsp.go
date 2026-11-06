@@ -62,6 +62,20 @@ func wrap15(x int) int {
 	return x
 }
 
+// clamp15 saturates into the signed 15 bit range,
+// the finalize the references apply to the echo
+// write value (wrap15's wrap belongs to the BRR
+// decoder's overflow behaviour, not to echo).
+func clamp15(x int) int {
+	if x > 0x3FFF {
+		return 0x3FFF
+	}
+	if x < -0x4000 {
+		return -0x4000
+	}
+	return x
+}
+
 func clamp16(x int) int16 {
 	if x > 0x7FFF {
 		return 0x7FFF
@@ -642,20 +656,30 @@ func (d *DSP) stepEcho(inL, inR int, flg uint8) (int, int) {
 	// FIR: sum of coef[i] * history[i] with history index
 	// 0 the oldest frame and coef registers 0Fh, 1Fh, ..
 	// 7Fh in order, total shift 6.
+	// Hardware FIR shape: every tap product is shifted
+	// by 6 on its own, the partial sum wraps to 16 bits
+	// after the seventh tap, and the result is clamped
+	// to 16 bits with the low bit cleared (the echo
+	// path is 15-bit end to end).
 	var accL, accR int
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 7; i++ {
 		coef := int(int8(d.regs[0x0F+i*0x10]))
-		accL += coef * d.firHistL[i]
-		accR += coef * d.firHistR[i]
+		accL += (coef * d.firHistL[i]) >> 6
+		accR += (coef * d.firHistR[i]) >> 6
 	}
-	firL := accL >> 6
-	firR := accR >> 6
+	accL = int(int16(accL))
+	accR = int(int16(accR))
+	coef7 := int(int8(d.regs[0x7F]))
+	accL += (coef7 * d.firHistL[7]) >> 6
+	accR += (coef7 * d.firHistR[7]) >> 6
+	firL := int(clamp16(accL)) &^ 1
+	firR := int(clamp16(accR)) &^ 1
 	d.lastEchoL, d.lastEchoR = firL, firR
 
 	efb := int(int8(d.regs[0x0D]))
 	if flg&0x20 == 0 {
-		writeL := uint16(wrap15(inL+firL*efb>>7) << 1)
-		writeR := uint16(wrap15(inR+firR*efb>>7) << 1)
+		writeL := uint16(clamp15(inL+firL*efb>>7) << 1)
+		writeR := uint16(clamp15(inR+firR*efb>>7) << 1)
 		d.ram[addr] = byte(writeL)
 		d.ram[addr+1] = byte(writeL >> 8)
 		d.ram[addr+2] = byte(writeR)
