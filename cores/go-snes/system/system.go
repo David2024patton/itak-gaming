@@ -702,6 +702,7 @@ func (s *System) readIO(addr uint16) uint8 {
 		}
 		return s.openBus // write-only PPU registers
 	case addr < 0x2180:
+		s.syncTime()
 		return s.apu.ReadPort(int(addr & 3))
 	case addr == 0x2180:
 		v := s.Map.WRAM()[s.wmadd&0x1FFFF]
@@ -776,6 +777,7 @@ func (s *System) writeIO(addr uint16, val uint8) {
 	case addr < 0x2140:
 		s.ppu.WriteReg(addr, val)
 	case addr < 0x2180:
+		s.syncTime()
 		s.apu.WritePort(int(addr&3), val)
 	case addr == 0x2180:
 		s.Map.WRAM()[s.wmadd&0x1FFFF] = val

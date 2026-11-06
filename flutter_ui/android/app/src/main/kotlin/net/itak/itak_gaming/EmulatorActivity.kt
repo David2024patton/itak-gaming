@@ -2487,17 +2487,14 @@ class EmulatorActivity : Activity(), TextureListener {
         coreAudioRate = coreRate
         Log.i(TAG, "audio rate = $coreRate")
 
-        // Rate plan. Most cores declare 44,100 Hz, a rate the
-        // platform converts to the device rate on its documented
-        // high-quality path; their tracks keep opening at the core
-        // rate, exactly as before. The cores that declare a
-        // non-standard rate (SNES 32,040, GBA 32,768) used to hand
-        // that rate to the stick's mixer and inherit whatever
-        // converter quality it chose. Those now convert inside the
-        // app (AudioResampler) and the track opens at the device's
-        // own output rate.
+        // Rate plan: when the core rate differs from the native device
+        // output rate (typically 48,000 Hz on Android TV and mobile),
+        // we resample in-app using AudioResampler. This guarantees high-quality
+        // windowed-sinc conversion, enables the fast-track audio path, and avoids
+        // platform mixer resampling artifacts and jitter across all cores (SNES,
+        // GBA, NES, Genesis, Game Boy, PS1, etc.).
         val nativeRate = EmuAudioOutput.deviceOutputRate(this)
-        val useResampler = coreRate != nativeRate && coreRate != 44100
+        val useResampler = coreRate != nativeRate
         trackAudioRate = if (useResampler) nativeRate else coreRate
         audioGateCapFrames =
             if (useResampler) 2400L * trackAudioRate / coreRate else 2400L
