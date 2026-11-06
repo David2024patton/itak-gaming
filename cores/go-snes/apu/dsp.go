@@ -62,20 +62,6 @@ func wrap15(x int) int {
 	return x
 }
 
-// clamp15 saturates into the signed 15 bit range,
-// the finalize the references apply to the echo
-// write value (wrap15's wrap belongs to the BRR
-// decoder's overflow behaviour, not to echo).
-func clamp15(x int) int {
-	if x > 0x3FFF {
-		return 0x3FFF
-	}
-	if x < -0x4000 {
-		return -0x4000
-	}
-	return x
-}
-
 func clamp16(x int) int16 {
 	if x > 0x7FFF {
 		return 0x7FFF
@@ -670,16 +656,29 @@ func (d *DSP) stepEcho(inL, inR int, flg uint8) (int, int) {
 	accL = int(int16(accL))
 	accR = int(int16(accR))
 	coef7 := int(int8(d.regs[0x7F]))
-	accL += (coef7 * d.firHistL[7]) >> 6
-	accR += (coef7 * d.firHistR[7]) >> 6
+	accL += int(int16((coef7 * d.firHistL[7]) >> 6))
+	accR += int(int16((coef7 * d.firHistR[7]) >> 6))
 	firL := int(clamp16(accL)) &^ 1
 	firR := int(clamp16(accR)) &^ 1
 	d.lastEchoL, d.lastEchoR = firL, firR
 
 	efb := int(int8(d.regs[0x0D]))
 	if flg&0x20 == 0 {
-		writeL := uint16(clamp15(inL+firL*efb>>7) << 1)
-		writeR := uint16(clamp15(inR+firR*efb>>7) << 1)
+		// The stored word is the feedback sum
+		// itself, clamped to 16 bits with the low
+		// bit cleared, at the voice-sum scale:
+		// blargg's echo clocks 26 and 29 and
+		// jgenesis agree. The >> 1 on the read
+		// side is the hardware's 15-bit storage
+		// loss. An earlier form clamped to 15
+		// bits and shifted left here, which
+		// stored double and made every
+		// recirculated sample come back twice
+		// as loud as the hardware's.
+		fbL := int(int16(firL * efb >> 7))
+		fbR := int(int16(firR * efb >> 7))
+		writeL := uint16(int(clamp16(inL+fbL)) &^ 1)
+		writeR := uint16(int(clamp16(inR+fbR)) &^ 1)
 		d.ram[addr] = byte(writeL)
 		d.ram[addr+1] = byte(writeL >> 8)
 		d.ram[addr+2] = byte(writeR)
