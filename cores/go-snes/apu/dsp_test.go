@@ -308,6 +308,50 @@ func TestGAINLinearDecreaseStep(t *testing.T) {
 	}
 }
 
+// FIR per-tap truncation: hardware shifts each tap
+// product by 6 on its own before summing. Eight taps of
+// (0x20 * 1) must give 0: every product truncates away.
+// The old sum-then-shift code gives 3 (224 >> 6) here.
+// stepEcho shifts the history and pushes the read
+// sample (0) at index 7, so the effective history is
+// [1, 1, 1, 1, 1, 1, 1, 0].
+func TestFIRPerTapTruncation(t *testing.T) {
+	d, _ := newTestDSP()
+	d.WriteReg(0x7D, 0x01) // EDL 1
+	for i := 0; i < 8; i++ {
+		d.WriteReg(uint8(0x0F+i*0x10), 0x20)
+		d.firHistL[i] = 1
+		d.firHistR[i] = 1
+	}
+	fl, fr := d.stepEcho(0, 0, 0)
+	if fl != 0 || fr != 0 {
+		t.Fatalf("fir = (%d, %d), want (0, 0)", fl, fr)
+	}
+}
+
+// FIR partial wrap and clamp: seven taps of
+// (127 * 16383) >> 6 = 32510 sum to 227570, which wraps
+// to 30962 as a 16-bit partial sum; tap 7 reads a zero
+// history slot here. The result clamps at 16 bits and
+// clears the low bit: 30962. The old code returns the
+// unwrapped 227570.
+func TestFIRPartialWrapAndClamp(t *testing.T) {
+	d, _ := newTestDSP()
+	d.WriteReg(0x7D, 0x01) // EDL 1
+	for i := 0; i < 8; i++ {
+		d.WriteReg(uint8(0x0F+i*0x10), 0x7F)
+		d.firHistL[i] = 16383
+		d.firHistR[i] = 0
+	}
+	fl, fr := d.stepEcho(0, 0, 0)
+	if fl != 30962 {
+		t.Fatalf("firL = %d, want 30962", fl)
+	}
+	if fr != 0 {
+		t.Fatalf("firR = %d, want 0", fr)
+	}
+}
+
 // Noise: with FLG rate 31 the LFSR clocks every sample.
 // The first states from the reset pattern 4000h, applying
 // the documented rule (shift right, feedback = bit0 XOR
