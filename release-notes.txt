@@ -1,1 +1,1 @@
-Smoother picture: frames now run on the TV's own tick instead of the game's separate clock, so zooms and pans stop stuttering. The sound soaks up the tiny difference, far too small to hear.
+Smoother picture: frames now run on the TV's own tick, sent by the display itself, so zooms and pans hold steady. This replaces 1.117's first try, which did not hold up on real TVs.
