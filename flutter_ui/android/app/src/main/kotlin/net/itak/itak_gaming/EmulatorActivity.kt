@@ -27,6 +27,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
 import mobile.Mobile
 import java.io.File
 import java.util.Locale
@@ -295,31 +298,123 @@ class EmulatorActivity : Activity(), TextureListener {
         return names.joinToString("+")
     }
 
-    private fun buildDebugStatsText(): String {
+    // Panel colors (1.116, David's ask): every live value
+    // is graded against the number it should sit at, green
+    // while it is inside the line and red once it crosses
+    // it, with the target printed dim beside it so the
+    // panel explains itself.
+    private val dbgGood = Color.rgb(105, 240, 140)
+    private val dbgBad = Color.rgb(255, 92, 92)
+    private val dbgHint = Color.rgb(160, 160, 160)
+
+    private fun dbgSeg(sb: SpannableStringBuilder, text: String, color: Int?) {
+        if (color == null) {
+            sb.append(text)
+            return
+        }
+        val start = sb.length
+        sb.append(text)
+        sb.setSpan(
+            ForegroundColorSpan(color), start, sb.length,
+            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+    }
+
+    private fun buildDebugStatsText(): CharSequence {
         val totals = audioCushion.diagTotals()
         val latency =
             if (diagLatencyMs < 0) "--"
             else String.format(Locale.US, "%.0f", diagLatencyMs)
-        val base = String.format(
-            Locale.US,
-            "FPS %.1f  (target %.2f)\n" +
-                "FRAME %.2f ms avg  #%d\n" +
-                "AUDIO %d Hz -> %d Hz\n" +
-                "LEAD %.0f ms  LATENCY %s ms\n" +
-                "STRETCH %+.2f %%  PEAK %+.2f %%\n" +
-                "UNDERRUNS %d  STARVED %.0f ms\n" +
-                "TRIMS %d  GUARD %d\n" +
-                "INPUT %s  LAST %s",
-            debugMeasuredFps, diagTargetFps,
-            diagFrameAvgMs, diagFrameTotal,
-            diagCoreRate, diagTrackRate,
-            diagLeadMs, latency,
-            (audioCushion.currentStretch - 1.0) * 100.0,
-            (totals.peakStretch - 1.0) * 100.0,
-            totals.underrunEpisodes, totals.starvedMs,
-            outputTrims, totals.guardTrims,
-            heldButtonNames(), diagLastInput
+        val frameBudget = 1000.0 / diagTargetFps
+        val stretchPct = (audioCushion.currentStretch - 1.0) * 100.0
+        val sb = SpannableStringBuilder()
+        // FPS: at the core's own rate, give or take 0.7.
+        sb.append("FPS ")
+        dbgSeg(
+            sb, String.format(Locale.US, "%.1f", debugMeasuredFps),
+            if (debugMeasuredFps >= diagTargetFps - 0.7) dbgGood else dbgBad
         )
+        dbgSeg(
+            sb, String.format(Locale.US, "  (target %.2f)\n", diagTargetFps),
+            dbgHint
+        )
+        // Frame cost: the budget is one frame of the target rate.
+        sb.append("FRAME ")
+        dbgSeg(
+            sb, String.format(Locale.US, "%.2f", diagFrameAvgMs),
+            if (diagFrameAvgMs <= frameBudget) dbgGood else dbgBad
+        )
+        sb.append(" ms avg")
+        dbgSeg(
+            sb, String.format(Locale.US, "  (max %.1f)", frameBudget), dbgHint
+        )
+        sb.append(String.format(Locale.US, "  #%d\n", diagFrameTotal))
+        sb.append(
+            String.format(
+                Locale.US, "AUDIO %d Hz -> %d Hz\n", diagCoreRate, diagTrackRate
+            )
+        )
+        // Lead: the cushion wants about 55 ms of sound
+        // queued ahead; under 30 the next gap is close.
+        sb.append("LEAD ")
+        dbgSeg(
+            sb, String.format(Locale.US, "%.0f", diagLeadMs),
+            if (diagLeadMs >= 30.0) dbgGood else dbgBad
+        )
+        sb.append(" ms")
+        dbgSeg(sb, "  (want 55)", dbgHint)
+        sb.append("  LATENCY ")
+        if (diagLatencyMs < 0) {
+            sb.append("--")
+        } else {
+            dbgSeg(
+                sb, latency,
+                if (diagLatencyMs <= 275.0) dbgGood else dbgBad
+            )
+        }
+        sb.append(" ms")
+        dbgSeg(sb, "  (want <275)\n", dbgHint)
+        // Stretch: the cushion speeding the sound up to
+        // catch up is a symptom; zero is the healthy read.
+        sb.append("STRETCH ")
+        dbgSeg(
+            sb, String.format(Locale.US, "%+.2f %%", stretchPct),
+            if (stretchPct <= 0.5) dbgGood else dbgBad
+        )
+        dbgSeg(sb, "  (want +0.00)", dbgHint)
+        sb.append(
+            String.format(
+                Locale.US, "  PEAK %+.2f %%\n",
+                (totals.peakStretch - 1.0) * 100.0
+            )
+        )
+        // Underruns and starved time: any at all is a gap
+        // the player heard.
+        sb.append("UNDERRUNS ")
+        dbgSeg(
+            sb, totals.underrunEpisodes.toString(),
+            if (totals.underrunEpisodes == 0L) dbgGood else dbgBad
+        )
+        sb.append("  STARVED ")
+        dbgSeg(
+            sb, String.format(Locale.US, "%.0f", totals.starvedMs),
+            if (totals.starvedMs <= 0.0) dbgGood else dbgBad
+        )
+        sb.append(" ms")
+        dbgSeg(sb, "  (want 0)\n", dbgHint)
+        sb.append(
+            String.format(
+                Locale.US, "TRIMS %d  GUARD %d", outputTrims, totals.guardTrims
+            )
+        )
+        dbgSeg(sb, "  (info)\n", dbgHint)
+        sb.append(
+            String.format(
+                Locale.US, "INPUT %s  LAST %s",
+                heldButtonNames(), diagLastInput
+            )
+        )
+        val base = sb
         // Sound chip registers (1.108): when the loaded core
         // offers the itak_dsp_regs debug export, append the
         // S-DSP register file under the delivery stats: the
@@ -358,7 +453,8 @@ class EmulatorActivity : Activity(), TextureListener {
                 u(b * 16 + 8), sg(b * 16 + 9)
             )
         }
-        return base + dsp
+        base.append(dsp)
+        return base
     }
 
     // ----- Seats and rotation (host referee, PROTOCOL.md 4.9) -----
@@ -3258,28 +3354,12 @@ class EmulatorActivity : Activity(), TextureListener {
         }
         entries.add("Save Game" to { doSave() })
         entries.add("Load Game" to { doLoad() })
-        entries.add((if (debugStatsOn()) "Debug stats: On" else "Debug stats: Off") to {
-            val nowOn = !debugStatsOn()
-            setDebugStats(nowOn)
-            Toast.makeText(
-                this, if (nowOn) "Debug stats on" else "Debug stats off",
-                Toast.LENGTH_SHORT
-            ).show()
-        })
-        entries.add((if (fastForward) "Fast-forward: On" else "Fast-forward: Off") to {
-            fastForward = !fastForward
-            Toast.makeText(
-                this, if (fastForward) "Fast-forward on" else "Fast-forward off",
-                Toast.LENGTH_SHORT
-            ).show()
-        })
-        entries.add((if (debugInputOn()) "Debug control: On" else "Debug control: Off") to {
-            val nowOn = !debugInputOn()
-            setDebugInput(nowOn)
-            Toast.makeText(
-                this, if (nowOn) "Debug control on" else "Debug control off",
-                Toast.LENGTH_SHORT
-            ).show()
+        entries.add("Debug" to {
+            // Every debug toggle lives behind this one
+            // entry now (David, 2026-11-07): the submenu
+            // flips them and returns here on close.
+            keepPaused = true
+            window.decorView.postDelayed({ showDebugMenu() }, 200)
         })
         entries.add(cheatLabel to {
             // Keep the game parked while the cheat picker
@@ -3351,6 +3431,87 @@ class EmulatorActivity : Activity(), TextureListener {
                 // The player menu opens on Resume (index 1; Exit
                 // Game is index 0 now), never on Exit itself.
                 if (!watching) lv.setSelection(1)
+                paint()
+            }
+        }
+    }
+
+    // Debug submenu (1.116): one home for the toggles
+    // that used to be loose rows in the pause menu.
+    // Flipping one closes back to the pause menu with
+    // fresh labels, so several can be set in one visit;
+    // Back returns there too, and the game stays parked
+    // the whole time.
+    private fun showDebugMenu() {
+        val entries = mutableListOf<Pair<String, () -> Unit>>()
+        entries.add((if (debugStatsOn()) "Debug stats: On" else "Debug stats: Off") to {
+            val nowOn = !debugStatsOn()
+            setDebugStats(nowOn)
+            Toast.makeText(
+                this, if (nowOn) "Debug stats on" else "Debug stats off",
+                Toast.LENGTH_SHORT
+            ).show()
+        })
+        entries.add((if (fastForward) "Fast-forward: On" else "Fast-forward: Off") to {
+            fastForward = !fastForward
+            Toast.makeText(
+                this, if (fastForward) "Fast-forward on" else "Fast-forward off",
+                Toast.LENGTH_SHORT
+            ).show()
+        })
+        entries.add((if (debugInputOn()) "Debug control: On" else "Debug control: Off") to {
+            val nowOn = !debugInputOn()
+            setDebugInput(nowOn)
+            Toast.makeText(
+                this, if (nowOn) "Debug control on" else "Debug control off",
+                Toast.LENGTH_SHORT
+            ).show()
+        })
+        entries.add("Back" to { })
+        val dialog = AlertDialog.Builder(this, R.style.ItakDialogTheme)
+            .setTitle("Debug")
+            .setItems(entries.map { it.first }.toTypedArray()) { _, which ->
+                entries[which].second()
+            }
+            .setOnDismissListener {
+                menuOpen = false
+                showPauseMenu()
+            }
+            .show()
+        // Same high-visibility selector as the pause menu:
+        // the theme's own bar is too faint to follow.
+        dialog.listView?.let { lv ->
+            val sel = StateListDrawable()
+            val bar = ColorDrawable(Color.WHITE)
+            sel.addState(intArrayOf(android.R.attr.state_focused), bar)
+            sel.addState(intArrayOf(android.R.attr.state_selected), bar)
+            sel.addState(intArrayOf(android.R.attr.state_pressed), bar)
+            sel.addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+            lv.selector = sel
+            val paint = {
+                val chosen = lv.selectedItemPosition
+                for (i in 0 until lv.childCount) {
+                    val row = lv.getChildAt(i) as? TextView ?: continue
+                    if (lv.firstVisiblePosition + i == chosen) {
+                        row.setTextColor(Color.BLACK)
+                        row.setTypeface(row.typeface, Typeface.BOLD)
+                    } else {
+                        row.setTextColor(Color.WHITE)
+                        row.setTypeface(row.typeface, Typeface.NORMAL)
+                    }
+                }
+            }
+            lv.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: AdapterView<*>?, view: View?, pos: Int, id: Long
+                ) {
+                    lv.post { paint() }
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) { }
+            }
+            lv.post {
+                lv.setSelection(0)
                 paint()
             }
         }
