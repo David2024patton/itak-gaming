@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -64,10 +65,10 @@ class EmulatorActivity : Activity(), TextureListener {
 
     private lateinit var glView: EmuGLView
 
-    // 1.117: draw-consumption handshake. Local production is
-    // paced by the display through it (see FrameHandshake in
-    // EmuGLView.kt); netplay and watching never wait on it.
-    private val frameHandshake = FrameHandshake()
+    // 1.118: local production is paced by the display's own
+    // tick (see DisplayTick below); netplay and watching never
+    // wait on it.
+    private val displayTick = DisplayTick()
     private var coreAssetName: String = "libitak_snes.so"
     private var audioTrack: AudioTrack? = null
     @Volatile private var running = false
@@ -830,7 +831,7 @@ class EmulatorActivity : Activity(), TextureListener {
         autoSaveEnabled = prefs.getString("autosave", "1") != "0"
         Log.i(TAG, "autosave = $autoSaveEnabled")
 
-        glView = EmuGLView(this, frameHandshake)
+        glView = EmuGLView(this)
         val rootFrame = FrameLayout(this)
         rootFrameRef = rootFrame
         rootFrame.addView(
@@ -2710,6 +2711,94 @@ class EmulatorActivity : Activity(), TextureListener {
         return out
     }
 
+    /**
+     * Display-tick pacer for local play (1.118). A Choreographer
+     * frame callback on the main thread releases a one-deep tick
+     * permit per display refresh; the emu loop waits for a permit
+     * before producing each local frame, so production is clocked
+     * by the panel itself instead of a free-running deadline that
+     * drifts against the latch and tears. The render path is NOT
+     * part of the wait: the GL view still draws on requestRender,
+     * decoupled, exactly as in 1.116 (the 1.117 handshake coupled
+     * production to the full draw/swap path and cost ~6 ms of
+     * serialized latency on every frame).
+     *
+     * Deadlock guards: the wait carries a 50 ms timeout (on
+     * expiry the caller produces anyway) and re-checks its abort
+     * predicate in 5 ms slices; start/stop bracket the game loop
+     * and the callback only re-posts while active, so pause,
+     * menus, exit, and surface loss can never wedge or leak it.
+     */
+    private class DisplayTick {
+        private val lock = Object()
+        private var tickPending = false
+        @Volatile private var active = false
+        private var choreographer: Choreographer? = null
+
+        private val callback = object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                synchronized(lock) {
+                    tickPending = true
+                    lock.notifyAll()
+                }
+                // Re-post only while the session is live; a
+                // stopped pacer lets the chain die on its own.
+                if (active) choreographer?.postFrameCallback(this)
+            }
+        }
+
+        /** Any thread: arm the pacer (idempotent). */
+        fun start() {
+            synchronized(lock) { tickPending = false }
+            active = true
+            // Choreographer belongs to the main Looper thread:
+            // obtain it and post the first callback there.
+            Handler(Looper.getMainLooper()).post {
+                val c = Choreographer.getInstance()
+                choreographer = c
+                c.removeFrameCallback(callback)
+                if (active) c.postFrameCallback(callback)
+            }
+        }
+
+        /** Any thread: stop the pacer; no callback outlives it. */
+        fun stop() {
+            active = false
+            val c = choreographer
+            choreographer = null
+            if (c != null) {
+                Handler(Looper.getMainLooper()).post {
+                    c.removeFrameCallback(callback)
+                }
+            }
+            // Release any waiter so a stopping loop never parks.
+            synchronized(lock) { lock.notifyAll() }
+        }
+
+        /**
+         * Emu thread: wait for the next display tick, consuming
+         * the permit. Same safety shape as the 1.117 handshake
+         * wait: returns early when keepWaiting() drops (running
+         * false, paused true) or the timeout passes; the caller
+         * then produces anyway.
+         */
+        fun awaitTick(timeoutMs: Long, keepWaiting: () -> Boolean) {
+            val deadlineNs = System.nanoTime() + timeoutMs * 1_000_000L
+            synchronized(lock) {
+                while (!tickPending && keepWaiting()) {
+                    val leftMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+                    if (leftMs <= 0) return
+                    try {
+                        lock.wait(minOf(leftMs, 5L))
+                    } catch (e: InterruptedException) {
+                        return
+                    }
+                }
+                if (tickPending) tickPending = false
+            }
+        }
+    }
+
     private fun gameLoop() {
         val fps = Mobile.fps().toDouble()
         val frameNanos = 1_000_000_000.0 / fps
@@ -2717,7 +2806,8 @@ class EmulatorActivity : Activity(), TextureListener {
         var tRun = 0L
         Log.i(TAG, "gameLoop start fps=$fps")
         if (!netplay && !watching) {
-            Log.i(TAG, "gameLoop pacing=display-handshake")
+            Log.i(TAG, "gameLoop pacing=display-tick")
+            displayTick.start()
         }
         diagTargetFps = fps
 
@@ -3007,19 +3097,23 @@ class EmulatorActivity : Activity(), TextureListener {
                     }
                 }
             } else {
-                // 1.117: local play is paced by the display.
-                // Wait until the renderer has uploaded the
-                // previous frame before producing the next one,
-                // so every produced frame is shown for exactly
-                // one display latch instead of an uneven split
-                // between one and two. Fast-forward skips the
+                // 1.118: local play is paced by the display's
+                // own tick. Wait for the next Choreographer
+                // frame callback before producing, so production
+                // lands on the panel's cadence instead of a
+                // free-running timer that drifts against it.
+                // (1.117 waited on the renderer consuming each
+                // frame; the serialized chain cost ~6 ms a frame
+                // on the TV and starved the audio, so the GL
+                // path stays decoupled and draws what it gets,
+                // exactly as in 1.116.) Fast-forward skips the
                 // wait (it outruns the display on purpose). The
                 // 50 ms failsafe and the running/paused predicate
-                // mean a lost surface or a pause can never wedge
-                // the loop; on timeout we produce anyway, which
-                // is the pre-1.117 behavior.
+                // mean a dead display pipeline or a pause can
+                // never wedge the loop; on timeout we produce
+                // anyway, which is the 1.116 behavior.
                 if (!fastForward) {
-                    frameHandshake.awaitConsumed(50) { running && !paused }
+                    displayTick.awaitTick(50) { running && !paused }
                 }
                 Mobile.runFrame()
             }
@@ -3034,12 +3128,6 @@ class EmulatorActivity : Activity(), TextureListener {
                 diagFrameTotal = frameCount
                 // Draw every emulated frame (fixed since 1.101;
                 // the old Steady 30 draw toggle was removed).
-                // 1.117: mark the frame outstanding BEFORE
-                // asking for the draw, so the renderer's consume
-                // signal can never race ahead of the mark. Only
-                // the local path waits on it (before runFrame,
-                // above); the other paths just keep it current.
-                frameHandshake.markRequested()
                 glView.requestRender()
                 if (frameCount % 600 == 0L) {
                     Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
@@ -3120,6 +3208,7 @@ class EmulatorActivity : Activity(), TextureListener {
                 }
             }
         }
+        displayTick.stop()
         audioThread.join(500)
     }
 
