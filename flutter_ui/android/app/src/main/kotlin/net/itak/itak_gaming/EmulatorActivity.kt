@@ -63,6 +63,11 @@ class EmulatorActivity : Activity(), TextureListener {
     }
 
     private lateinit var glView: EmuGLView
+
+    // 1.117: draw-consumption handshake. Local production is
+    // paced by the display through it (see FrameHandshake in
+    // EmuGLView.kt); netplay and watching never wait on it.
+    private val frameHandshake = FrameHandshake()
     private var coreAssetName: String = "libitak_snes.so"
     private var audioTrack: AudioTrack? = null
     @Volatile private var running = false
@@ -825,7 +830,7 @@ class EmulatorActivity : Activity(), TextureListener {
         autoSaveEnabled = prefs.getString("autosave", "1") != "0"
         Log.i(TAG, "autosave = $autoSaveEnabled")
 
-        glView = EmuGLView(this)
+        glView = EmuGLView(this, frameHandshake)
         val rootFrame = FrameLayout(this)
         rootFrameRef = rootFrame
         rootFrame.addView(
@@ -2711,6 +2716,9 @@ class EmulatorActivity : Activity(), TextureListener {
         var frameCount = 0L
         var tRun = 0L
         Log.i(TAG, "gameLoop start fps=$fps")
+        if (!netplay && !watching) {
+            Log.i(TAG, "gameLoop pacing=display-handshake")
+        }
         diagTargetFps = fps
 
         // Watch session: hold until the room join lands (it does
@@ -2999,6 +3007,20 @@ class EmulatorActivity : Activity(), TextureListener {
                     }
                 }
             } else {
+                // 1.117: local play is paced by the display.
+                // Wait until the renderer has uploaded the
+                // previous frame before producing the next one,
+                // so every produced frame is shown for exactly
+                // one display latch instead of an uneven split
+                // between one and two. Fast-forward skips the
+                // wait (it outruns the display on purpose). The
+                // 50 ms failsafe and the running/paused predicate
+                // mean a lost surface or a pause can never wedge
+                // the loop; on timeout we produce anyway, which
+                // is the pre-1.117 behavior.
+                if (!fastForward) {
+                    frameHandshake.awaitConsumed(50) { running && !paused }
+                }
                 Mobile.runFrame()
             }
             if (ranFrame) {
@@ -3012,6 +3034,12 @@ class EmulatorActivity : Activity(), TextureListener {
                 diagFrameTotal = frameCount
                 // Draw every emulated frame (fixed since 1.101;
                 // the old Steady 30 draw toggle was removed).
+                // 1.117: mark the frame outstanding BEFORE
+                // asking for the draw, so the renderer's consume
+                // signal can never race ahead of the mark. Only
+                // the local path waits on it (before runFrame,
+                // above); the other paths just keep it current.
+                frameHandshake.markRequested()
                 glView.requestRender()
                 if (frameCount % 600 == 0L) {
                     Log.i(TAG, "emu frame=$frameCount avg run ms=${tRun / 600}")
