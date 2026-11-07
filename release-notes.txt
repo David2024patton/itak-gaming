@@ -1,1 +1,1 @@
-New Debug menu in the pause screen: Debug stats, Fast-forward, and Debug control now live in one place. The stats panel shows the target next to each value and turns green when a value is in range, red when it crosses.
+Smoother picture: frames now run on the TV's own tick instead of the game's separate clock, so zooms and pans stop stuttering. The sound soaks up the tiny difference, far too small to hear.
