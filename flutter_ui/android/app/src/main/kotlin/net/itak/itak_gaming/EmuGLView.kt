@@ -17,25 +17,76 @@ interface TextureListener {
 }
 
 /**
+ * One-deep draw handshake between the emu thread and the GL
+ * renderer (1.117). The renderer marks a frame consumed when it
+ * has uploaded it in onDrawFrame; the emu loop (local play only)
+ * waits for the previous requested frame to be consumed before
+ * producing the next one, so production is paced by the display's
+ * real cadence instead of a free-running timer that drifts
+ * against the TV's latch. Every wait carries a timeout and an
+ * abort predicate, so a lost surface, a pause, or a stopping
+ * loop can never deadlock on it.
+ */
+class FrameHandshake {
+    private val lock = Object()
+    private var consumed = true // nothing outstanding at start
+
+    /** Emu thread: a frame is about to be handed to the renderer. */
+    fun markRequested() {
+        synchronized(lock) { consumed = false }
+    }
+
+    /** GL thread: the outstanding frame has been uploaded. */
+    fun markConsumed() {
+        synchronized(lock) {
+            consumed = true
+            lock.notifyAll()
+        }
+    }
+
+    /**
+     * Emu thread: wait until the outstanding frame is consumed.
+     * Wakes in short slices so keepWaiting() (running, not
+     * paused) is re-checked promptly; returns without the frame
+     * being consumed when the predicate drops or the timeout
+     * passes, and the caller produces anyway (the old behavior).
+     */
+    fun awaitConsumed(timeoutMs: Long, keepWaiting: () -> Boolean) {
+        val deadlineNs = System.nanoTime() + timeoutMs * 1_000_000L
+        synchronized(lock) {
+            while (!consumed && keepWaiting()) {
+                val leftMs = (deadlineNs - System.nanoTime()) / 1_000_000L
+                if (leftMs <= 0) return
+                try {
+                    lock.wait(minOf(leftMs, 5L))
+                } catch (e: InterruptedException) {
+                    return
+                }
+            }
+        }
+    }
+}
+
+/**
  * OpenGL ES 2.0 view for emulator frames.
  *
  * Each frame is a small texture upload (256x224 for SNES) plus one quad;
  * the GPU does the upscale to the TV. This replaces a software Canvas
  * path that cost 23-76 ms per frame on the Chromecast's CPU.
  */
-class EmuGLView(context: Context) : GLSurfaceView(context) {
+class EmuGLView(context: Context, handshake: FrameHandshake = FrameHandshake()) : GLSurfaceView(context) {
     private val emuRenderer: EmuRenderer
 
     init {
         setEGLContextClientVersion(2)
         setEGLConfigChooser(8, 8, 8, 8, 0, 0)
-        emuRenderer = EmuRenderer(context as? TextureListener)
+        emuRenderer = EmuRenderer(context as? TextureListener, handshake)
         setRenderer(emuRenderer)
         renderMode = RENDERMODE_WHEN_DIRTY
     }
 }
 
-class EmuRenderer(private val listener: TextureListener?) : GLSurfaceView.Renderer {
+class EmuRenderer(private val listener: TextureListener?, private val handshake: FrameHandshake = FrameHandshake()) : GLSurfaceView.Renderer {
     private var program = 0
     private var textureId = 0
     private var posHandle = 0
@@ -126,6 +177,10 @@ class EmuRenderer(private val listener: TextureListener?) : GLSurfaceView.Render
                 GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf
             )
         }
+
+        // The new frame is in the texture: release the emu
+        // loop's display handshake (local pacing, 1.117).
+        handshake.markConsumed()
 
         // Aspect-correct viewport (pillarbox), centered.
         val aspect = Mobile.aspectRatio().toDouble()
