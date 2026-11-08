@@ -1,1 +1,1 @@
-Smoother picture: frames now run on the TV's own tick, sent by the display itself, so zooms and pans hold steady. This replaces 1.117's first try, which did not hold up on real TVs.
+Castle zoom fixed: the map zoom in Zelda drew in two halves with a line across the middle. A data feeding rule inside the core was backwards; it now matches the hardware, and the zoom is one smooth picture.
