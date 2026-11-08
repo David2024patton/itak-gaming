@@ -1109,10 +1109,27 @@ func (s *System) hdmaLine() {
 }
 
 // hdmaChannel performs one line of one channel's HDMA:
-// reloading the table entry when the line counter empties,
-// then transferring one unit of bytes.
-
+// reloading the table entry when the line counter
+// empties, then transferring one unit of bytes.
+//
+// One table entry is a count byte followed by the
+// entry's data source: a two byte indirect address, or
+// the data units themselves in direct mode. The count
+// byte's high bit works the opposite way from the name
+// it is usually given: with the bit set the entry
+// streams, taking fresh data on every line it covers;
+// with the bit clear the entry repeats, which means it
+// transfers its one unit on the first line only and
+// the target register then holds that value for the
+// rest of the entry. A count of 0x80 repeats for 128
+// lines; 0x00 ends the table. The table walk and the
+// indirect address advance only on lines that actually
+// transfer. These are the hardware's HDMA table rules;
+// an earlier build of this engine had the bit
+// backwards, which froze streaming entries like the
+// Mode 7 zoom tables to one value per entry.
 func (s *System) hdmaChannel(c *dmaChannel) int64 {
+	firstLine := false
 	if c.hdmaLeft == 0 {
 		table := uint32(c.a1b)<<16 | uint32(c.a2ah)<<8 | uint32(c.a2al)
 		countByte := s.Read(uint8(table>>16), uint16(table))
@@ -1122,61 +1139,75 @@ func (s *System) hdmaChannel(c *dmaChannel) int64 {
 			c.ntlr = 0
 			return 8
 		}
-		lines := int(countByte & 0x7F)
-		if lines == 0 {
-			lines = 128
+		var lines int
+		var repeat bool
+		switch {
+		case countByte == 0x80:
+			lines, repeat = 128, true
+		case countByte&0x80 != 0:
+			lines, repeat = int(countByte&0x7F), false
+		default:
+			lines, repeat = int(countByte), true
 		}
 		c.hdmaLeft = lines
-		c.hdmaRepeat = countByte&0x80 != 0
+		c.hdmaRepeat = repeat
 		c.ntlr = countByte
-		unit := len(dmaPatterns[c.dmap&7])
 		if c.dmap&0x40 != 0 {
-			// Indirect: the next two table bytes are the
-			// data pointer; the data bank is DASB, loaded
-			// by software.
+			// Indirect: the next two table bytes are
+			// the data pointer; the data bank is
+			// DASB, loaded by software.
 			c.dasl = s.Read(uint8(table>>16), uint16(table))
 			c.dash = s.Read(uint8(table>>16), uint16(table+1))
 			table += 2
-		} else {
-			// Direct: the unit's data follows in the
-			// table itself.
-			for i := 0; i < unit; i++ {
-				c.hdmaData[i] = s.Read(uint8(table>>16), uint16(table+uint32(i)))
-			}
-			table += uint32(unit)
 		}
+		// In direct mode the table pointer stays on
+		// the entry's first data unit here; the
+		// transfer step below consumes units from it,
+		// one per transferred line.
 		c.a2al = uint8(table)
 		c.a2ah = uint8(table >> 8)
+		firstLine = true
 	}
 	pat := dmaPatterns[c.dmap&7]
 	unit := len(pat)
-	if c.dmap&0x40 != 0 {
-		// Indirect: data comes from the DAS pointer in
-		// bank DASB, advancing per byte within this
-		// transfer.
-		dataAddr := uint32(c.dash)<<8 | uint32(c.dasl)
-		for i := 0; i < unit; i++ {
-			v := s.Read(c.dasb, uint16(dataAddr))
-			c.mirr = v
-			s.Write(0, bAddr(c.bbad, pat[i]), v)
-			dataAddr++
-		}
-		if !c.hdmaRepeat {
+	if firstLine || !c.hdmaRepeat {
+		if c.dmap&0x40 != 0 {
+			// Indirect: data comes from the DAS
+			// pointer in bank DASB, advancing per
+			// byte within this transfer, and the
+			// advanced pointer is kept for the next
+			// line.
+			dataAddr := uint32(c.dash)<<8 | uint32(c.dasl)
+			for i := 0; i < unit; i++ {
+				v := s.Read(c.dasb, uint16(dataAddr))
+				c.mirr = v
+				s.Write(0, bAddr(c.bbad, pat[i]), v)
+				dataAddr++
+			}
 			c.dasl = uint8(dataAddr)
 			c.dash = uint8(dataAddr >> 8)
-		}
-	} else {
-		for i := 0; i < unit; i++ {
-			v := c.hdmaData[i]
-			c.mirr = v
-			s.Write(0, bAddr(c.bbad, pat[i]), v)
+		} else {
+			// Direct: stream one unit from the
+			// table pointer.
+			table := uint32(c.a1b)<<16 | uint32(c.a2ah)<<8 | uint32(c.a2al)
+			for i := 0; i < unit; i++ {
+				v := s.Read(uint8(table>>16), uint16(table))
+				c.mirr = v
+				s.Write(0, bAddr(c.bbad, pat[i]), v)
+				table++
+			}
+			c.a2al = uint8(table)
+			c.a2ah = uint8(table >> 8)
 		}
 	}
 	c.hdmaLeft--
 	if c.hdmaLeft == 0 {
 		c.ntlr = 0
 	} else {
-		c.ntlr = uint8(c.hdmaLeft) | boolBit(c.hdmaRepeat)<<7
+		// The line counter keeps counting down under
+		// the count byte's own high bit, so a $43xA
+		// readback looks the same as it always did.
+		c.ntlr = uint8(c.hdmaLeft)&0x7F | (c.ntlr & 0x80)
 	}
 	return int64(8 + 8*unit)
 }
