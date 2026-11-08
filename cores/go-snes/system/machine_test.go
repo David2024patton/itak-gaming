@@ -161,10 +161,17 @@ func TestDMAMode3RegisterPairs(t *testing.T) {
 	}
 }
 
-func TestHDMADirect(t *testing.T) {
+func TestHDMADirectRepeatTransfersOnce(t *testing.T) {
 	s := newLoopSys(t)
 	wram := s.Map.WRAM()
-	// Table: 3 lines of 0xAA, then the terminator.
+	// Table: one repeat entry of 0xAA spanning 3
+	// lines, then the terminator. A count byte with
+	// the high bit clear repeats: the unit transfers
+	// on the first line only and the target register
+	// holds it. This test used to expect the byte on
+	// all three lines, which was the old inverted
+	// reading of the count byte; the hardware writes
+	// $2180 once here.
 	copy(wram[0x0000:], []byte{0x03, 0xAA, 0x00})
 	setWMADD(s, 0x3000)
 	wrReg(s, 0x4300, 0x00) // mode 0, direct
@@ -174,9 +181,12 @@ func TestHDMADirect(t *testing.T) {
 	wrReg(s, 0x4304, 0x7E)
 	wrReg(s, 0x420C, 0x01)
 	s.RunFrame()
-	for i := 0; i < 3; i++ {
-		if wram[0x3000+i] != 0xAA {
-			t.Errorf("WRAM[%#x] = %#x, want 0xaa (HDMA line %d)", 0x3000+i, wram[0x3000+i], i+1)
+	if wram[0x3000] != 0xAA {
+		t.Errorf("WRAM[0x3000] = %#x, want 0xaa (repeat entry writes once)", wram[0x3000])
+	}
+	for i := 1; i < 3; i++ {
+		if wram[0x3000+i] != 0 {
+			t.Errorf("WRAM[%#x] = %#x, want 0 (line %d holds, no write)", 0x3000+i, wram[0x3000+i], i+1)
 		}
 	}
 	if wram[0x3003] != 0 {
@@ -184,17 +194,20 @@ func TestHDMADirect(t *testing.T) {
 	}
 }
 
-func TestHDMAIndirectAndRepeat(t *testing.T) {
+func TestHDMAIndirectStreamAndRepeat(t *testing.T) {
 	s := newLoopSys(t)
 	wram := s.Map.WRAM()
-	// Data block in WRAM; indirect table entries point
-	// at it. Entry 1: 2 lines, non-repeat. Entry 2: 2
-	// lines, repeating the same first byte.
+	// Data block in WRAM; indirect table entries
+	// point at it. The count byte's high bit, read
+	// the hardware way: set streams fresh data every
+	// line, clear repeats one unit on the first line
+	// only. An earlier version of this test had the
+	// two backwards, matching the old engine.
 	wram[0x4000] = 0x11
 	wram[0x4001] = 0x22
 	copy(wram[0x0000:], []byte{
-		0x02, 0x00, 0x40, // 2 lines, data at $7E4000
-		0x82, 0x00, 0x40, // 2 lines repeating $7E4000
+		0x82, 0x00, 0x40, // stream 2 lines, data at $7E4000
+		0x02, 0x00, 0x40, // repeat 2 lines, data at $7E4000
 		0x00,
 	})
 	setWMADD(s, 0x3000)
@@ -206,7 +219,80 @@ func TestHDMAIndirectAndRepeat(t *testing.T) {
 	wrReg(s, 0x4307, 0x7E) // DASB: data bank
 	wrReg(s, 0x420C, 0x01)
 	s.RunFrame()
-	want := []byte{0x11, 0x22, 0x11, 0x11}
+	want := []byte{0x11, 0x22, 0x11}
+	for i, w := range want {
+		if wram[0x3000+i] != w {
+			t.Errorf("WRAM[%#x] = %#x, want %#x", 0x3000+i, wram[0x3000+i], w)
+		}
+	}
+	if wram[0x3003] != 0 {
+		t.Errorf("WRAM[0x3003] = %#x, want 0 (repeat entry wrote only once)", wram[0x3003])
+	}
+}
+
+func TestHDMAIndirectStreamToMode7Register(t *testing.T) {
+	// The exact shape of the ALttP map zoom: an
+	// indirect channel in transfer mode 2 feeding a
+	// Mode 7 matrix register two bytes per line, with
+	// the count byte's high bit set. Every line must
+	// deliver the next pair from the data array, so
+	// the last pair written leaves M7A at 0x0035. The
+	// old engine delivered the first pair three
+	// times, leaving M7A at 0x0037.
+	s := newLoopSys(t)
+	wram := s.Map.WRAM()
+	copy(wram[0x3000:], []byte{0x37, 0x00, 0x36, 0x00, 0x35, 0x00})
+	copy(wram[0x2000:], []byte{0x83, 0x00, 0x30, 0x00})
+	wrReg(s, 0x211C, 0x00) // M7B low
+	wrReg(s, 0x211C, 0x01) // M7B high: M7B = 0x0100
+	wrReg(s, 0x4360, 0x42) // channel 6: mode 2, indirect
+	wrReg(s, 0x4361, 0x1B) // B = $211B M7A
+	wrReg(s, 0x4362, 0x00)
+	wrReg(s, 0x4363, 0x20) // table at $7E2000
+	wrReg(s, 0x4364, 0x7E)
+	wrReg(s, 0x4367, 0x7E) // DASB: data bank
+	wrReg(s, 0x420C, 0x40)
+	s.RunFrame()
+	// The product register latches M7A times the high
+	// byte of M7B when M7B is written, so write M7B
+	// once more to read the surviving M7A back out:
+	// with a high byte of 1 the product is M7A itself.
+	wrReg(s, 0x211C, 0x00) // M7B low
+	wrReg(s, 0x211C, 0x01) // M7B high: product = M7A
+	if v := rdReg(s, 0x2134); v != 0x35 {
+		t.Errorf("RDMPY low = %#x, want 0x35 (last streamed M7A 0x0035)", v)
+	}
+	if v := rdReg(s, 0x2135); v != 0x00 {
+		t.Errorf("RDMPY mid = %#x, want 0x00 (M7A 0x0035)", v)
+	}
+	if v := rdReg(s, 0x2136); v != 0x00 {
+		t.Errorf("RDMPY high = %#x, want 0x00 (M7A 0x0035)", v)
+	}
+}
+
+func TestHDMADirectStreamWalksTheTable(t *testing.T) {
+	// A direct streaming entry consumes one unit per
+	// line from the table itself, so the next entry's
+	// count byte sits after all of its units. The old
+	// engine consumed one unit per entry and then
+	// read the next count byte out of the middle of
+	// the data, ending the table early.
+	s := newLoopSys(t)
+	wram := s.Map.WRAM()
+	copy(wram[0x2000:], []byte{
+		0x82, 0x55, 0x66, // stream 2 lines, mode 0 units
+		0x02, 0x77, // repeat 2 lines: one unit, once
+		0x00,
+	})
+	setWMADD(s, 0x3000)
+	wrReg(s, 0x4300, 0x00) // mode 0, direct
+	wrReg(s, 0x4301, 0x80) // B = $2180
+	wrReg(s, 0x4302, 0x00)
+	wrReg(s, 0x4303, 0x20) // table at $7E2000
+	wrReg(s, 0x4304, 0x7E)
+	wrReg(s, 0x420C, 0x01)
+	s.RunFrame()
+	want := []byte{0x55, 0x66, 0x77, 0x00}
 	for i, w := range want {
 		if wram[0x3000+i] != w {
 			t.Errorf("WRAM[%#x] = %#x, want %#x", 0x3000+i, wram[0x3000+i], w)
