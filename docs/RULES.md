@@ -71,3 +71,18 @@ Patton and apply to every module, every language, every time.
   Patriot Pest Control (full name wherever there are words).
 - Project docs: TODO.md tracks the work, PLAN.md holds the plan,
   IDEA.md holds David's ideas in his words.
+
+## Relational diagram, always current
+- This project always has a relational diagram: nodes and wires
+  showing every feature and module and how they connect, modeled on
+  the AlphaFlux relational map.
+- The diagram lives in this repo under docs/relational-map/ as
+  readable markdown documents (inventory, wires, and diagram sheets),
+  never raw JSON alone. docs/MAP.md at the repo root points at it.
+- UPDATE RULE: after every feature build, or any change to any part
+  of the project, the relational diagram is updated in the same push
+  cycle. A feature is not fully landed until the diagram matches it.
+- Every node on the diagram carries a state (LIVE, PLANNED, or
+  ABSENT) and the source file it was read from. Code beats paper:
+  where a document and the code disagree, the code wins and the
+  disagreement is named on the map.
